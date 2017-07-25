@@ -1,0 +1,74 @@
+# $Id: Makefile.kmk 2423 2010-10-17 23:43:35Z bird $
+## @file
+# Sub-makefile for kash tests.
+#
+
+#
+# Copyright (c) 2005-2010 knut st. osmundsen <bird-kBuild-spamx@anduin.net>
+#
+# This file is part of kBuild.
+#
+# kBuild is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 3 of the License, or
+# (at your option) any later version.
+#
+# kBuild is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with kBuild.  If not, see <http://www.gnu.org/licenses/>
+#
+#
+
+SUB_DEPTH = ../../..
+include $(KBUILD_PATH)/subheader.kmk
+
+#
+# The program.
+#
+
+TESTING += kash_tests
+
+KASH_TEST_BIN   = $(if $(kash_1_TARGET),$(kash_1_TARGET),$(PATH_INS)/$(TEMPLATE_BIN_INST)kmk_ash$(SUFF_EXE))
+KASH_TEST_DIR  := $(PATH_SUB_CURRENT)
+KASH_TESTCASES := $(addprefix $(KASH_TEST_DIR)/,\
+	trap-exit-1 \
+	trap-int-1 \
+	trap-term-1 \
+	tick-1 \
+	redirect-1 \
+	redirect-2 \
+	redirect-3 \
+	pipe-1 \
+	pipe-2 \
+	exec-1 \
+	)
+
+
+kash_tests::
+	$(ECHO) "kash tests..."
+	@export KASH_TEST_DIR=$(KASH_TEST_DIR); \
+	KASH_FAILURE=0; \
+	$(foreach test,$(KASH_TESTCASES)\
+		,echo " * $(KASH_TEST_BIN) $(test)"; \
+		if ! $(KASH_TEST_BIN) $(test); then \
+			echo " => FAILURE!"; \
+			KASH_FAILURE=`$(EXPR_EXT) $${KASH_FAILURE} + 1`; \
+		fi; \
+		) \
+	if test $$KASH_FAILURE -eq 0; then \
+		echo 'kash tests: All tests succeeded.'; \
+	else \
+		echo "kash tests: $$KASH_FAILURE tests failed"'!!'; \
+		echo ""; \
+		exit 1; \
+	fi
+
+
+
+include $(FILE_KBUILD_SUB_FOOTER)
+
+

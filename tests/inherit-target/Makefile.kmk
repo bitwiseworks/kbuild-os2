@@ -1,0 +1,90 @@
+# $Id: Makefile.kmk 2413 2010-09-11 17:43:04Z bird $
+## @file
+# Test - Target Inheritance.
+#
+
+#
+# Copyright (c) 2008-2010 knut st. osmundsen <bird-kBuild-spamx@anduin.net>
+#
+# This file is part of kBuild.
+#
+# kBuild is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# kBuild is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with kBuild; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
+#
+#
+
+DEPTH = ../..
+include $(PATH_KBUILD)/header.kmk
+
+
+PROGRAMS += inherit-target1
+inherit-target1_TEMPLATE = TST
+inherit-target1_SOURCES = ../dummy_defined_X.c
+inherit-target1_DEFS = X=y
+
+PROGRAMS += inherit-target2
+inherit-target2_EXTENDS = inherit-target1
+
+PROGRAMS += inherit-target3
+inherit-target3_EXTENDS = inherit-target2
+
+PROGRAMS += inherit-target4
+inherit-target4_EXTENDS = inherit-target3
+
+PROGRAMS += inherit-target5
+inherit-target5_EXTENDS = inherit-target3
+
+# out of target order.
+PROGRAMS += inherit-target6
+inherit-target6_EXTENDS = inherit-target9
+
+PROGRAMS += inherit-target7
+inherit-target7_EXTENDS = inherit-target1
+
+PROGRAMS += inherit-target8
+inherit-target8_EXTENDS = inherit-target7
+
+PROGRAMS += inherit-target9
+inherit-target9_EXTENDS = inherit-target8
+
+
+# More complicated, with a couple of SDKs and TEMPLATES.
+SDK_inh1 = target inherit test sdk 1
+SDK_inh1_DEFS = Z=42
+
+SDK_inh2 = target inherit test sdk 2
+SDK_inh2_DEFS = Y=128
+
+SDK_inh3 = target inherit test sdk 3
+SDK_inh3_DEFS = P=42
+
+TEMPLATE_inh1 = target inherit test template 1
+TEMPLATE_inh1_EXTENDS = TST
+TEMPLATE_inh1_DEFS = Q=256
+
+PROGRAMS += inherit-target10
+inherit-target10_TEMPLATE = inh1
+inherit-target10_SOURCES = ../dummy_defined_X.c
+inherit-target10_SDKS = inh1 inh2
+inherit-target10_DEFS = X=Z
+
+PROGRAMS += inherit-target11
+inherit-target11_EXTENDS = inherit-target10
+inherit-target11_SOURCES = ../dummy_defined_Y.c
+inherit-target11_SDKS = inh3
+inherit-target11_DEFS = Y=P
+
+
+include $(FILE_KBUILD_FOOTER)
+

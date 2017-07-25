@@ -1,0 +1,35 @@
+# $Id: Makefile.kmk 2413 2010-09-11 17:43:04Z bird $
+## @file
+# Sub-makefile for kmk_time.
+#
+
+#
+# Copyright (c) 2008-2010 knut st. osmundsen <bird-kBuild-spamx@anduin.net>
+#
+# This file is part of kBuild.
+#
+# kBuild is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 3 of the License, or
+# (at your option) any later version.
+#
+# kBuild is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with kBuild.  If not, see <http://www.gnu.org/licenses/>
+#
+#
+
+SUB_DEPTH = ../..
+include $(PATH_KBUILD)/subheader.kmk
+
+PROGRAMS += kmk_time
+kmk_time_TEMPLATE = BIN
+kmk_time_DEFS = KBUILD_SVN_REV=$(KBUILD_SVN_REV)
+kmk_time_SOURCES = kmk_time.c
+
+include $(KBUILD_PATH)/subfooter.kmk
+

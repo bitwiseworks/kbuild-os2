@@ -1,0 +1,45 @@
+#                                                                    -*-perl-*-
+
+$description = "The following test creates a makefile to test
+makelevels in Make. It prints \$(MAKELEVEL) and then
+prints the environment variable MAKELEVEL";
+
+open(MAKEFILE,"> $makefile");
+
+# The Contents of the MAKEFILE ...
+
+if (!$is_kmk) {
+  print MAKEFILE <<EOF;
+all:
+\t\@echo MAKELEVEL is \$(MAKELEVEL)
+\techo \$\$MAKELEVEL
+EOF
+} else {
+  print MAKEFILE <<EOF;
+all:
+\t\@echo KMK_LEVEL is \$(KMK_LEVEL)
+\techo \$\$KMK_LEVEL
+EOF
+}
+
+# END of Contents of MAKEFILE
+
+close(MAKEFILE);
+
+# RUN MAKE
+
+&run_make_with_options($makefile,"",&get_logfile);
+
+# SET ANSWER
+
+if (!$is_kmk) {
+  $answer = "MAKELEVEL is 0\necho \$MAKELEVEL\n1\n";
+} else {
+  $answer = "KMK_LEVEL is 0\necho \$KMK_LEVEL\n1\n";
+}
+
+# COMPARE RESULTS
+
+&compare_output($answer,&get_logfile(1));
+
+1;

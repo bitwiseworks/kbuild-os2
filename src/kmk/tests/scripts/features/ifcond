@@ -1,0 +1,950 @@
+# $Id: ifcond 2413 2010-09-11 17:43:04Z bird $                                        -*-perl-*-
+## @file
+# if conditionals.
+#
+
+#
+# Copyright (c) 2008-2010 knut st. osmundsen <bird-kBuild-spamx@anduin.net>
+#
+# This file is part of kBuild.
+#
+# kBuild is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 3 of the License, or
+# (at your option) any later version.
+#
+# kBuild is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with kBuild.  If not, see <http://www.gnu.org/licenses/>
+#
+#
+
+$description = "Tests the if conditionals";
+
+$details = "...";
+
+if ($is_kmk) {
+
+   # TEST #0 - check that the feature is present.
+   # --------------------------------------------
+   run_make_test('
+ifneq ($(if-expr 1+1,1,0),1)
+$(error sub-test 0 failed)
+endif
+.PHONY: all
+all: ; @:
+',
+'',
+'');
+
+   # TEST #1 - A more comprehensive, yet a bit large, test.
+   # ------------------------------------------------------
+   run_make_test('
+
+#
+# Note! The testcase are ordered by ascending operator precedence
+#       with the exception of equal and not-equal because these
+#       are kind of useful for performing tests on non-logical ops.
+#
+
+.PHONY: all
+all: ; @:
+
+#
+# Parenthesis
+#
+$(info unary operators: ( and ))
+if (1)
+else
+$(error )
+endif
+
+if ((((1))))
+else
+$(error )
+endif
+
+
+#
+# Equal and Not Equal w/ some fundamental bits thrown in.
+#
+$(info binary operators: == and !=)
+
+if 1 == 1
+else
+$(error )
+endif
+
+if 2 == 3
+$(error )
+else
+endif
+
+if 2 != 3
+else
+$(error )
+endif
+
+if a != b
+else
+$(error )
+endif
+
+if asdf == asdf
+else
+$(error )
+endif
+
+if "asdf" == asdf
+else
+$(error )
+endif
+
+if \'asdf\' == asdf
+else
+$(error )
+endif
+
+if \'asdf\' == "asdf"
+else
+$(error )
+endif
+
+if \'asdf\' == \'asdf\'
+else
+$(error )
+endif
+
+if "asdf" == "asdf"
+else
+$(error )
+endif
+
+if 0x1 == 1
+else
+$(error )
+endif
+
+if 0xfff == 4095
+else
+$(error )
+endif
+
+if 0xfff == 4095
+else
+$(error )
+endif
+
+if 0d10 == 10
+else
+$(error )
+endif
+
+if 0d10 == 10
+else
+$(error )
+endif
+
+if 0xa == 012
+else
+$(error )
+endif
+
+if 0b1110 == 016
+else
+$(error )
+endif
+
+
+#
+# Logical OR
+#
+$(info binary operator: ||)
+if 1
+else
+$(error busted)
+endif
+
+if 1 || 1
+else
+$(error )
+endif
+
+if 0 || 0
+$(error )
+else
+endif
+
+if 1 || 0
+else
+$(error )
+endif
+
+if 0 || 1
+else
+$(error )
+endif
+
+if 0 || 0 || 0 || 0 || 0 || 0 || 0
+$(error )
+else
+endif
+
+if 0 || 0 || 0 || 1 || 0 || 0 || 0
+else
+$(error )
+endif
+
+if "asdf" || 0
+else
+$(error )
+endif
+
+if 0 || "asdf"
+else
+$(error )
+endif
+
+if \'asdf\' || 0
+else
+$(error )
+endif
+
+if "" || 0
+$(error )
+endif
+if "" || 1
+else
+$(error )
+endif
+if \'\' || 0
+$(error )
+endif
+if \'\' || 1
+else
+$(error )
+endif
+
+if "" || \'\'
+$(error )
+endif
+if "1" || \'\'
+else
+$(error )
+endif
+if "1" || \'1\'
+else
+$(error )
+endif
+if "" || \'1\'
+else
+$(error )
+endif
+
+
+#
+# Logical AND
+#
+$(info binary operator: &&)
+if 1 && 1
+else
+$(error )
+endif
+if 1 && 0
+$(error )
+endif
+if 1234 && 0
+$(error )
+endif
+if 123434 && 0 && 123435 && 1
+$(error )
+endif
+
+if "" && 1
+$(error )
+endif
+if ("asdf" && 1) != 1
+$(error )
+endif
+if "1" && \'asdf\'
+else
+$(error )
+endif
+if "1" && \'asdf\' && 0
+$(error )
+endif
+
+if 0 || 1 && 0
+$(error )
+endif
+
+
+#
+# Bitwise OR
+#
+$(info binary operator: |)
+if 1 | 0
+else
+$(error )
+endif
+if 1 | 1
+else
+$(error )
+endif
+if 11234 | 343423
+else
+$(error )
+endif
+if (1|2)!=3
+$(error )
+endif
+if 1|2 != 3
+else
+$(error )
+endif
+if (1|2|4|8)!=0xf
+$(error )
+endif
+
+
+#
+# Bitwise XOR
+#
+$(info binary operator: ^)
+if 1 ^ 1
+$(error )
+endif
+
+if (2 ^ 1) != 3
+$(error )
+endif
+
+if 7 != (2 ^ 1 ^ 4)
+$(error )
+endif
+
+if (2 ^ 1 | 2) != 3
+$(error )
+endif
+
+
+#
+# Bitwise AND
+#
+$(info binary operator: &)
+if (4097 & 1) != 1
+$(error )
+endif
+if (0xfff & 0x0f0) != 0xf0
+$(error )
+endif
+if (0x1e3 & 0x100 | 3) != 0x103
+$(error )
+endif
+
+
+#
+# Greater than
+#
+$(info binary operator: >)
+if 1 > 0
+else
+$(error )
+endif
+
+if 1024 > 1023
+else
+$(error )
+endif
+
+if 999 > 1023
+$(error )
+endif
+
+if (5 > 4 | 2) != 3
+$(error )
+endif
+
+if (1 & 8 > 4) != 1
+$(error )
+endif
+
+if (8 > 4 ^ 16) != 17
+$(error )
+endif
+
+if "b" > \'a\'
+else
+$(error )
+endif
+if "abcdef" > \'ffdas\'
+$(error )
+endif
+if abcdef > ffdas
+$(error )
+endif
+
+
+#
+# Greater or equal than
+#
+$(info binary operator: >=)
+if 20 > 0
+else
+$(error )
+endif
+
+if 20 >= 20
+else
+$(error )
+endif
+
+if 19 >= 20
+$(error )
+endif
+
+if (1 & 8 >= 4) != 1
+$(error )
+endif
+
+if "x" >= \'x\'
+else
+$(error )
+endif
+if "abdc" >= \'abcd\'
+else
+$(error )
+endif
+if "ffdaaa" >= \'ffdasd\'
+$(error )
+endif
+if asdf >= asdf
+else
+$(error )
+endif
+
+
+#
+# Less than
+#
+if 1 < 1
+$(error )
+endif
+if -123 < -134
+$(error )
+endif
+if 123 <= 7777
+else
+$(error )
+endif
+
+if "b" < \'a\'
+$(error )
+endif
+if b < a
+$(error )
+endif
+if \'foobar\' < \'a$\'
+$(error )
+endif
+if hhhh < ggggg
+$(error )
+endif
+if qwerty < qwerty0
+else
+$(error )
+endif
+
+
+#
+# Less or equal than
+#
+$(info binary operator: >>)
+if 1 <= 0
+$(error )
+endif
+if 1 <= 1
+else
+$(error )
+endif
+if 123 <= 123 != 1
+$(error )
+endif
+if 560 <= 456
+$(error )
+endif
+
+if "a" <= \'a\'
+else
+$(error )
+endif
+if "abcdef" <= \'abcdef\'
+else
+$(error )
+endif
+if q12345z6 <= q12345z
+$(error )
+endif
+if QWERTY <= ABCDE
+$(error )
+endif
+
+
+#
+# Shift right
+#
+$(info binary operator: >>)
+if 1 >> 0 != 1
+$(error )
+endif
+if 1024 >> 2 != 256
+$(error )
+endif
+if 102435 >> 4 > 1234 != 1
+$(error )
+endif
+
+
+#
+# Shift left
+#
+$(info binary operator: <<)
+if 1 << 0 != 1
+$(error )
+endif
+if 1 << 1 != 2
+$(error )
+endif
+if 1 << 4 != 16
+$(error )
+endif
+if 1 << 10 != 1024
+$(error )
+endif
+if 34 << 10 != 0x8800
+$(error )
+endif
+if 1099511627776 << 21 != 2305843009213693952
+$(error )
+endif
+if 1 << 61 != 2305843009213693952
+$(error )
+endif
+
+if 2 << 60 > 123434323 != 1
+$(error )
+endif
+
+
+#
+# Subtraction
+#
+$(info binary operator: -)
+if 1-1 != 0
+$(error )
+endif
+if 1023-511 != 512
+$(error )
+endif
+if 4 - 3 << 3 != 8
+$(error )
+endif
+
+
+#
+# Addition
+#
+$(info binary operator: +)
+if 1+1 != 2
+$(error )
+endif
+if 1234+1000 != 2234
+$(error )
+endif
+if 2 + 2 << 4 != 64
+$(error )
+endif
+
+
+#
+# Modulus
+#
+$(info binary operator: %)
+if 0%2 != 0
+$(error )
+endif
+if 10%7 != 3
+$(error )
+endif
+if 10 + 100%70 - 3 != 37
+$(error )
+endif
+
+
+#
+# Division
+#
+$(info binary operator: /)
+if 0/1 != 0
+$(error )
+endif
+if 1000/2 != 500
+$(error )
+endif
+if 1000/2 + 4 != 504
+$(error )
+endif
+if 5 + 1000/4 != 255
+$(error )
+endif
+
+
+#
+# Multiplication
+#
+$(info binary operator: *)
+if 1*1 != 1
+$(error )
+endif
+if 10*10 != 100
+$(error )
+endif
+if 1024*64 != 65536
+$(error )
+endif
+if 10*10 - 10 != 90
+$(error )
+endif
+if 1000 - 10*10 != 900
+$(error )
+endif
+
+
+#
+# Logical NOT
+#
+$(info unary operator: !)
+if !1
+$(error )
+endif
+
+if !42 == 0
+else
+$(error )
+endif
+
+if !0 == 1
+else
+$(error )
+endif
+
+if !!0 == 0
+else
+$(error )
+endif
+
+if !0 * 123 != 123
+$(error )
+endif
+if !!!0 * 512 != 512
+$(error )
+endif
+
+
+#
+# Bitwise NOT
+#
+$(info unary operator: ~)
+if ~0xfff != 0xfffffffffffff000
+$(error )
+endif
+
+
+#
+# Pluss
+#
+$(info unary operator: +)
+if +2 != 2
+$(error )
+endif
+if 1++++++++++++2134 != 2135
+$(error )
+endif
+
+
+#
+# Minus (negation)
+#
+$(info unary operator: -)
+if --2 != 2
+$(error )
+endif
+
+if 1 - -2 != 3
+$(error )
+endif
+
+
+#
+# target
+#
+trg_deps_only: foobar
+trg_with_cmds: foobar
+	echo $@
+
+$(info unary operator: target) # This flushes stuff in read.c
+
+if target trg_with_cmds
+else
+$(error target trg_with_cmds)
+endif
+if target(trg_deps_only)
+$(error target trg_deps_only)
+endif
+if target ( foobar )
+$(error target foobar)
+endif
+
+
+#
+# defined
+#
+$(info unary operator: defined)
+var_defined := 1
+var_not_defined :=
+
+if defined var_defined
+else
+$(error )
+endif
+if defined(var_defined)
+else
+$(error )
+endif
+if defined (var_defined)
+else
+$(error )
+endif
+if !defined(var_defined)
+$(error )
+endif
+if defined (var_not_defined)
+$(error )
+endif
+
+
+#
+# bool
+#
+$(info unary operator: bool)
+if bool("Asdf") != 1
+$(error )
+endif
+if bool("") != 0
+$(error )
+endif
+
+
+#
+# bool
+#
+$(info unary operator: num)
+if num("1234") != 1235 - 1
+$(error )
+endif
+if num(\'1234\') != 1233 + 1
+$(error )
+endif
+
+
+#
+# str
+#
+$(info unary operator: str)
+if str(a < b) != 1
+$(error )
+endif
+if str(a < b) != \'1\'
+$(error )
+endif
+if str( 1 ) != "1"
+$(error )
+endif
+if str( 1 ) != "1"
+$(error )
+endif
+if str( num(0x1000) ) != "4096"
+$(error )
+endif
+if str(0x1000) != 0x1000
+$(error )
+endif
+
+
+
+#
+# Quick check of $(if-expr ) and $(expr ).
+#
+$(info $$(if-expr ,,))
+ifeq ($(if-expr 0 || 2,42,500),42)
+else
+$(error )
+endif
+ifeq ($(if-expr 5+3 == 231,42,500),42)
+$(error )
+endif
+
+$(info $$(expr ))
+ifeq ($(expr 5+3),8)
+else
+$(error expr:$(expr 5+3) expected 8)
+endif
+ifeq ($(expr 25*25),625)
+else
+$(error expr:$(expr 25*25) expected 625)
+endif
+ifeq ($(expr 100/3),3)
+$(error )
+endif
+',
+'',
+'unary operators: ( and )
+binary operators: == and !=
+binary operator: ||
+binary operator: &&
+binary operator: |
+binary operator: ^
+binary operator: &
+binary operator: >
+binary operator: >=
+binary operator: >>
+binary operator: >>
+binary operator: <<
+binary operator: -
+binary operator: +
+binary operator: %
+binary operator: /
+binary operator: *
+unary operator: !
+unary operator: ~
+unary operator: +
+unary operator: -
+unary operator: target
+unary operator: defined
+unary operator: bool
+unary operator: num
+unary operator: str
+$(if-expr ,,)
+$(expr )
+');
+
+}
+
+
+   # TEST #2 - A bug.
+   # ------------------------------------------------------
+   run_make_test('
+.PHONY: all
+all: ; @:
+
+#
+# Assert sanity first on simple strings.
+#
+if abcd != "abcd"
+$(error )
+endif
+
+if \'abcd\' != abcd
+$(error )
+endif
+
+if abcd != abcd
+$(error )
+endif
+
+
+#
+# String by reference, start with a few simple cases.
+#
+STR1 = abcd
+
+if "$(STR1)" != "abcd"
+$(error )
+endif
+
+if \'$(STR1)\' == "abcd" # not expanded.
+$(error )
+endif
+
+if \'$(STR1)\' != \'$(STR1)\'
+$(error )
+endif
+
+if "$(STR1)" != "$(STR1)"
+$(error )
+endif
+
+#
+# Now for the kmk 0.1.4 bug...
+#
+if $(STR1) != "$(STR1)"
+$(error )
+endif
+
+if "$(STR1)" != $(STR1)
+$(error )
+endif
+
+if $(STR1) != $(STR1)
+$(error )
+endif
+
+#
+# And some extra for good measure.
+#
+STR2 = STR
+NUM1 = 1
+
+if $($(STR2)$(NUM1)) != "abcd"
+$(error )
+endif
+
+if "abcd" != $($(STR2)$(NUM1))
+$(error )
+endif
+
+if "abcd" != $(${STR2}$(NUM1))
+$(error )
+endif
+
+if "abcd" != ${$(STR2)$(NUM1)}
+$(error )
+endif
+
+if "abcd" != ${${STR2}${NUM1}}
+$(error )
+endif
+
+if ${${STR2}${NUM1}} != \'abcd\'
+$(error )
+endif
+
+if "${${STR2}${NUM1}}" != \'abcd\'
+$(error )
+endif
+
+
+',
+'',
+'');
+
+
+
+# Indicate that we're done.
+1;
+
+

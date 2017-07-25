@@ -1,0 +1,354 @@
+/* $Id: ChangeLog 855 2007-02-26 21:59:05Z bird $ */
+
+The change log has been discontinued. check the trac timeline instead:
+
+    http://svn.netlabs.org/kbuild/timeline
+
+
+2006-12-03:
+    - kBuild/bin/x86.win32:
+        o Rebuild and cleaned out dlls that mv and sed required.
+    - sed:
+        o Fixed parsing of single quoted arguments on windows.
+
+2006-12-02:
+    - kmk:
+        o Fixed bugs dealing with the order SDK properties was applied to sources.
+
+2006-12-01:
+    - kBuild:
+        o Added support for compiling resource files.
+        o Fixed bug causing object files take from the SOURCES to be cleaned up.
+
+2006-11-25:
+    - kmk, kBuild:
+        o Added mv as builtin command.
+        o Added cat as builtin command.
+        o Added GNU sed version 4.1.5 and ported it to MSC.
+        o Added rmdir as builtin and external command.
+        o Made mkdir not modify the argument strings.
+        o Made mkdir deal properly with DOS slashes on OS/2 and Windows.
+
+2006-11-24:
+    - kBuild/bin/x86.win32/kmk.exe, kBuild/bin/x86.linux/kmk:
+        o Rebuilt with current code.
+    - kBuild/footer.kmk:
+        o Fixed some issues with SDKS and linking.
+    - kmk:
+        o Fixed bug in the sdk walking in kbuild_collect_source_prop.
+        o Added --pretty-command-printing for simplifying makefile debugging.
+
+2006-11-23:
+    - dist/portage:
+        o Hacked together two ebuilds for the Gentoo Portage.
+    - Config.kmk, Makefile.kmk:
+        o #6: Hacking *nix install build for Gentoo.
+    - src/gmake/Makefile.kmk, src/lib/Makefile:
+        o Always include header.kmk when testing BUILD_TARGET*.
+    - kBuild/header.kmk:
+        o BUILD_TYPE defaults to 'release'.
+    - kBuild/tools/GCC*.kmk:
+        o Cleaned up the -s and -g usage.
+    - kBuild/bin/x86.win32, kBuild/bin/x86.linux:
+        o Rebuilt with current code.
+    - kBuild/footer.kmk:
+        o #3: Clean link output files.
+    - kBuild/header.kmk, kmk:
+        o #6: Did code changes for unix installation. Will do install goals when creating the gentoo ebuild.
+        o #5: Proper versioning. (#5)
+    - kmk:
+        o Support SDK.$(BUILD_TARGET_ARCH) too (only bug).
+        o Fixed a bug when gather SDKs.
+
+2006-09-28:
+    - kBuild/header.kmk, kBuild/env.sh, kBuild/tools/GCC4MACH.kmk, kBuild/bin/x86.darwin/, src/gmake, Config.kmk:
+        o Initial Mac OS X / Darwin bootstrapping.
+
+2006-09-23:
+    - kBuild/footer.kmk:
+        o Recursive template inheritance.
+    - kBuild/header.kmk, kBuild/footer.kmk:
+        o Removed some checks for features which are present in both gmake 3.81 and kmk.
+          Anyone trying to bootstrap kBuild will have to build gmake 3.81 first.
+    - Config.kmk, src/gmake, src/lib, src/kDepPre, src/kDepIDB:
+        o Allow all kinds of ways of saying Windows in BUILD_TARGET.
+    - kBuild/bin/x86.win32/:
+        o Rebuilt kmk.exe.
+    - kBuild/bin/x86.os2/:
+        o Added kDepPre.exe and kDepIDB.exe.
+        o Rebuilt kmk.exe and kmk_gmake.exe.
+    - src/gmake:
+        o Update KMK_FEATURES to include the optimizations from earlier this week.
+        o Regenerated config.h.os2 and make adjustments to make it all
+          build quietly on OS/2.
+    - kBuild/envos2.cmd:
+        o Environment script (REXX) for OS/2.
+
+2006-09-19:
+    - kBuild/bin/x86.win32/:
+        o Rebuilt kmk.exe and kmk_gmake.exe.
+    - src/gmake:
+        o Fixed some optimization bugs in kbuild.c.
+
+2006-09-18:
+    - kBuild/gmake:
+        o Don't send put j1 in MAKEFLAGS on windows, somehow that doesn't work.
+        o Fixed some variable name typos in kbuild.c.
+        o Fixed missing expansion in kbuild_lookup_variable.
+        o A real attempt at fixing the double quoting problem on windows. ash seems to want a
+          space between a double quote enclosing the last argument on the commandline and the
+          double quote enclosing the commandline (the -c argument).
+        o Fixed a newline escape problem when using batch_mode_shell on windows with kmk_ash.
+
+2006-09-17:
+    - kBuild/gmake:
+        o Optimization summary: libc from ~21 seconds -> 7-8 seconds (os2/nt).
+        o Optimized appending new stuff to variables. (major win)
+        o Optimized variable memory value allocation avoiding a bunch of
+          unnecessary copying and allocating.
+        o Added kBuild specific functions for speeding up source processing.
+        o Fixed assertion in w32_fixcase when shell doesn't have a full path
+          and some other case.
+
+2006-09-16:
+    - kBuild/header.kmk:
+        o Turn off command dependencies when using vanilla GNU Make.
+    - kBuild/footer.kmk:
+        o Made up my mind about the command depency blocker variables;
+          NO_LINK_CMDS_DEPS and NO_COMPILE_CMDS_DEPS.
+    - src/gmake:
+        o Added kmk_gmake which is (almost) vanilla GNU Make.
+        o kmk_ash wants batch files on windows or the double quotes will get screwed up.
+        o Make sure kmk_builtin commands don't get batch files and odd weird stuff.
+        o Cleaning up the modifications. Changes are now either configurable
+          or marked, and dead stuff has been removed (dll shell).
+
+2006-09-15:
+    - kBuild/bin/x86.win32/kmk.exe:
+        o Built new code.
+    - kBuild/header.kmk:
+        o DIRDEP is now the same on all platforms (fixed with 3.81 merge).
+    - kBuild/bin/x86.linux/kmk:
+        o Built new code on system360.
+    - src/gmake:
+        o Some parallel job fixes.
+        o Regenerated config.h.linux on system360.
+        o Fixed stat("dir/", &st) on windows and some warnings.
+        o Merge with GNU Make v3.81 (vendor/gnumake/2005-05-16 -> vendor/gnumake/current).
+
+2006-03-26:
+    - kBuild/bin/x86.os2/:
+        o Rebuilt the OS/2 tools.
+    - src/gmake/variable.c, src/gmake/variable.h, src/gmake/make.h:
+        o Attempt at speeding up performance on OS/2.
+    - src/gmake/kmkbuiltin/rm.c:
+        o OS/2 wants -R.
+    - src/gmake/read.c:
+        o Don't call glob() unless there is a wildcard pattern in the name.
+          This speed things up a bit, at least on FreeBSD and especially on OS/2.
+    - Config.kmk:
+        o Added -pg for profile builds on OS/2.
+
+2006-02-22: bird
+    - kBuild/tools/MINGW32.kmk:
+        o Corrected dependencies to match those generated by GCC3.
+
+2006-02-09: bird
+    - kBuild/tools/YASM.kmk:
+        o Initial config.
+
+2006-01-20: bird
+    - kBuild/footer.kmk, kBuild/header.kmk:
+        o Check for PACKING.$(BUILD_TARGET) as well. Added a quick evaluation
+          of PACKING[.*] in the footer.
+
+2006-01-18: bird
+    - kBuild/footer.kmk, kBuild/header.kmk:
+        o Packing pass change - uses PACKING var instead of packing::.
+    - kBuild/footer.kmk:
+        o Added mode,uid and gid to file INSTALLS.
+        o Implemented template inheritance (_EXTENDS).
+
+2006-01-14: bird
+    - kBuild/env.sh:
+        o Corrected the tool list.
+    - kBuild/bin/x86.linux/:
+        o Rebuild with current tree and static linage. (rhel3)
+    - kBuild/tools/VCC70.kmk:
+        o Enabled new dependcies.
+        o Must use PDB macro to get the case correct on the idb file passed to kDepIDB.
+    - src/lib/kDep.c:
+        o Fixed missing slash fixing
+        o Changed kDepPre error prefix to kDep.
+
+2006-01-12: bird
+    - kBuild/tools/VCC70.kmk:
+        o Use DEP_IDB on win32.
+    - kBuild/header.kmk:
+        o Added DEP_IDB and DEP_IDB_EXT.
+    - kBuild/bin/x86.win32/:
+        o Rebuild with current source, adding kDepIDB.
+    - src/kDepIDB/kDepIDB.c:
+        o Initial coding. (This is a VC++ dependency extractor.)
+    - src/kDepPre/kDepPre.c, src/lib/kDep.h, src/lib/kDep.c, Config.kmk:
+        o Created a library for the dep*() functions.
+        o Removed the IDB hacks from kDepPre.
+
+2006-01-11: bird
+    - kBuild/tools/vcc70.kmk:
+        o Prepared for new IDB based dependencies.s
+    - kBuild/footer.kmk:
+        o Parallel build fixing.
+    - src/gmake/job.c:
+        o Fixed bad parallel bug.
+    - src/gmake/main.c:
+        o Enabled multiple jobs for recursive kmk processes on win32 despite the problems.
+    - src/kDepPre/kDepPre.c:
+        o Added extremely rough support for VC++ IDB files (/FD + /Fd).
+
+2005-12-18: bird
+    - kBuild/*.kmk, kBuild/tools/*.kmk:
+        o Finally I've got around to implement command dependencies.
+        o Use $(INSTALL) instead of $(RM) + $(CP).
+        o More install features.
+    - kBuild/bin/x86.[linux|win32|os2]/:
+        o Rebuilt all the utils.
+        o Renamed all unix utilites so they start with a kmk_ prefix and don't
+          override any local unix utils.
+    - src/gmake/kmkbuiltin/*, src/gmake/kmkbuiltin.c,
+      src/gmake/kmkbuiltin.h, src/gmake/variables.c,
+      src/gmake/Makefile.kmk:
+        o Ported all the builtins to windows - now rebuild works again!
+        o Fixed a few error case bugs in the builtins.
+        o Disabled the -R and -r options for rm and cp.
+        o Added kmk_install / kmk_builtin_install from BSD.
+
+2005-12-13: bird
+    - kBuild/bin/x86.linux/kmk,
+      kBuild/bin/x86.linux/kmk_append,
+      kBuild/bin/x86.linux/kmk_cp,
+      kBuild/bin/x86.linux/kmk_echo,
+      kBuild/bin/x86.linux/kmk_mkdir,
+      kBuild/bin/x86.linux/kmk_rm:
+        o Rebuild with current sources.
+    - src/gmake/Makefile:
+        o Prefixed external tools with kmk_.
+
+2005-12-12: bird
+    - kBuild/footer.kmk, kBuild/header.kmk:
+        o Generic pass stuff.
+        o Enabled and weeded out the new target install method.
+        o Added separate install target type.
+        o Added separate installs pass.
+        o Fixed those $$$$(PATH_<target>) problems.
+        o General clean up removing lot's of duplicate stuff.
+    - kBuild/tools/ALP.kmk, kBuild/tools/GCC.kmk, kBuild/tools/GCC3.kmk,
+      kBuild/tools/GCC3OMF.kmk, kBuild/tools/MINGW32.kmk, kBuild/tools/NASM.kmk,
+      kBuild/tools/VCC70.kmk:
+        o Adjusted to new parameters for the link rules.
+        o List all output files as targets for the rules.
+    - kBuild/config.kmk, kBuild/cfg/x86.win32.va2003.kmk:
+        o Removed early attempts which isn't used anylonger.
+    - src/gmake/remake.c, src/gmake/commands.c, src/gmake/commands.h:
+        o Fixed not parallel assertion on targets with no commands.
+
+2005-12-11: bird
+    - src/gmake/kmkbuiltin/append.c, src/gmake/kmkbuiltin.h, src/gmake/kmkbuiltin.c,
+      src/gmake/Makefile.kmk, src/gmake/variables.c:
+        o New command 'append' which appends text to a file, creating the file if necessary.
+        o KMK_BUILTIN is listing the supported commands (used to be "1").
+    - src/gmake/kmkbuiltin/cp_utils.c:
+        o Add O_BINARY to all open calls.
+    - src/gmake/function.c:
+        o Fixed abspath on OS/2.
+    - src/kDepPre/kDepPre.c:
+        o Killed some warnings and made it build on OS/2 and FreeBSD.
+
+2005-11-07: bird
+    - kBuild/tools/VCC70.kmk:
+        o Use the new -s option for dependencies.
+    - src/kDepPre/kDepPre.c, kBuild/bin/x86.linux/kDepPre, kBuild/bin/x86.win32/kDepPre.exe:
+        o Added new option -s for generating stub dependencies just like -Wp,-MP.
+    - kBuild/tools/GCC3.kmk, kBuild/tools/GCC3OMF.kmk:
+        o Added -Wp,-MP to compile jobs for better dependencies.
+
+2005-10-31: bird
+    - kBuild/tools/VCC70.kmk:
+        o Use the -f option with kDepPre to make sure nt/wine/cl doesn't
+          screw up the path casing anywhere.
+    - kBuild/bin/x86.linux/kDepPre, kBuild/bin/x86.win32/kDepPre.exe:
+        o Rebuild with latest code.
+2005-10-30: bird
+    - kBuild/env.sh:
+        o amd64.
+        o kDepCCxx -> kDepPre. Ash.
+    - kBuild/bin/amd64.linux/kDepPre, src/kDepPre/kDepPre.c:
+        o Fix case option - need it on unix for cl.exe with wine.
+
+2005-10-29: bird
+    - kBuild/bin/amd64.linux/kDepPre, src/kDepPre/kDepPre.c:
+        o Strip drive letters on non-PC OSes.
+
+2005-10-28: bird
+    - kBuild/footer.h:
+        o Fixed a couple of defaults so it all works right on amd64.
+    - kBuild/bin/amd64.linux/:
+        o Added binaries. ash is 32-bit!
+
+2005-10-14: bird
+    - src/kDepPre/kDepPre.c, kBuild/bin/x86.win32/kDepPre.exe:
+        o Corrected bug in line skipping where two lines would be skipped.
+        o Corrected slashes on win32.
+
+2005-10-03: bird
+    - src/kDepPre/kDepPre.c, kBuild/bin/x86.win32/kDepPre.exe:
+        o Fixed stupid stupid bug in the win32 case correcting code.
+          Rebuilt the win32 binary.
+
+2005-08-11: bird
+    - kBuild/footer.kmk:
+        o Enh. the _OBJECT_BASE hack for stripping of source paths within the project.
+
+    - kBuild/tools/VCC70.kmk:
+        o Use $(tolower ) to construct the right .pdb names for cleanup.
+
+    - src/gmake/read.c:
+        o print target name 'target pattern' errors.
+
+    - kBuild/header.kmk:
+        o Use $(abspath ).
+
+    - src/gmake/variable.c:
+        o Added KMK_FEATURES which indicates what's present+working and what's not.
+
+    - src/gmake/w32/pathstuff.c, src/kDepPre/kDepPre.c, src/kDepPre/Makefile.kmk:
+        o Fixed casing paths on win32.
+
+    - src/gmake/function.c, src/gmake/Makefile.kmk:
+        o Fixed $(abspath ) on Win32 and OS/2.
+        o Added $(tolower ) and $(toupper ).
+
+2005-06-16: bird
+    - ALL:
+        o Bootstrap and ported to FreeBSD 5.x on AMD64.
+
+2005-05-06: bird
+    - ALL:
+        o Working on the build system of the build system. :-)
+        o Ported the kmkbuiltin stuff to OS/2 as a prep to the win32 effort.
+
+[missing a lot!]
+
+2002-10-15: bird
+    - ALL:
+        o Created a somewhat rought directory structure.
+
+    - src/fastdep:
+        o Imported current sources from ODIN32.
+
+    - src/kmk:
+        o Imported current sources from the freebsd tree.
+
+2002-10-15: ktk
+    - ALL:      Create repository.
+

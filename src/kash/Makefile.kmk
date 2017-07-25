@@ -1,0 +1,227 @@
+# $Id: Makefile.kmk 2652 2012-09-09 17:21:48Z bird $
+## @file
+# Sub-makefile for kash.
+#
+
+#
+# Copyright (c) 2005-2010 knut st. osmundsen <bird-kBuild-spamx@anduin.net>
+#
+# This file is part of kBuild.
+#
+# kBuild is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 3 of the License, or
+# (at your option) any later version.
+#
+# kBuild is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with kBuild.  If not, see <http://www.gnu.org/licenses/>
+#
+#
+
+SUB_DEPTH = ../..
+include $(KBUILD_PATH)/subheader.kmk
+
+#
+# The program.
+#
+PROGRAMS += kash
+kash_TEMPLATE = BIN-THREADED
+kash_NAME = kmk_ash
+kash_ASTOOL = YASM
+kash_DEFS = lint SHELL SMALL
+kash_DEFS += SH_FORKED_MODE
+kash_DEFS.debug = DEBUG=2
+kash_DEFS.haiku = BSD
+kash_DEFS.linux = BSD
+kash_DEFS.solaris = BSD
+## @todo bring over PC_SLASHES?
+kash_DEFS.win = \
+	BSD YY_NO_UNISTD_H \
+	SH_DEAL_WITH_CRLF PC_PATH_SEP PC_DRIVE_LETTERS PC_EXE_EXTS EXEC_HASH_BANG_SCRIPT
+kash_DEFS.os2 = \
+	HAVE_SYS_SIGNAME HAVE_SYSCTL_H HAVE_SETPROGNAME PC_OS2_LIBPATHS \
+	SH_DEAL_WITH_CRLF PC_PATH_SEP PC_DRIVE_LETTERS PC_EXE_EXTS EXEC_HASH_BANG_SCRIPT
+kash_DEFS.darwin = \
+	HAVE_SYS_SIGNAME HAVE_SYSCTL_H HAVE_SETPROGNAME
+kash_DEFS.dragonfly = \
+	HAVE_SYS_SIGNAME HAVE_SYSCTL_H HAVE_SETPROGNAME
+kash_DEFS.freebsd = \
+	HAVE_SYS_SIGNAME HAVE_SYSCTL_H HAVE_SETPROGNAME
+kash_DEFS.openbsd = \
+	HAVE_SYS_SIGNAME HAVE_SYSCTL_H HAVE_SETPROGNAME
+kash_INCS = $(kash_0_OUTDIR) . # (the last is because of error.h)
+kash_ASFLAGS.win = -g cv8
+kash_ASFLAGS.win.x86   = -f win32
+kash_ASFLAGS.win.amd64 = -f win64
+if "$(USER)" == "bird" && "$(KBUILD_TARGET)" != "win"
+kash_CFLAGS += -std=gnu99
+endif
+kash_CFLAGS.win.amd64 = -GS-
+kash_LDFLAGS.win = -DYNAMICBASE:NO
+kash_SOURCES = \
+	main.c \
+	alias.c \
+	cd.c \
+	error.c \
+	eval.c \
+	exec.c \
+	expand.c \
+	histedit.c \
+	input.c \
+	jobs.c \
+	mail.c \
+	memalloc.c \
+	mystring.c \
+	options.c \
+	output.c \
+	parser.c \
+	redir.c \
+	show.c \
+	syntax.c \
+	trap.c \
+	var.c \
+	miscbltin.c \
+	bltin/echo.c \
+	bltin/kill.c \
+	bltin/test.c \
+	\
+	$(kash_0_OUTDIR)/builtins.c \
+	$(kash_0_OUTDIR)/init.c \
+	$(kash_0_OUTDIR)/nodes.c \
+	\
+	setmode.c \
+	shinstance.c \
+	shheap.c \
+	shthread.c \
+	shfile.c
+kash_SOURCES.haiku = \
+	sys_signame.c \
+	strlcpy.c
+kash_SOURCES.linux = \
+	sys_signame.c \
+	strlcpy.c
+kash_SOURCES.solaris = \
+	sys_signame.c \
+        strlcpy.c
+kash_SOURCES.win = \
+	sys_signame.c \
+	strlcpy.c \
+	shfork-win.c \
+	shforkA-win.asm
+
+kash_INTERMEDIATES = \
+	$(kash_0_OUTDIR)/builtins.h \
+	$(kash_0_OUTDIR)/nodes.h \
+	$(kash_0_OUTDIR)/token.h
+kash_CLEAN = \
+	$(kash_INTERMEDIATES) \
+	$(kash_0_OUTDIR)/builtins.c \
+	$(kash_0_OUTDIR)/init.c \
+	$(kash_0_OUTDIR)/nodes.c
+
+kash_main.c_DEFS = KBUILD_SVN_REV=$(KBUILD_SVN_REV)
+
+##
+## The manual page.
+##
+#INSTALLS += kash.man
+#kash.man_TEMPLATE = usr.bin.man
+#kash.man_SOURCES = sh.1=>kash.1
+
+
+if1of ($(KBUILD_TARGET), win os2)
+
+#
+# Use the pregenerated code.
+#
+kash_SOURCES += \
+	$(kash_0_OUTDIR)/arith.c \
+	$(kash_0_OUTDIR)/arith_lex.c
+kash_INTERMEDIATES += \
+	$(kash_0_OUTDIR)/arith.h
+
+define def_copy_generated
+$$$$(kash_0_OUTDIR)/$(src): $(PATH_SUB_CURRENT)/generated/$(src)
+	$$(RM) -f $$@
+	$$(CP) -f $$^ $$@
+endef
+
+$(foreach src, arith.h arith.c arith_lex.c builtins.h builtins.c nodes.h nodes.c token.h init.c,\
+$(eval $(def_copy_generated)))
+
+else
+
+#
+# Generate the code on the fly.
+#
+
+USES += lex yacc
+kash_USES = lex yacc
+kash_LEXTOOL = FLEX
+kash_LEXFLAGS = -8
+#kash_YACCTOOL = BISON
+kash_YACCTOOL = YACC
+kash_YACCFLAGS = -ld
+kash_SOURCES += \
+	arith.y \
+	arith_lex.l
+
+#
+# ATTENTION! ATTENTION! ATTENTION!
+#
+# Older ash versions has trouble with some of these scripts, great.
+# Kudos to the NetBSD guys for this clever move. ;)
+#
+# So, when building for the frist time, setting BOOSTRAP_SHELL=/bin/bash is good idea.
+#
+BOOTSTRAP_SHELL ?= $(SHELL)
+
+$$(kash_0_OUTDIR)/builtins.h + $$(kash_0_OUTDIR)/builtins.c: \
+		$$(kash_DEFPATH)/mkbuiltins \
+		$$(kash_DEFPATH)/shell.h \
+		$$(kash_DEFPATH)/builtins.def \
+		| $$(dir $$@)
+	$(BOOTSTRAP_SHELL) $+ $(dir $@)
+	[ -f $(kash_0_OUTDIR)/builtins.h ]
+
+$$(kash_0_OUTDIR)/nodes.h + $$(kash_0_OUTDIR)/nodes.c: \
+	$$(kash_DEFPATH)/mknodes.sh \
+	$$(kash_DEFPATH)/nodetypes \
+	$$(kash_DEFPATH)/nodes.c.pat \
+	| $$(dir $$@)
+	$(BOOTSTRAP_SHELL) $+ $(dir $@)
+	[ -f $(dir $@)/nodes.h ]
+
+$$(kash_0_OUTDIR)/token.h: $$(kash_DEFPATH)/mktokens | $$(dir $$@)
+	$(BOOTSTRAP_SHELL) $+
+	$(MV) token.h $@
+
+$$(kash_0_OUTDIR)/init.c: \
+		$$(kash_DEFPATH)/mkinit.sh \
+		$$(abspathex $$(filter-out $$(kash_0_OUTDIR)/%,$$(kash_SOURCES)), $$(kash_DEFPATH)) \
+		| $$(dir $$@)
+	$(BOOTSTRAP_SHELL) $+
+	$(MV) init.c $@
+
+endif
+
+#
+# For debugging file handle inheritance on Windows.
+#
+if "$(KBUILD_TARGET)" == win && 0
+PROGRAMS += tstDump
+tstDump_TEMPLATE = BIN
+tstDump_SOURCES = tstDump.c
+endif
+
+# Include the sub-makefile.
+include $(PATH_SUB_CURRENT)/tests/Makefile.kmk
+
+include $(FILE_KBUILD_SUB_FOOTER)
+
+

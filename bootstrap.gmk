@@ -1,0 +1,373 @@
+# $Id: bootstrap.gmk 2421 2010-10-17 21:27:53Z bird $
+## @file
+# GNU Make Compatible bootstrap Makefile.
+#
+
+#
+# Copyright (c) 2007-2010 knut st. osmundsen <bird-kBuild-spamx@anduin.net>
+#
+# This file is part of kBuild.
+#
+# kBuild is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 3 of the License, or
+# (at your option) any later version.
+#
+# kBuild is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with kBuild.  If not, see <http://www.gnu.org/licenses/>
+#
+#
+
+#
+# ASSUMES:
+#   - KBUILD_TARGET, KBUILD_HOST, KBUILD_HOST_ARCH, and KBUILD_TYPE in the env.
+#   - KBUILD_PATH points to ./kBuild with an absolute path.
+#   - KBUILD_BIN_PATH and PATH_KBUILD_BIN must *NOT* be defined anywhere.
+#   - Current directory == bootstrap.gmk directory.
+#   - mkdir -p works.
+#   - ln -s works
+#   - cp -f works
+#   - cd somedir && command works.
+#   - echo done > some-file works.
+#   - Recent GNU make that implements CURDIR, $(error) and ifdef.
+#
+# Tip: kBuild/env.sh --full (g(nu))make -f bootstrap.kmk
+#
+# Note to self on bootstrapping solaris.sparc64:
+#   SED_MAKE_DEFS="SED=gsed" AUTOPOINT=true ACLOCAL=aclocal-1.10 AUTOMAKE=automake-1.10 nice ./kBuild/env.sh --full gmake -f bootstrap.gmk
+#
+# Note to self on bootstrapping openbsd:
+#   AUTOCONF_VERSION=2.59 AUTOMAKE_VERSION=1.9 ./kBuild/env.sh --full gmake -f bootstrap.gmk
+#
+
+#
+# OPTIONAL:
+#   Set env.var. NIX_INSTALL_DIR to /usr/local or /usr
+#   (see Config.kmk and wiki for details)
+#
+
+#
+# Deal with legacy env.vars. - no niceties here.
+#
+ifndef KBUILD_HOST
+ KBUILD_HOST := $(BUILD_PLATFORM)
+endif
+ifndef KBUILD_HOST_ARCH
+ KBUILD_HOST_ARCH := $(BUILD_PLATFORM_ARCH)
+endif
+ifndef KBUILD_HOST_CPU
+ KBUILD_HOST_CPU := $(BUILD_PLATFORM_CPU)
+endif
+
+ifndef KBUILD_TARGET
+ KBUILD_TARGET := $(BUILD_TARGET)
+endif
+ifndef KBUILD_TARGET_ARCH
+ KBUILD_TARGET_ARCH := $(BUILD_TARGET_ARCH)
+endif
+ifndef KBUILD_TARGET_CPU
+ KBUILD_TARGET_CPU := $(BUILD_TARGET_CPU)
+endif
+
+ifndef KBUILD_TYPE
+ KBUILD_TYPE := $(BUILD_TYPE)
+endif
+
+ifndef KBUILD_PATH
+ KBUILD_PATH := $(PATH_KBUILD)
+endif
+
+#
+# Check (some of) the assumptions.
+#
+ifndef KBUILD_TARGET
+ $(error KBUILD_TARGET not set)
+endif
+
+ifndef KBUILD_HOST
+ $(error KBUILD_HOST not set)
+endif
+
+ifndef KBUILD_HOST_ARCH
+ $(error KBUILD_HOST_ARCH not set)
+endif
+
+ifndef KBUILD_TYPE
+ $(error KBUILD_TYPE not set)
+endif
+
+ifndef KBUILD_TYPE
+ $(error KBUILD_TYPE not set)
+endif
+
+ifndef KBUILD_PATH
+ $(error KBUILD_PATH not set)
+endif
+
+ifdef KBUILD_BIN_PATH
+ $(error KBUILD_BIN_PATH is set)
+endif
+ifdef PATH_KBUILD_BIN
+ $(error PATH_KBUILD_BIN is set)
+endif
+
+
+#
+# Globals
+#
+SRCDIR = $(CURDIR)
+OUTDIR = $(SRCDIR)/out/$(KBUILD_HOST).$(KBUILD_HOST_ARCH)/$(KBUILD_TYPE)/bootstrap
+SVN = svn
+
+# Override this on the make commandline if you need to (FreeBSD).
+AUTORECONF = autoreconf
+
+all: stage1 stage2
+
+
+#
+# Stage 1 - Build bootstrap kmk, kmk_redirect and sed, refresh config.h caches, link
+#           up kmk_ash so $(OUTDIR)/kmk can serve as kBuild bin dir.
+#
+stage1: \
+    $(OUTDIR)/kmk/kmk \
+    $(OUTDIR)/kmk/kmk_ash \
+    $(OUTDIR)/kmk/kmk_sed \
+    $(OUTDIR)/kmk/kmk_echo \
+    $(SRCDIR)/src/kmk/config.h.$(KBUILD_TARGET) \
+    $(SRCDIR)/src/sed/config.h.$(KBUILD_TARGET)
+
+# kmk
+$(OUTDIR)/kmk/ts-autoreconf:
+	mkdir -p $(@D)
+	cd $(SRCDIR)/src/kmk && $(AUTORECONF) -i -v
+	echo done > $@
+
+$(OUTDIR)/kmk/ts-configured: \
+		$(OUTDIR)/kmk/ts-autoreconf \
+		$(OUTDIR)/kmk/fts.h
+	cd $(OUTDIR)/kmk && $(SRCDIR)/src/kmk/configure
+	echo done > $@
+
+ifeq ($(KBUILD_HOST),solaris)
+$(OUTDIR)/kmk/ts-configured: $(OUTDIR)/kmk/paths.h
+
+$(OUTDIR)/kmk/paths.h:
+	echo > $@
+endif
+
+$(OUTDIR)/kmk/fts.h:
+	ln -s $(SRCDIR)/src/kmk/kmkbuiltin/ftsfake.h $@
+
+$(OUTDIR)/kmk/config.h:	$(OUTDIR)/kmk/ts-configured
+
+
+$(SRCDIR)/src/kmk/config.h.$(KBUILD_TARGET): $(OUTDIR)/kmk/config.h
+	cp -f $(OUTDIR)/kmk/config.h $(SRCDIR)/src/kmk/config.h.$(KBUILD_TARGET)
+	echo "" >> $@
+	echo '#include "inlined_memchr.h"' >> $@
+
+$(OUTDIR)/kmk/kmk: $(OUTDIR)/kmk/ts-configured
+	$(MAKE) -C $(@D)
+
+# sed
+$(OUTDIR)/sed/ts-autoreconf:
+	mkdir -p $(@D)
+	@cd $(SRCDIR)/src/sed && $(AUTORECONF) -i -v --force
+	echo done > $@
+
+$(OUTDIR)/sed/ts-configured: $(OUTDIR)/sed/ts-autoreconf
+	cd $(OUTDIR)/sed && $(SRCDIR)/src/sed/configure --without-libintl --disable-nls
+	echo done > $@
+
+$(OUTDIR)/sed/config.h: $(OUTDIR)/sed/ts-configured
+
+$(SRCDIR)/src/sed/config.h.$(KBUILD_TARGET): $(OUTDIR)/sed/config.h
+	cp -f $< $@
+
+$(OUTDIR)/sed/sed/sed: $(OUTDIR)/sed/ts-configured
+	$(MAKE) $(SED_MAKE_DEFS) -C $(@D)/..
+
+$(OUTDIR)/kmk/kmk_sed: $(OUTDIR)/sed/sed/sed
+	cp -f $< $@
+
+$(OUTDIR)/kmk/kmk_ash:
+ifeq ($(KBUILD_TARGET),solaris)
+	ln -s /usr/bin/bash $@
+else
+	ln -s /bin/sh $@
+endif
+
+$(OUTDIR)/kmk/kmk_echo:
+	ln -s /bin/echo $@
+
+#
+# Stage 2 - Build kBuild using the bootstrap tools from the previous step
+#           and install it to kBuild/bin/x.y.
+#
+stage2: \
+    $(OUTDIR)/ts-stage2-build \
+    $(OUTDIR)/ts-stage2-install
+
+$(OUTDIR)/ts-stage2-build: \
+		$(SRCDIR)/src/kmk/config.h.$(KBUILD_TARGET) \
+                $(SRCDIR)/src/sed/config.h.$(KBUILD_TARGET) \
+		$(OUTDIR)/kmk/kmk
+	KBUILD_BIN_PATH=$(OUTDIR)/kmk $(OUTDIR)/kmk/kmk -C $(SRCDIR) KBUILD_BOOTSTRAP=1
+	echo done > $@
+
+$(OUTDIR)/ts-stage2-install: $(OUTDIR)/ts-stage2-build
+	KBUILD_BIN_PATH=$(OUTDIR)/kmk $(OUTDIR)/kmk/kmk -C $(SRCDIR) KBUILD_BOOTSTRAP=1 PATH_INS=$(SRCDIR) install
+	echo done > $@
+
+
+#
+# Clean the output files... Very enjoyable exercise.
+#
+clean:
+	rm -Rf $(SRCDIR)/out/ \
+		$(SRCDIR)/src/kmk/autom4te.cache/ \
+		$(SRCDIR)/src/sed/autom4te.cache/
+	rm -f $(SRCDIR)/src/kmk/Makefile.in \
+		$(SRCDIR)/src/kmk/config.h.in \
+		$(SRCDIR)/src/kmk/configure \
+		$(SRCDIR)/src/kmk/aclocal.m4 \
+		$(SRCDIR)/src/kmk/glob/Makefile.in \
+		$(SRCDIR)/src/kmk/config/Makefile.in \
+		$(SRCDIR)/src/kmk/config/depcomp \
+		$(SRCDIR)/src/kmk/config/compile \
+		$(SRCDIR)/src/kmk/config/missing \
+		$(SRCDIR)/src/kmk/config/config.guess \
+		$(SRCDIR)/src/kmk/config/config.sub \
+		$(SRCDIR)/src/kmk/config/install-sh \
+		$(SRCDIR)/src/kmk/w32/Makefile.in \
+		$(SRCDIR)/src/sed/config_h.in~ \
+		$(SRCDIR)/src/sed/intl/printf-args.h \
+		$(SRCDIR)/src/sed/intl/printf.c \
+		$(SRCDIR)/src/sed/intl/localcharset.h \
+		$(SRCDIR)/src/sed/intl/libgnuintl.h.in \
+		$(SRCDIR)/src/sed/intl/vasnwprintf.h \
+		$(SRCDIR)/src/sed/intl/vasnprintf.c \
+		$(SRCDIR)/src/sed/intl/vasnprintf.h \
+		$(SRCDIR)/src/sed/intl/wprintf-parse.h \
+		$(SRCDIR)/src/sed/intl/relocatable.c \
+		$(SRCDIR)/src/sed/intl/relocatable.h \
+		$(SRCDIR)/src/sed/intl/xsize.h \
+		$(SRCDIR)/src/sed/intl/printf-parse.c \
+		$(SRCDIR)/src/sed/intl/printf-parse.h \
+		$(SRCDIR)/src/sed/intl/log.c \
+		$(SRCDIR)/src/sed/intl/printf-args.c \
+		$(SRCDIR)/src/sed/po/remove-potcdate.sin \
+		$(SRCDIR)/src/sed/po/Makevars.template \
+		$(SRCDIR)/src/sed/config/printf-posix.m4 \
+		$(SRCDIR)/src/sed/config/uintmax_t.m4 \
+		$(SRCDIR)/src/sed/config/signed.m4 \
+		$(SRCDIR)/src/sed/config/longlong.m4 \
+		$(SRCDIR)/src/sed/config/inttypes.m4 \
+		$(SRCDIR)/src/sed/config/inttypes_h.m4 \
+		$(SRCDIR)/src/sed/config/longdouble.m4 \
+		$(SRCDIR)/src/sed/config/nls.m4 \
+		$(SRCDIR)/src/sed/config/intmax.m4 \
+		$(SRCDIR)/src/sed/config/mkinstalldirs \
+		$(SRCDIR)/src/sed/config/xsize.m4 \
+		$(SRCDIR)/src/sed/config/ulonglong.m4 \
+		$(SRCDIR)/src/sed/config/wint_t.m4 \
+		$(SRCDIR)/src/sed/config/inttypes-pri.m4 \
+		$(SRCDIR)/src/sed/config/stdint_h.m4 \
+		$(SRCDIR)/src/sed/config/intdiv0.m4 \
+		$(SRCDIR)/src/sed/config/isc-posix.m4 \
+		$(SRCDIR)/src/sed/config/po.m4 \
+		$(SRCDIR)/src/sed/config/size_max.m4 \
+		$(SRCDIR)/src/sed/config/wchar_t.m4 \
+		$(SRCDIR)/src/sed/*~ \
+		$(SRCDIR)/src/sed/config/*~ \
+		$(SRCDIR)/src/sed/intl/*~ \
+		$(SRCDIR)/src/sed/po/*~ \
+
+distclean: clean
+	$(SVN) revert \
+		src/sed/configure \
+		src/sed/Makefile.in \
+		src/sed/doc/Makefile.in \
+		src/sed/doc/stamp-vti \
+		src/sed/doc/sed.info \
+		src/sed/doc/sed.info-1 \
+		src/sed/doc/sed.info-2 \
+		src/sed/doc/version.texi \
+		src/sed/INSTALL	\
+		src/sed/lib/Makefile.in	\
+		src/sed/sed/Makefile.in	\
+		src/sed/config_h.in \
+		src/sed/testsuite/Makefile.in \
+		src/sed/config/depcomp \
+		src/sed/config/config.guess \
+		src/sed/config/config.sub \
+		src/sed/config/mdate-sh	\
+		src/sed/config/missing \
+		src/sed/config/texinfo.tex \
+		src/sed/config/install-sh \
+		src/sed/aclocal.m4 \
+		src/sed/ABOUT-NLS \
+		src/sed/doc/sed.1 \
+		src/sed/intl/plural-exp.h  \
+		src/sed/intl/Makefile.in \
+		src/sed/intl/explodename.c \
+		src/sed/intl/localcharset.c \
+		src/sed/intl/VERSION \
+		src/sed/intl/dcigettext.c \
+		src/sed/intl/dngettext.c \
+		src/sed/intl/localealias.c \
+		src/sed/intl/textdomain.c \
+		src/sed/intl/bindtextdom.c \
+		src/sed/intl/ref-del.sin \
+		src/sed/intl/intl-compat.c \
+		src/sed/intl/dgettext.c \
+		src/sed/intl/dcgettext.c \
+		src/sed/intl/plural.c \
+		src/sed/intl/loadinfo.h \
+		src/sed/intl/localename.c \
+		src/sed/intl/ngettext.c \
+		src/sed/intl/ChangeLog \
+		src/sed/intl/locale.alias \
+		src/sed/intl/os2compat.c \
+		src/sed/intl/finddomain.c \
+		src/sed/intl/ref-add.sin \
+		src/sed/intl/gettextP.h \
+		src/sed/intl/dcngettext.c \
+		src/sed/intl/osdep.c \
+		src/sed/intl/config.charset \
+		src/sed/intl/l10nflist.c \
+		src/sed/intl/os2compat.h \
+		src/sed/intl/loadmsgcat.c \
+		src/sed/intl/gettext.c \
+		src/sed/intl/plural.y \
+		src/sed/intl/gmo.h \
+		src/sed/intl/plural-exp.c \
+		src/sed/intl/eval-plural.h \
+		src/sed/intl/hash-string.h \
+		src/sed/config.h.darwin \
+		src/sed/po/Makefile.in.in \
+		src/sed/po/Rules-quot \
+		src/sed/config/lib-prefix.m4 \
+		src/sed/config/lib-link.m4 \
+		src/sed/config/lib-ld.m4 \
+		src/sed/config/lcmessage.m4 \
+		src/sed/config/config.rpath \
+		src/sed/config/progtest.m4 \
+		src/sed/config/iconv.m4 \
+		src/sed/config/gettext.m4
+	$(SVN) revert \
+		src/kmk/config.h.solaris \
+		src/sed/config.h.solaris
+	$(SVN) status --no-ignore
+
+
+
+# can't hurt...
+.NOTPARALLEL:
+
