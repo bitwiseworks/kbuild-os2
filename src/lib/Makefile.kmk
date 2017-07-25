@@ -1,0 +1,73 @@
+# $Id: Makefile.kmk 2713 2013-11-21 21:11:00Z bird $
+## @file
+# Sub-makefile for various libraries and stuff.
+#
+
+#
+# Copyright (c) 2006-2013 knut st. osmundsen <bird-kBuild-spamx@anduin.net>
+#
+# This file is part of kBuild.
+#
+# kBuild is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 3 of the License, or
+# (at your option) any later version.
+#
+# kBuild is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with kBuild.  If not, see <http://www.gnu.org/licenses/>
+#
+#
+
+SUB_DEPTH = ../..
+include $(KBUILD_PATH)/subheader.kmk
+
+LIBRARIES += kDep
+kDep_TEMPLATE = LIB
+kDep_DEFS.win += NEED_ISBLANK=1 __WIN32__=1
+kDep_SOURCES = kDep.c
+kDep_SOURCES.win = nt_fullpath.c
+kDep_NOINST = 1
+
+LIBRARIES += kUtil
+kUtil_TEMPLATE = LIB
+kUtil_DEFS.win = __WIN__
+kUtil_SOURCES = \
+	crc32.c \
+	md5.c
+kUtil_SOURCES.win = \
+	nt_fullpath.c \
+	quoted_spawn.c \
+       nt/nthlpcore.c \
+       nt/nthlpfs.c \
+       nt/ntdir.c \
+       nt/ntstat.c \
+       nt/ntunlink.c
+kUtil_SOURCES.solaris = \
+	restartable-syscall-wrappers.c
+#kUtil_SOURCES.linux = \
+#	restartable-syscall-wrappers.c
+kUtil_NOINST = 1
+
+LIBRARIES.win += kWinStartup
+kWinStartup_TEMPLATE = LIB
+kWinStartup_SOURCES = startuphacks-win.c
+kWinStartup_NOINST = 1
+
+PROGRAMS += wrapper
+wrapper_TEMPLATE = BIN
+wrapper_SOURCES = wrapper.c
+wrapper_NOINST = 1
+
+PROGRAMS.win += tstNtStat
+tstNtStat_TEMPLATE = BIN
+tstNtStat_SOURCES = nt/tstNtStat.c
+tstNtStat_LIBS = $(LIB_KUTIL)
+tstNtStat_NOINST = 1
+
+include $(FILE_KBUILD_SUB_FOOTER)
+

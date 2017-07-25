@@ -1,0 +1,81 @@
+# $Id: Config.kmk 2413 2010-09-11 17:43:04Z bird $
+## @file
+# Tests - Build Type Inheritance.
+#
+# Just to set up some additional build types the correct way.
+#
+
+#
+# Copyright (c) 2008-2010 knut st. osmundsen <bird-kBuild-spamx@anduin.net>
+#
+# This file is part of kBuild.
+#
+# kBuild is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# kBuild is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with kBuild; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
+#
+#
+
+
+#
+# Include our parent Config.kmk
+#
+include $(PATH_ROOT)/tests/Config.kmk
+
+
+#
+# For inherit-bld3 - no inheritance.
+#
+KBUILD_BLD_TYPES += dbgbld3
+
+
+#
+# For inherit-bld4 - default inheritance (override).
+#
+KBUILD_BLD_TYPES += dbgbld4
+BLD_TYPE_dbgbld4_EXTENDS = dbgbld3
+
+#
+# For inherit-bld5 - appending inheritance.
+#
+KBUILD_BLD_TYPES += dbgbld5
+BLD_TYPE_dbgbld5_EXTENDS = dbgbld3
+BLD_TYPE_dbgbld5_EXTENDS_BY = appending
+
+#
+# For inherit-bld6 - prepending inheritance.
+#
+KBUILD_BLD_TYPES += dbgbld6
+BLD_TYPE_dbgbld6_EXTENDS = dbgbld3
+BLD_TYPE_dbgbld6_EXTENDS_BY = prepending
+
+#
+# For inherit-bld7 - overriding inheritance.
+#
+KBUILD_BLD_TYPES += dbgbld7
+BLD_TYPE_dbgbld7_EXTENDS = dbgbld3
+BLD_TYPE_dbgbld7_EXTENDS_BY = overriding
+
+#
+# For inherit-bld10 thru 19 - overriding inheritance.
+#
+KBUILD_BLD_TYPES += dbgbld10 dbgbld11
+BLD_TYPE_dbgbld11_EXTENDS = dbgbld10
+
+#
+# For inherit-bld20 thru 29 - prepending inheritance.
+#
+KBUILD_BLD_TYPES += dbgbld20 dbgbld21
+BLD_TYPE_dbgbld21_EXTENDS = dbgbld20
+BLD_TYPE_dbgbld21_EXTENDS_BY = prepending
+

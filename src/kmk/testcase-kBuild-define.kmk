@@ -1,0 +1,141 @@
+# $Id: testcase-kBuild-define.kmk 2720 2014-01-01 22:59:50Z bird $
+## @file
+# kBuild - testcase for the kBuild-define-* directives.
+#
+
+#
+# Copyright (c) 2011-2013 knut st. osmundsen <bird-kBuild-spamx@anduin.net>
+#
+# This file is part of kBuild.
+#
+# kBuild is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 3 of the License, or
+# (at your option) any later version.
+#
+# kBuild is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with kBuild.  If not, see <http://www.gnu.org/licenses/>
+#
+#
+
+#DEPTH = ../..
+#include $(PATH_KBUILD)/header.kmk
+
+##
+# Test if $($1) == $2 and raises an error if it isn't.
+#
+# @param   1   Something to apply '$' to.
+# @param   2   The expected value.
+TEST_EQ = $(if-expr "$($1)" == "$2",,$(error $1 is '$($1)' not '$2'))
+
+if 0
+# object definition syntax:
+#      kobject <type> <name> [extends <object> [by <||>]] [object specific args...]
+#      kendobj [<type> [name]]
+kobject kb-target MyTarget
+.TOOL = GCC
+.SOURCES = file.c
+kendobj
+else
+# Target definition.
+#      kBuild-define-target <name> [extends <target> [by <||>]] [using <template>]
+#      kBuild-endef-target [name]
+kBuild-define-target MyTarget
+_TOOL = GCC
+_SOURCES = file.c
+kBuild-endef-target
+endif
+
+if 0
+# accesses an already defined object.
+# syntax:
+#      kaccess <type> <name>
+#      kendacc [<type> [name]]
+kaccess kb-target MyTarget
+.SOURCES += file2.c
+kendacc
+else
+#kBuild-access-target MyTarget
+#_SOURCES += file2.c
+#kBuild-endacc-target
+endif
+
+
+# Referencing an object variable, the object must exist.
+# syntax: [<type>@<name>].<property>
+[target@MyTarget]_SOURCES += file3.c
+$(info [target@MyTarget]_SOURCES is $([target@MyTarget]_SOURCES))
+
+
+# Test #1
+kBuild-define-target BaseTarget using DUMMY
+_SOURCES = BaseTargetSource.c
+kBuild-endef-target BaseTarget
+$(if-expr "$([target@BaseTarget]_SOURCES)" == "BaseTargetSource.c",,$(error [target@BaseTarget]_SOURCES is '$([target@BaseTarget]_SOURCES)' not 'BaseTargetSource.c'))
+$(if-expr "$(BaseTarget_SOURCES)" == "BaseTargetSource.c",,$(error BaseTarget's _SOURCES wasn't set correctly in the global space))
+
+$(if-expr "$([target@BaseTarget]_TEMPLATE)" == "DUMMY",,$(error [target@BaseTarget]_TEMPLATE is '$([target@BaseTarget]_TEMPLATE)' not 'DUMMY'))
+$(if-expr "$(BaseTarget_TEMPLATE)" == "DUMMY",,$(error BaseTarget's _TEMPLATE wasn't set correctly in the global space))
+
+# Test #2
+kBuild-define-target TargetWithLocals
+local _LOCAL_PROP = no global alias
+kBuild-endef-target
+$(if-expr "$([target@TargetWithLocals]_LOCAL_PROP)" == "no global alias",,$(error [target@TargetWithLocals]_LOCAL_PROP is '$([target@TargetWithLocals]_LOCAL_PROP)' not 'no global alias'))
+$(if-expr "$(TargetWithLocals_LOCAL_PROP)" == "",,$(error TargetWithLocals_LOCAL_PROP's local property 'LOCAL_PROP' was exposed globally.))
+
+# Test #3
+kBuild-define-target OutsideMod
+_SOURCES = file3.c
+_OTHER   = inside-value
+kBuild-endef-target
+[target@OutsideMod]_SOURCES += file4.c
+[target@OutsideMod]_SOURCES <= file2.c
+[target@OutsideMod]_OTHER   = outside-value
+$(if-expr "$([target@OutsideMod]_SOURCES)" == "file2.c file3.c file4.c",,$(error [target@OutsideMod]_SOURCES is '$([target@OutsideMod]_SOURCES)' not 'file2.c file3.c file4.c'))
+$(if-expr "$(OutsideMod_SOURCES)"          == "file2.c file3.c file4.c",,$(error OutsideMod_SOURCES is '$(OutsideMod_SOURCES)' not 'file2.c file3.c file4.c'))
+
+$(if-expr "$([target@OutsideMod]_OTHER)" == "outside-value",,$(error [target@OutsideMod]_OTHER is '$([target@OutsideMod]_OTHER)' not 'outside-value'))
+$(if-expr "$(OutsideMod_OTHER)"          == "outside-value",,$(error OutsideMod_OTHER is '$(OutsideMod_OTHER)' not 'outside-value'))
+
+# Test #4
+kBuild-define-target SpecialBase
+_SOURCES = file1.c file2.c
+_DEFS.win.x86 = XXX YYY
+_DEFS.win.amd64 = $(filter-out YYY,$([@self]_DEFS.win.x86))
+# Unnecessary use of [@self].
+[@self]_LIBS = MyLib
+kBuild-endef-target
+
+kBuild-define-target SpecialChild extending SpecialBase
+_SOURCES = file1-child.c $(filter-out file1.c,$([@super]_SOURCES))
+# Rare use of [@super].
+[@super]_SET_BY_CHILD = 42
+kBuild-endef-target
+
+$(call TEST_EQ,[target@SpecialBase]_LIBS,MyLib)
+$(call TEST_EQ,SpecialBase_LIBS,MyLib)
+
+$(call TEST_EQ,[target@SpecialBase]_SET_BY_CHILD,42)
+$(call TEST_EQ,SpecialBase_SET_BY_CHILD,42)
+$(call TEST_EQ,[target@SpecialChild]_SET_BY_CHILD,42)
+#$(call TEST_EQ,SpecialChild_SET_BY_CHILD,42) ## @todo
+
+$(call TEST_EQ,[target@SpecialBase]_DEFS.win.x86,XXX YYY)
+$(call TEST_EQ,[target@SpecialBase]_DEFS.win.amd64,XXX)
+$(call TEST_EQ,SpecialBase_DEFS.win.amd64,XXX)
+$(call TEST_EQ,[target@SpecialChild]_DEFS.win.x86,XXX YYY)
+$(call TEST_EQ,[target@SpecialChild]_DEFS.win.amd64,XXX)
+#$(call TEST_EQ,SpecialChild_DEFS.win.amd64,XXX) ## @todo
+
+$(call TEST_EQ,[target@SpecialChild]_SOURCES,file1-child.c file2.c)
+$(call TEST_EQ,SpecialChild_SOURCES,file1-child.c file2.c)
+
+all_recursive:
+	@kmk_echo "kBuild-define-xxxx works fine"
+

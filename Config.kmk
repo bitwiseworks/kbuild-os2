@@ -1,0 +1,380 @@
+# $Id: Config.kmk 2800 2015-09-20 19:12:56Z bird $
+## @file
+# Build Configuration.
+#
+
+#
+# Copyright (c) 2005-2012 knut st. osmundsen <bird-kBuild-spamx@anduin.net>
+#
+# This file is part of kBuild.
+#
+# kBuild is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 3 of the License, or
+# (at your option) any later version.
+#
+# kBuild is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with kBuild.  If not, see <http://www.gnu.org/licenses/>
+#
+#
+
+# Enable automatic installation of what's built.
+KBUILD_DO_AUTO_INSTALL := 1
+
+
+#
+# The kBuild version.
+#
+KBUILD_VERSION_MAJOR = 0
+KBUILD_VERSION_MINOR = 1
+KBUILD_VERSION_PATCH = 9998
+KBUILD_VERSION = 0.1.9998
+DEFS += \
+	KBUILD_VERSION_MAJOR=$(KBUILD_VERSION_MAJOR) \
+	KBUILD_VERSION_MINOR=$(KBUILD_VERSION_MINOR) \
+	KBUILD_VERSION_PATCH=$(KBUILD_VERSION_PATCH)
+
+#
+# Get the svn version.
+# This is shipped with the tarballs in a SvnInfo.kmk in the root.
+#
+ifneq ($(wildcard $(PATH_ROOT)/SvnInfo.kmk),)
+# Shipped
+KBUILD_SVN_INFO_KMK := $(PATH_ROOT)/SvnInfo.kmk
+KBUILD_SVN_INFO_DEP := $(KBUILD_SVN_INFO_KMK)
+
+else ifneq ($(wildcard $(PATH_ROOT)/.svn/entries $(PATH_ROOT)/../.svn/entries),)
+# Generate from svn info
+KBUILD_SVN_INFO_KMK := $(PATH_OBJ)/SvnInfo.kmk
+KBUILD_SVN_INFO_DEP := $(KBUILD_SVN_INFO_KMK)
+
+$(PATH_OBJ)/SvnInfo.ts +| $(KBUILD_SVN_INFO_KMK): $(wildcard $(PATH_ROOT)/.svn $(PATH_ROOT)/.svn/entries $(PATH_ROOT)/.svn/all-wcprops $(PATH_ROOT)/.svn/format $(PATH_ROOT)/.svn/props $(PATH_ROOT)/.svn/prop-base )
+	$(call MSG_GENERATE,,$(KBUILD_SVN_INFO_KMK))
+	@$(RM) -f $@ $@.tmp
+	@$(MKDIR) -p $(@D)
+	@$(REDIRECT) -o $@.tmp -E 'LC_ALL=C' -- svn info $(DEPTH)
+	@$(SED) \
+		-e 's/^URL: */KBUILD_SVN_URL := /' \
+		-e 's/Revision: */KBUILD_SVN_REV := /' \
+		-e '/KBUILD_SVN_/!d' \
+		--append $@ \
+		$@.tmp
+	@$(RM) -f $@.tmp
+	@$(CP) --changed -fv $@ $(KBUILD_SVN_INFO_KMK)
+
+ ifeq ($(DEPTH),.)
+OTHER_CLEAN += $(KBUILD_SVN_INFO_KMK) $(PATH_OBJ)/SvnInfo.ts
+ endif
+
+else
+# Some incomplete source export...
+KBUILD_SVN_INFO_KMK := $(PATH_OBJ)/SvnInfo.kmk
+KBUILD_SVN_INFO_DEP := $(KBUILD_SVN_INFO_KMK)
+$(warning Neither SvnInfo nor .svn/* was found in the root. Will have to cook up something too keep the build happy.)
+$(KBUILD_SVN_INFO_KMK):
+	$(RM) -f $@
+	$(MKDIR) -p $(@D)
+	$(APPEND) $@ 'KBUILD_SVN_REV := 0'
+	$(APPEND) $@ 'KBUILD_SVN_URL := /dev/null'
+
+ ifeq ($(DEPTH),.)
+OTHER_CLEAN += $(KBUILD_SVN_INFO_KMK)
+ endif
+
+endif
+include $(KBUILD_SVN_INFO_KMK)
+
+
+#
+# Local config, optional.
+#
+ifneq ($(wildcard $(PATH_ROOT)/LocalConfig.kmk),)
+ include $(PATH_ROOT)/LocalConfig.kmk
+endif
+
+
+#
+# Where to fine the GNU Make stuff (for FreeBSD and Windows).
+#
+PATH_GNUMAKE_SRC ?= $(PATH_ROOT)/src/kmk
+
+
+#
+# Various platform specific hacks.
+#
+ifn1of ($(KBUILD_TARGET), haiku openbsd)
+ GCC_Wextra = -Wextra
+endif
+if1of ($(KBUILD_TARGET), openbsd)
+ TOOL_FLEX_LEX = gflex
+endif
+
+#
+# The OS and Architecture indicators.
+#
+DEFS.darwin  += KBUILD_OS_DARWIN
+DEFS.freebsd += KBUILD_OS_FREEBSD
+DEFS.linux   += KBUILD_OS_LINUX
+DEFS.netbsd  += KBUILD_OS_NETBSD
+DEFS.openbsd += KBUILD_OS_OPENBSD
+DEFS.os2     += KBUILD_OS_OS2
+DEFS.solaris += KBUILD_OS_SOLARIS
+DEFS.win     += KBUILD_OS_WINDOWS
+
+DEFS.x86     += KBUILD_ARCH_X86
+DEFS.amd64   += KBUILD_ARCH_AMD64
+
+
+#
+# Check if we're building a *nix installation.
+#
+# There are a few optional overrides here for customizing the install location
+# and how it is installed:
+#	MY_INST_BIN        - the bin/ directory (the trailing slash is mandatory).
+#	MY_INST_DATA       - the share/kBuild/ directory (the trailing slash is mandatory).
+#	MY_INST_DOC        - the share/doc/kBuild-x.y.z/ directory (the trailing slash is mandatory).
+#	MY_INST_UID        - the default install UID or user name.
+#	MY_INST_GID        - the default install GID or group name.
+#	MY_INST_MODE       - the default install mode mask, ",a+x" is added for executables and files.
+#	MY_INST_DATA_UID   - data specialization.
+#	MY_INST_DATA_GID   - data specialization.
+#	MY_INST_DATA_MODE  - data specialization.
+#	MY_INST_DOC_UID    - doc specialization.
+#	MY_INST_DOC_GID    - doc specialization.
+#	MY_INST_DOC_MODE   - doc specialization.
+#	MY_INST_BIN_UID    - binary (executable) specialization.
+#	MY_INST_BIN_GID    - binary (executable) specialization.
+#	MY_INST_BIN_MODE   - binary (executable) specialization.
+#
+# When running kmk install, you can use PATH_INS like you use DESTDIR in other makefile
+# systems. (These things will be improved in 0.2.x btw, so will be possible to enable a
+# mode where PREFIX and DESTDIR will.)
+#
+#
+ifdef NIX_INSTALL_DIR
+ MY_INST_ROOT := $(patsubst /%,%,$(NIX_INSTALL_DIR))/
+ ifndef MY_INST_BIN
+  MY_INST_BIN := $(MY_INST_ROOT)bin/
+ endif
+ ifndef MY_INST_DATA
+  MY_INST_DATA := $(MY_INST_ROOT)share/kBuild/
+ endif
+ ifndef MY_INST_DOC
+  MY_INST_DOC := $(MY_INST_ROOT)share/doc/kBuild-$(KBUILD_VERSION)/
+ endif
+ if !defined(MY_INST_BIN_MODE) && defined(MY_INST_MODE)
+  MY_INST_BIN_MODE := $(MY_INST_MODE),a+x
+ endif
+
+DEFS += \
+	KBUILD_PATH=\"/$(patsubst %/,%,$(MY_INST_DATA))\" \
+	KBUILD_BIN_PATH=\"/$(patsubst %/,%,$(MY_INST_BIN))\"
+endif
+
+
+#
+# Templates for installing docs and make scripts.
+#
+TEMPLATE_DATA = Data installation template.
+TEMPLATE_DATA_INST   = $(MY_INST_DATA)
+TEMPLATE_DATA_MODE  ?= $(firstword $(MY_INST_DATA_MODE) $(MY_INST_MODE) a+r)
+TEMPLATE_DATA_UID   ?= $(firstword $(MY_INST_DATA_UID)  $(MY_INST_UID))
+TEMPLATE_DATA_GID   ?= $(firstword $(MY_INST_DATA_GID)  $(MY_INST_GID))
+
+TEMPLATE_DOC  = Documentation installation template.
+TEMPLATE_DOC_INST   = $(MY_INST_DOC)
+TEMPLATE_DOC_MODE   ?= $(firstword $(MY_INST_DOC_MODE) $(MY_INST_MODE) a+r)
+TEMPLATE_DOC_UID    ?= $(firstword $(MY_INST_DOC_UID)  $(MY_INST_UID))
+TEMPLATE_DOC_GID    ?= $(firstword $(MY_INST_DOC_GID)  $(MY_INST_GID))
+
+
+#
+# Template for building commandline tools.
+#
+TEMPLATE_BIN = Command line binary
+
+TEMPLATE_BIN_INCS               = $(PATH_ROOT)/src/lib
+TEMPLATE_BIN_DEFS.profile       = NDEBUG
+TEMPLATE_BIN_DEFS.release       = NDEBUG
+if defined(NIX_INSTALL_DIR) && !defined(KBUILD_BOOTSTRAP)
+ TEMPLATE_BIN_INST             = $(MY_INST_BIN)
+ TEMPLATE_BIN_MODE            ?= $(firstword $(MY_INST_BIN_MODE) a+rx)
+ TEMPLATE_BIN_UID             ?= $(firstword $(MY_INST_BIN_UID) $(MY_INST_UID))
+ TEMPLATE_BIN_GID             ?= $(firstword $(MY_INST_BIN_GID) $(MY_INST_GID))
+else
+ TEMPLATE_BIN_INST             = kBuild/bin/$(KBUILD_TARGET).$(KBUILD_TARGET_ARCH)/
+endif
+
+
+ifeq ($(KBUILD_TARGET),os2)
+TEMPLATE_BIN_TOOL               = GCC3OMF
+TEMPLATE_BIN_CFLAGS             = -g
+TEMPLATE_BIN_CFLAGS.profile     = -pg
+TEMPLATE_BIN_CFLAGS.release     = -O3
+TEMPLATE_BIN_LDFLAGS            = -Zhigh-mem -Zstack=1024 -g
+endif
+
+ifeq ($(KBUILD_TARGET),darwin)
+ ifndef KBUILD_MACOSX_VERSION
+  export KBUILD_MACOSX_VERSION := $(expr $(firstword $(subst ., ,$(shell uname -r))) - 4)
+ endif
+ #ifndef KBUILD_XCODE_VERSION
+ # export KBUILD_XCODE_VERSION := $(shell xcodebuild -version | kmk_sed -e '/Xcode/!d' -e 's/Xcode *//')
+ #endif
+ ifndef KBUILD_MACOSX_TARGET_VERSION
+  if $(KBUILD_TARGET_ARCH) == amd64
+    KBUILD_MACOSX_TARGET_VERSION = 6
+  else
+    KBUILD_MACOSX_TARGET_VERSION = 4
+  endif
+ endif
+ ifndef KBUILD_MACOSX_WHATEVER_MODE
+  if $(KBUILD_MACOSX_TARGET_VERSION) == 4
+   TOOL_GCC4MACHO_SUFFIX	        = -4.0
+   TOOL_GXX4MACHO_SUFFIX		= -4.0
+  else if $(KBUILD_MACOSX_TARGET_VERSION) >= 5
+   TOOL_GCC4MACHO_SUFFIX	        = -4.2
+   TOOL_GXX4MACHO_SUFFIX		= -4.2
+  endif
+  ifndef KBUILD_MACOSX_SDK
+   KBUILD_MACOSX_SDK            := /Developer/SDKs/MacOSX10.$(KBUILD_MACOSX_TARGET_VERSION)$(if-expr $(KBUILD_MACOSX_TARGET_VERSION)==4,u,).sdk
+   ifeq ($(wildcard $(KBUILD_MACOSX_SDK)),)
+    KBUILD_MACOSX_SDK           := /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform$(KBUILD_MACOSX_SDK)
+   endif
+  endif
+  ifeq ($(wildcard $(KBUILD_MACOSX_SDK)),)
+   $(error SDK not found ($(KBUILD_MACOSX_SDK)), please adjust KBUILD_MACOSX_TARGET_VERSION or/and KBUILD_MACOSX_SDK in LocalConfig.kmk or simply use KBUILD_MACOSX_WHATEVER_MODE=1.)
+  endif
+ endif # !KBUILD_MACOSX_WHATEVER_MODE
+ TEMPLATE_BIN_TOOL              = GCC4MACHO
+ TEMPLATE_BIN_CFLAGS            = -g -mmacosx-version-min=10.$(KBUILD_MACOSX_TARGET_VERSION) $(if $(KBUILD_MACOSX_WHATEVER_MODE),,-isysroot $(KBUILD_MACOSX_SDK))
+ ifeq ($(USER),bird)
+  TEMPLATE_BIN_CFLAGS          += -Wall $(GCC_Wextra) -pedantic -Wno-unused-parameter -Wno-long-long -Wshadow
+  TEMPLATE_BIN_DEFS            += NO_ENUM_BITFIELDS
+ endif
+ TEMPLATE_BIN_CFLAGS.profile    = -O3 -pg
+ TEMPLATE_BIN_CFLAGS.release    = -O3
+ TEMPLATE_BIN_LDFLAGS           = -g -mmacosx-version-min=10.$(KBUILD_MACOSX_TARGET_VERSION) $(if $(KBUILD_MACOSX_WHATEVER_MODE),,-Wl,-syslibroot,$(KBUILD_MACOSX_SDK))
+ if $(KBUILD_MACOSX_TARGET_VERSION) == 4 && $(KBUILD_MACOSX_VERSION) >= 5
+  TEMPLATE_BIN_LDFLAGS         += -classic_ld
+ endif
+ TEMPLATE_BIN_LDFLAGS.profile   = -pg
+endif
+
+ifeq ($(filter-out win nt,$(KBUILD_TARGET)),)
+ TEMPLATE_BIN_TOOL              = VCC100
+ TEMPLATE_BIN_TOOL.x86          = VCC100X86
+ TEMPLATE_BIN_TOOL.amd64        = VCC100AMD64
+ TEMPLATE_BIN_DEFS              = WINDOWS32 _CONSOLE __WIN__ _CRT_SECURE_NO_DEPRECATE _CRT_NONSTDC_NO_WARNINGS
+ TEMPLATE_BIN_DEFS.x86          = WIN32 __WIN32__
+ TEMPLATE_BIN_DEFS.amd64        = WIN32 __WIN32__ __WIN64__ WIN64
+ TEMPLATE_BIN_CFLAGS            = -W3 -Zi -Zl
+ TEMPLATE_BIN_CFLAGS.release    = -O2
+ TEMPLATE_BIN_CFLAGS.profile    = -O2 -GH -Gh
+ TEMPLATE_BIN_INCS             += \
+	. \
+	$(PATH_GNUMAKE_SRC)/w32/include \
+	$(PATH_GNUMAKE_SRC)/glob
+ TEMPLATE_BIN_LDFLAGS           = /SUBSYSTEM:console /INCREMENTAL:no /NOD /DEBUG
+ ifeq ($(KBUILD_TYPE),profile)
+  TEMPLATE_BIN_SDKS             = WINPSDKINCS
+  TEMPLATE_BIN_CFLAGS          += -MT
+  TEMPLATE_BIN_LIBS             = \
+	D:/coding/kStuff/svn/trunk/out/win.$(KBUILD_TARGET_ARCH)/release/kStuff/lib/kPrf2.lib \
+	D:/coding/kStuff/svn/trunk/out/win.$(KBUILD_TARGET_ARCH)/release/kStuff/lib/kPrf2WinApiWrappersImp.lib \
+  	$(PATH_TOOL_$(TEMPLATE_BIN_TOOL)_LIB)/oldnames.lib \
+  	$(PATH_TOOL_$(TEMPLATE_BIN_TOOL)_LIB)/libcmt.lib \
+  	$(PATH_TOOL_$(TEMPLATE_BIN_TOOL)_LIB)/libcpmt.lib \
+	D:/coding/kStuff/svn/trunk/out/win.$(KBUILD_TARGET_ARCH)/release/kStuff/lib/kPrf2WinApiWrappersImp.lib \
+	$(PATH_SDK_WINPSDKINCS_LIB)/AdvAPI32.lib \
+	$(PATH_SDK_WINPSDKINCS_LIB)/User32.lib
+ else
+  TEMPLATE_BIN_SDKS             = WINPSDK71
+  ifdef KBUILD_WITH_STATIC_MSVCRT
+   TEMPLATE_BIN_CFLAGS         += -MT
+   TEMPLATE_BIN_LIBS            = \
+   	$(PATH_TOOL_$(TEMPLATE_BIN_TOOL)_LIB)/oldnames.lib \
+   	$(PATH_TOOL_$(TEMPLATE_BIN_TOOL)_LIB)/libcmt.lib \
+   	$(PATH_TOOL_$(TEMPLATE_BIN_TOOL)_LIB)/libcpmt.lib
+  else
+   TEMPLATE_BIN_CFLAGS         += -MD
+   TEMPLATE_BIN_LIBS            = \
+   	$(PATH_TOOL_$(TEMPLATE_BIN_TOOL)_LIB)/oldnames.lib \
+   	$(PATH_TOOL_$(TEMPLATE_BIN_TOOL)_LIB)/msvcrt.lib
+  endif
+ endif
+endif
+
+ifndef TEMPLATE_BIN_TOOL
+ # Use GCC3 when we're certain that the system is using GNU ld and ar.
+ ifeq ($(filter-out linux freebsd openbsd netbsd,$(KBUILD_TARGET)),)
+  TEMPLATE_BIN_TOOL              = GCC3
+ else
+  TEMPLATE_BIN_TOOL              = GCC3PLAIN
+ endif
+ TEMPLATE_BIN_CFLAGS            = -g
+ ifeq ($(USER),bird)
+  TEMPLATE_BIN_CFLAGS          += -Wall $(GCC_Wextra) -pedantic -Wno-unused-parameter -Wshadow
+  TEMPLATE_BIN_DEFS            += NO_ENUM_BITFIELDS
+ endif
+ TEMPLATE_BIN_LDFLAGS           = -g
+ TEMPLATE_BIN_LDFLAGS.profile   = -pg -p
+ TEMPLATE_BIN_CFLAGS.release    = -O3
+ TEMPLATE_BIN_CFLAGS.profile    = -O3 -pg -p
+ ifeq ($(KBUILD_TARGET),freebsd)
+  TEMPLATE_BIN_INCS            += $(PATH_GNUMAKE_SRC)/glob /usr/local/include
+ endif
+ ifeq ($(KBUILD_TARGET),linux)
+  TEMPLATE_BIN_LIBS            += rt
+ endif
+  TEMPLATE_BIN_CFLAGS.x86      += -m32
+  TEMPLATE_BIN_CFLAGS.sparc32  += -m32
+  TEMPLATE_BIN_CFLAGS.amd64    += -m64
+  TEMPLATE_BIN_CFLAGS.sparc64  += -m64
+  TEMPLATE_BIN_CXXFLAGS.x86    += -m32
+  TEMPLATE_BIN_CXXFLAGS.sparc32+= -m32
+  TEMPLATE_BIN_CXXFLAGS.amd64  += -m64
+  TEMPLATE_BIN_CXXFLAGS.sparc64+= -m64
+  TEMPLATE_BIN_LDFLAGS.x86     += -m32
+  TEMPLATE_BIN_LDFLAGS.sparc32 += -m32
+  TEMPLATE_BIN_LDFLAGS.amd64   += -m64
+  TEMPLATE_BIN_LDFLAGS.sparc64 += -m64
+ ifeq ($(KBUILD_TARGET),solaris)
+  TEMPLATE_BIN_LIBS            += rt dl
+  TEMPLATE_BIN_LDFLAGS         += -Wl,-i
+  TEMPLATE_BIN_DEFS.x86        += _FILE_OFFSET_BITS=64 _LARGEFILE_SOURCE
+  TEMPLATE_BIN_DEFS.sparc32    += _FILE_OFFSET_BITS=64 _LARGEFILE_SOURCE
+ endif
+endif
+if1of ($(KBUILD_TARGET), darwin win)
+ TEMPLATE_BIN_LD_DEBUG = split
+endif
+
+#
+# Template for building threaded binaries.
+#
+TEMPLATE_BIN-THREADED = Threaded command line binary
+TEMPLATE_BIN-THREADED_EXTENDS = BIN
+TEMPLATE_BIN-THREADED_EXTENDS_BY = appending
+if1of ($(KBUILD_TARGET), dragonfly freebsd linux openbsd)
+ TEMPLATE_BIN-THREADED_LIBS = pthread
+endif
+
+#
+# Template for building libraries for the tools.
+#
+TEMPLATE_LIB = Library for Commandline binary
+TEMPLATE_LIB_EXTENDS = BIN
+TEMPLATE_LIB_INST    = lib/
+# for LIB_KDEP
+TEMPLATE_LIB_TOOL    = $(TEMPLATE_BIN_TOOL)
+
+
+LIB_KDEP = $(PATH_OBJ)/kDep/$(TOOL_$(TEMPLATE_LIB_TOOL)_ARLIBPREF)kDep$(TOOL_$(TEMPLATE_LIB_TOOL)_ARLIBSUFF)
+LIB_KUTIL = $(PATH_OBJ)/kUtil/$(TOOL_$(TEMPLATE_LIB_TOOL)_ARLIBPREF)kUtil$(TOOL_$(TEMPLATE_LIB_TOOL)_ARLIBSUFF)
+

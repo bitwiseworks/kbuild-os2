@@ -1,0 +1,86 @@
+# $Id: Makefile.kmk 2674 2013-01-31 13:28:27Z bird $
+## @file
+# Top-Level Sub-Makefile for kBuild.
+#
+
+#
+# Copyright (c) 2005-2010 knut st. osmundsen <bird-kBuild-spamx@anduin.net>
+#
+# This file is part of kBuild.
+#
+# kBuild is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 3 of the License, or
+# (at your option) any later version.
+#
+# kBuild is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with kBuild.  If not, see <http://www.gnu.org/licenses/>
+#
+#
+
+SUB_DEPTH = .
+include $(KBUILD_PATH)/subheader.kmk
+
+include $(PATH_SUB_CURRENT)/src/Makefile.kmk
+
+
+ifdef NIX_INSTALL_DIR
+#
+# When doing a unix install, install all the kBuild scripts and docs.
+# TODO: Make this default and make it possible to disable it for in-tree development.
+#
+INSTALLS += kBuild-data
+kBuild-data_TEMPLATE = DATA
+kBuild-data_SOURCES := \
+	$(wildcard \
+			kBuild/*.kmk \
+	) \
+        $(foreach src,\
+		$(wildcard \
+			kBuild/tools/*.kmk \
+			kBuild/sdks/*.kmk \
+			kBuild/units/*.kmk \
+			kBuild/msgstyles/*.kmk \
+			kBuild/templates/*.kmk),\
+		$(src)=>$(subst kBuild/,,$(src)))
+
+INSTALLS += kBuild-doc
+kBuild-doc_TEMPLATE = DOC
+kBuild-doc_SOURCES := $(wildcard \
+			kBuild/doc/*.txt \
+			kBuild/doc/*.html \
+	)
+endif
+
+#
+# And install any binary only tools and dlls.
+# TODO: Ship env.sh and envos2.cmd / envwin.cmd where applicable.
+#
+INSTALLS += kBuild_bin
+kBuild_bin_INST = $(TEMPLATE_BIN_INST)
+kBuild_bin_SOURCES =
+
+kBuild_bin_SOURCES.os2 = \
+	kBuild/bin/$(KBUILD_TARGET).$(KBUILD_TARGET_ARCH)/libc06.dll=>libc06.dll \
+	kBuild/bin/$(KBUILD_TARGET).$(KBUILD_TARGET_ARCH)/libc061.dll=>libc061.dll \
+	kBuild/bin/$(KBUILD_TARGET).$(KBUILD_TARGET_ARCH)/libc062.dll=>libc062.dll \
+	kBuild/bin/$(KBUILD_TARGET).$(KBUILD_TARGET_ARCH)/libc063.dll=>libc063.dll \
+	kBuild/bin/$(KBUILD_TARGET).$(KBUILD_TARGET_ARCH)/libc064.dll=>libc064.dll \
+	kBuild/bin/$(KBUILD_TARGET).$(KBUILD_TARGET_ARCH)/libc065.dll=>libc065.dll
+
+if1of ($(KBUILD_TARGET), nt win)
+kBuild_bin_SOURCES.$(KBUILD_TARGET) = \
+	kBuild/bin/$(KBUILD_TARGET).$(KBUILD_TARGET_ARCH)/msvcr100.dll
+kBuild_bin_SOURCES.profile = \
+	D:/coding/kStuff/svn/trunk/out/win.$(KBUILD_TARGET_ARCH)/release/kStuff/bin/kPrf2.dll \
+	D:/coding/kStuff/svn/trunk/out/win.$(KBUILD_TARGET_ARCH)/release/kStuff/bin/kPrf2WinApiWrappers.dll
+endif
+
+
+include $(FILE_KBUILD_SUB_FOOTER)
+
