@@ -304,7 +304,7 @@ define TOOL_OPENWATCOM_COMPILE_RC_CMDS
 	$(QUIET)$(call TOOL_OPENWATCOM_ENV_SETUP) \
 		$(TOOL_OPENWATCOM_RC) -r\
 		$(flags) \
-		$(addprefix -i=, $(call TOOL_OPENWATCOM_FIX_SLASHES,$(incs))) \
+		$(addprefix -i=, $(call TOOL_OPENWATCOM_FIX_SLASHES,$(dir $(abspath $(source))) $(incs))) \
 		$(addprefix -d, $(defs))\
 		-fo=$(call TOOL_OPENWATCOM_FIX_SLASHES,$(obj)) \
 		$(call TOOL_OPENWATCOM_FIX_SLASHES,$(abspath $(source)))
