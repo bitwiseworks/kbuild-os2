@@ -306,7 +306,7 @@ endef
 TOOL_GXX3OMF_LINK_DLL_OUTPUT = $(outbase).map $(outbase).rsp
 TOOL_GXX3OMF_LINK_DLL_OUTPUT_MAYBE = $(if $(filter KMK_NOIMPLIB,$(flags)),,$(PATH_STAGE_LIB)/$(notdir $(outbase)).lib)
 TOOL_GXX3OMF_LINK_DLL_DEPEND = $(foreach lib,$(libs),$(if $(findstring $(lib),$(subst /,x,$(lib))),, $(lib))) $(othersrc)
-TOOL_GXX3OMF_LINK_DLL_DEPORD = $(if $(filter KMK_NOIMPLIB,$(flags)),,$(call DIRDEP,$(PATH_STAGE_LIB))
+TOOL_GXX3OMF_LINK_DLL_DEPORD = $(if $(filter KMK_NOIMPLIB,$(flags)),,$(call DIRDEP,$(PATH_STAGE_LIB)))
 define TOOL_GXX3OMF_LINK_DLL_CMDS
 	$(QUIET)$(APPEND) -n $(outbase).rsp\
 		$(TOOL_GXX3OMF_LDFLAGS.dll)\
