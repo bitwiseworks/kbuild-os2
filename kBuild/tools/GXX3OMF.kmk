@@ -300,12 +300,13 @@ endef
 #
 # @param    $(outbase)  Output basename (full). Use this for list files and such.
 TOOL_GXX3OMF_LINK_DLL_OUTPUT = $(outbase).map $(outbase).rsp
+TOOL_GXX3OMF_LINK_DLL_OUTPUT_MAYBE = $(if $(filter KMK_NOIMPLIB,$(flags)),,$(PATH_STAGE_LIB)/$(notdir $(outbase)).lib)
 TOOL_GXX3OMF_LINK_DLL_DEPEND = $(foreach lib,$(libs),$(if $(findstring $(lib),$(subst /,x,$(lib))),, $(lib))) $(othersrc)
-TOOL_GXX3OMF_LINK_DLL_DEPORD =
+TOOL_GXX3OMF_LINK_DLL_DEPORD = $(if $(filter KMK_NOIMPLIB,$(flags)),,$(call DIRDEP,$(PATH_STAGE_LIB))
 define TOOL_GXX3OMF_LINK_DLL_CMDS
 	$(QUIET)$(APPEND) -n $(outbase).rsp\
 		$(TOOL_GXX3OMF_LDFLAGS.dll)\
-		$(flags)\
+		$(filter-out KMK_%,$(flags))\
 		-o $(out)\
 		$(objs)\
 		$(foreach p,$(libpath), -L$(p))\
@@ -313,6 +314,8 @@ define TOOL_GXX3OMF_LINK_DLL_CMDS
 		$(foreach lib,$(libs), $(if $(findstring $(lib),$(subst /,x,$(lib))), -l$(patsubst lib%,%,$(lib)), $(lib)))\
 		-Zmap=$(outbase).map
 	$(QUIET)$(TOOL_GXX3OMF_LD) @$(outbase).rsp
+	$(if $(filter KMK_NOIMPLIB,$(flags)),, \
+		$(QUIET)$(TOOL_GXX3OMF_AR_IMP) -o $(PATH_STAGE_LIB)/$(notdir $(outbase)).lib $(out))
 endef
 
 
