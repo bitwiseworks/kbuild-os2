@@ -1,4 +1,4 @@
-/* $Id: kmkbuiltin.c 2591 2012-06-17 20:45:31Z bird $ */
+/* $Id: kmkbuiltin.c 3040 2017-05-10 13:07:10Z bird $ */
 /** @file
  * kMk Builtin command execution.
  */
@@ -42,134 +42,190 @@
 extern char **environ;
 #endif
 
-int kmk_builtin_command(const char *pszCmd, char ***ppapszArgvToSpawn, pid_t *pPidSpawned)
+
+int kmk_builtin_command(const char *pszCmd, struct child *pChild, char ***ppapszArgvToSpawn, pid_t *pPidSpawned)
 {
     int         argc;
     char      **argv;
     int         rc;
+    char       *pszzCmd;
+    char       *pszDst;
+    int         fOldStyle = 0;
 
     /*
      * Check and skip the prefix.
      */
     if (strncmp(pszCmd, "kmk_builtin_", sizeof("kmk_builtin_") - 1))
     {
-        printf("kmk_builtin: Invalid command prefix '%s'!\n", pszCmd);
+        fprintf(stderr, "kmk_builtin: Invalid command prefix '%s'!\n", pszCmd);
         return 1;
     }
 
     /*
      * Parse arguments.
      */
-    argc = 0;
-    argv = NULL;
-    while (*pszCmd)
+    rc      = 0;
+    argc    = 0;
+    argv    = NULL;
+    pszzCmd = pszDst = (char *)strdup(pszCmd);
+    if (!pszDst)
     {
-        const char *pszEnd;
-        const char *pszNext;
-        int         fEscaped = 0;
-        size_t      cch;
+        fprintf(stderr, "kmk_builtin: out of memory. argc=%d\n", argc);
+        return 1;
+    }
+    do
+    {
+        const char * const pszSrcStart = pszCmd;
+        char ch;
+        char chQuote;
 
         /*
-         * Find start and end of the current command.
-         */
-        if (*pszCmd == '"' || *pszCmd == '\'')
-        {
-            pszEnd = pszCmd;
-            for (;;)
-            {
-                pszEnd = strchr(pszEnd + 1, *pszCmd);
-                if (!pszEnd)
-                {
-                    printf("kmk_builtin: Unbalanced quote in argument %d: %s\n", argc + 1, pszCmd);
-                    while (argc--)
-                        free(argv[argc]);
-                    free(argv);
-                    return 1;
-                }
-                /* two quotes -> escaped quote. */
-                if (pszEnd[0] != pszEnd[1])
-                    break;
-                fEscaped = 1;
-            }
-            pszNext = pszEnd + 1;
-            pszCmd++;
-        }
-        else
-        {
-            pszEnd = pszCmd;
-            while (!isspace(*pszEnd) && *pszEnd)
-                pszEnd++;
-            pszNext = pszEnd;
-        }
-
-        /*
-         * Make argument.
+         * Start new argument.
          */
         if (!(argc % 16))
         {
             void *pv = realloc(argv, sizeof(char *) * (argc + 17));
             if (!pv)
             {
-                printf("kmk_builtin: out of memory. argc=%d\n", argc);
+                fprintf(stderr, "kmk_builtin: out of memory. argc=%d\n", argc);
+                rc = 1;
                 break;
             }
             argv = (char **)pv;
         }
-        cch = pszEnd - pszCmd;
-        argv[argc] = malloc(cch + 1);
-        if (!argv[argc])
-        {
-            printf("kmk_builtin: out of memory. argc=%d len=%d\n", argc, (int)(pszEnd - pszCmd + 1));
-            break;
-        }
-        memcpy(argv[argc], pszCmd, cch);
-        argv[argc][cch] = '\0';
+        argv[argc++] = pszDst;
+        argv[argc]   = NULL;
 
-        /* unescape quotes? */
-        if (fEscaped)
+        if (!fOldStyle)
         {
-            char ch = pszCmd[-1];
-            char *pszW = argv[argc];
-            char *pszR = argv[argc];
-            while (*pszR)
+            /*
+             * Process the next argument, bourne style.
+             */
+            chQuote = 0;
+            ch = *pszCmd++;
+            do
             {
-                if (*pszR == ch)
-                    pszR++;
-                *pszW++ = *pszR++;
-            }
-            *pszW = '\0';
+                /* Unquoted mode? */
+                if (chQuote == 0)
+                {
+                    if (ch != '\'' && ch != '"')
+                    {
+                        if (!isspace(ch))
+                        {
+                            if (ch != '\\')
+                                *pszDst++ = ch;
+                            else
+                            {
+                                ch = *pszCmd++;
+                                if (ch)
+                                    *pszDst++ = ch;
+                                else
+                                {
+                                    fprintf(stderr, "kmk_builtin: Incomplete escape sequence in argument %d: %s\n",
+                                            argc, pszSrcStart);
+                                    rc = 1;
+                                    break;
+                                }
+                            }
+                        }
+                        else
+                            break;
+                    }
+                    else
+                        chQuote = ch;
+                }
+                /* Quoted mode */
+                else if (ch != chQuote)
+                {
+                    if (   ch != '\\'
+                        || chQuote == '\'')
+                        *pszDst++ = ch;
+                    else
+                    {
+                        ch = *pszCmd++;
+                        if (ch)
+                        {
+                            if (   ch != '\\'
+                                && ch != '"'
+                                && ch != '`'
+                                && ch != '$'
+                                && ch != '\n')
+                                *pszDst++ = '\\';
+                            *pszDst++ = ch;
+                        }
+                        else
+                        {
+                            fprintf(stderr, "kmk_builtin: Unbalanced quote in argument %d: %s\n", argc, pszSrcStart);
+                            rc = 1;
+                            break;
+                        }
+                    }
+                }
+                else
+                    chQuote = 0;
+            } while ((ch = *pszCmd++) != '\0');
         }
-        /* commit it */
-        argv[++argc] = NULL;
+        else
+        {
+            /*
+             * Old style in case we ever need it.
+             */
+            ch = *pszCmd++;
+            if (ch != '"' && ch != '\'')
+            {
+                do
+                    *pszDst++ = ch;
+                while ((ch = *pszCmd++) != '\0' && !isspace(ch));
+            }
+            else
+            {
+                chQuote = ch;
+                for (;;)
+                {
+                    char *pszEnd = strchr(pszCmd, chQuote);
+                    if (pszEnd)
+                    {
+                        fprintf(stderr, "kmk_builtin: Unbalanced quote in argument %d: %s\n", argc, pszSrcStart);
+                        rc = 1;
+                        break;
+                    }
+                    memcpy(pszDst, pszCmd, pszEnd - pszCmd);
+                    pszDst += pszEnd - pszCmd;
+                    if (pszEnd[1] != chQuote)
+                        break;
+                    *pszDst++ = chQuote;
+                }
+            }
+        }
+        *pszDst++ = '\0';
 
         /*
-         * Next
+         * Skip argument separators (IFS=space() for now).  Check for EOS.
          */
-        pszCmd = pszNext;
-        if (isspace(*pszCmd) && *pszCmd)
-            pszCmd++;
-    }
+        if (ch != 0)
+            while ((ch = *pszCmd) && isspace(ch))
+                pszCmd++;
+        if (ch == 0)
+            break;
+    } while (rc == 0);
 
     /*
      * Execute the command if parsing was successful.
      */
-    if (!*pszCmd)
-        rc = kmk_builtin_command_parsed(argc, argv, ppapszArgvToSpawn, pPidSpawned);
-    else
-        rc = 1;
+    if (rc == 0)
+        rc = kmk_builtin_command_parsed(argc, argv, pChild, ppapszArgvToSpawn, pPidSpawned);
 
     /* clean up and return. */
-    while (argc--)
-        free(argv[argc]);
     free(argv);
+    free(pszzCmd);
     return rc;
 }
 
 
-int kmk_builtin_command_parsed(int argc, char **argv, char ***ppapszArgvToSpawn, pid_t *pPidSpawned)
+int kmk_builtin_command_parsed(int argc, char **argv, struct child *pChild, char ***ppapszArgvToSpawn, pid_t *pPidSpawned)
 {
     const char *pszCmd = argv[0];
-    int         iumask;
+    int         iUmask;
     int         rc;
 
     /*
@@ -177,16 +233,16 @@ int kmk_builtin_command_parsed(int argc, char **argv, char ***ppapszArgvToSpawn,
      */
     if (strncmp(pszCmd, "kmk_builtin_", sizeof("kmk_builtin_") - 1))
     {
-        printf("kmk_builtin: Invalid command prefix '%s'!\n", pszCmd);
+        fprintf(stderr, "kmk_builtin: Invalid command prefix '%s'!\n", pszCmd);
         return 1;
     }
     pszCmd += sizeof("kmk_builtin_") - 1;
 
     /*
-     * String switch on the command.
+     * String switch on the command (frequent stuff at the top).
      */
-    iumask = umask(0);
-    umask(iumask);
+    iUmask = umask(0);
+    umask(iUmask);
     if (!strcmp(pszCmd, "append"))
         rc = kmk_builtin_append(argc, argv, environ);
     else if (!strcmp(pszCmd, "printf"))
@@ -197,12 +253,16 @@ int kmk_builtin_command_parsed(int argc, char **argv, char ***ppapszArgvToSpawn,
         rc = kmk_builtin_install(argc, argv, environ);
     else if (!strcmp(pszCmd, "kDepIDB"))
         rc = kmk_builtin_kDepIDB(argc, argv, environ);
+#ifdef KBUILD_OS_WINDOWS
+    else if (!strcmp(pszCmd, "kSubmit"))
+        rc = kmk_builtin_kSubmit(argc, argv, environ, pChild, pPidSpawned);
+#endif
     else if (!strcmp(pszCmd, "mkdir"))
         rc = kmk_builtin_mkdir(argc, argv, environ);
     else if (!strcmp(pszCmd, "mv"))
         rc = kmk_builtin_mv(argc, argv, environ);
-    /*else if (!strcmp(pszCmd, "redirect"))
-        rc = kmk_builtin_redirect(argc, argv, environ, pPidSpawned);*/
+    else if (!strcmp(pszCmd, "redirect"))
+        rc = kmk_builtin_redirect(argc, argv, environ, pChild, pPidSpawned);
     else if (!strcmp(pszCmd, "rm"))
         rc = kmk_builtin_rm(argc, argv, environ);
     else if (!strcmp(pszCmd, "rmdir"))
@@ -228,9 +288,15 @@ int kmk_builtin_command_parsed(int argc, char **argv, char ***ppapszArgvToSpawn,
         rc = kmk_builtin_cat(argc, argv, environ);
     else if (!strcmp(pszCmd, "sleep"))
         rc = kmk_builtin_sleep(argc, argv, environ);
+    else if (!strcmp(pszCmd, "dircache"))
+#ifdef KBUILD_OS_WINDOWS
+        rc = kmk_builtin_dircache(argc, argv, environ);
+#else
+        rc = 0;
+#endif
     else
     {
-        printf("kmk_builtin: Unknown command '%s'!\n", pszCmd);
+        fprintf(stderr, "kmk_builtin: Unknown command '%s'!\n", pszCmd);
         return 1;
     }
 
@@ -238,7 +304,7 @@ int kmk_builtin_command_parsed(int argc, char **argv, char ***ppapszArgvToSpawn,
      * Cleanup.
      */
     g_progname = "kmk";                 /* paranoia, make sure it's not pointing at a freed argv[0]. */
-    umask(iumask);
+    umask(iUmask);
 
 
     /*
@@ -260,7 +326,7 @@ int kmk_builtin_command_parsed(int argc, char **argv, char ***ppapszArgvToSpawn,
         assert(!*pPidSpawned);
 
         *ppapszArgvToSpawn = NULL;
-        rc = kmk_builtin_command_parsed(argc_new, argv_new, ppapszArgvToSpawn, pPidSpawned);
+        rc = kmk_builtin_command_parsed(argc_new, argv_new, pChild, ppapszArgvToSpawn, pPidSpawned);
 
         free(argv_new[0]);
         free(argv_new);

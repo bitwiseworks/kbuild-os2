@@ -1,10 +1,10 @@
-# $Id: qt4.kmk 2787 2015-08-13 09:16:00Z bird $
+# $Id: qt4.kmk 2979 2016-09-27 14:36:32Z bird $
 ## @file
 # Qt 4 unit.
 #
 
 #
-# Copyright (c) 2008-2014 knut st. osmundsen <bird-kBuild-spam-xiv@anduin.net>
+# Copyright (c) 2008-2016 knut st. osmundsen <bird-kBuild-spam-xiv@anduin.net>
 #
 # This file is part of kBuild.
 #
@@ -38,8 +38,8 @@ endif
 UNIT_qt4 = qt4
 
 
-ifndef UNIT_qt3
- # Add our target properties (same as qt3).
+if !defined(UNIT_qt3) && !defined(UNIT_qt5)
+ # Add our target properties (same as qt3 & qt5).
  PROPS_SINGLE += QTTOOL MOCTOOL UICTOOL LRCTOOL QT_TRANSLATIONS_INST QT_TRANSLATIONS_TEMPLATE QT_PREFIX
  PROPS_ACCUMULATE_R += MOCDEFS MOCFLAGS UICFLAGS LRCFLAGS QT_TRANSLATIONS QT_MOCSRCS QT_MOCHDRS
 endif
@@ -103,6 +103,7 @@ ifndef PATH_SDK_QT4
     endif
     ifeq ($(PATH_SDK_QT4),)
      PATH_SDK_QT4 := $(patsubst %/bin/rcc,%,$(firstword $(wildcard \
+       /usr/lib/*/qt4/bin/rcc \
      	/usr/bin/rcc \
      	/usr/local/bin/rcc \
      	/usr/qt/4/bin/rcc \
@@ -115,6 +116,7 @@ ifndef PATH_SDK_QT4
      # Locate the include files.
      ifeq ($(PATH_SDK_QT4_INC),)
       PATH_SDK_QT4_INC := $(patsubst %/QtCore/qglobal.h,%,$(firstword $(wildcard \
+	$(foreach type,$(KBUILD_OSARCH_2_GNU_SYSTEM_TYPES.$(KBUILD_TARGET_DOT_ARCH)),/usr/include/$(type)/qt4/QtCore/qglobal.h) \
 	$(PATH_SDK_QT4)/include/QtCore/qglobal.h \
 	$(PATH_SDK_QT4)/include/qt4/QtCore/qglobal.h \
 	/usr/include/qt4/QtCore/qtglobal.h \
@@ -132,10 +134,10 @@ ifndef PATH_SDK_QT4
 	$(PATH_SDK_QT4)/lib32/qt4/libQtCore$(SUFF_DLL) \
 	/usr/lib32/libQtCore$(SUFF_DLL) \
 	/usr/lib32/qt4/libQtCore$(SUFF_DLL) \
-	/usr/lib/i386-linux-gnu/libQtCore$(SUFF_DLL) \
+	$(foreach type,$(KBUILD_OSARCH_2_GNU_SYSTEM_TYPES.$(KBUILD_TARGET).x86),/usr/lib/$(type)/libQtCore$(SUFF_DLL)) \
 	/usr/local/lib32/libQtCore$(SUFF_DLL) \
 	/usr/local/lib32/qt4/libQtCore$(SUFF_DLL) \
-	/usr/local/lib/i386-linux-gnu/libQtCore$(SUFF_DLL) \
+	$(foreach type,$(KBUILD_OSARCH_2_GNU_SYSTEM_TYPES.$(KBUILD_TARGET).x86),/usr/local/lib/$(type)/libQtCore$(SUFF_DLL)) \
 	$(PATH_SDK_QT4)/lib/libQtCore$(SUFF_DLL) \
 	$(PATH_SDK_QT4)/lib/qt4/libQtCore$(SUFF_DLL) \
 	$(PATH_SDK_QT4)/lib/i386-linux-gnu/libQtCore$(SUFF_DLL) \
@@ -152,11 +154,11 @@ ifndef PATH_SDK_QT4
 	/usr/lib64/libQtCore$(SUFF_DLL) \
 	/usr/lib64/qt4/libQtCore$(SUFF_DLL) \
 	/usr/lib/amd64/libQtCore$(SUFF_DLL) \
-	/usr/lib/x86_64-linux-gnu/libQtCore$(SUFF_DLL) \
+	$(foreach type,$(KBUILD_OSARCH_2_GNU_SYSTEM_TYPES.$(KBUILD_TARGET).amd64),/usr/lib/$(type)/libQtCore$(SUFF_DLL)) \
 	/usr/local/lib64/libQtCore$(SUFF_DLL) \
 	/usr/local/lib64/qt4/libQtCore$(SUFF_DLL) \
 	/usr/local/lib/amd64/libQtCore$(SUFF_DLL) \
-	/usr/local/lib/x86_64-linux-gnu/libQtCore$(SUFF_DLL) \
+	$(foreach type,$(KBUILD_OSARCH_2_GNU_SYSTEM_TYPES.$(KBUILD_TARGET).amd64),/usr/local/lib/$(type)/libQtCore$(SUFF_DLL)) \
 	$(PATH_SDK_QT4)/lib/libQtCore$(SUFF_DLL) \
 	$(PATH_SDK_QT4)/lib/qt4/libQtCore$(SUFF_DLL) \
 	$(PATH_SDK_QT4)/lib/x86_64-linux-gnu/libQtCore$(SUFF_DLL) \
@@ -175,8 +177,10 @@ ifndef PATH_SDK_QT4
        	$(PATH_SDK_QT4)/lib/qt4/libQtCore$(SUFF_DLL) \
        	/usr/lib/libQtCore$(SUFF_DLL) \
        	/usr/lib/qt4/libQtCore$(SUFF_DLL) \
+       	$(foreach type,$(KBUILD_OSARCH_2_GNU_SYSTEM_TYPES.$(KBUILD_TARGET_DOT_ARCH)),/usr/lib/$(type)/libQtCore$(SUFF_DLL)) \
        	/usr/local/lib/libQtCore$(SUFF_DLL) \
        	/usr/local/lib/qt4/libQtCore$(SUFF_DLL) \
+       	$(foreach type,$(KBUILD_OSARCH_2_GNU_SYSTEM_TYPES.$(KBUILD_TARGET_DOT_ARCH)),/usr/local/lib/$(type)/libQtCore$(SUFF_DLL)) \
        	)))
       endif
       ifneq ($(PATH_SDK_QT4_LIB),)
@@ -241,9 +245,10 @@ ifndef PATH_TOOL_QT4_BIN
   ifdef TOOL_QT4_BIN_SUFF
    TOOL_QT4_BIN_SUFF := $(TOOL_QT4_BIN_SUFF)
   endif
-  # Try looking for moc-qt4 / moc-$(suffix) first.
+  # Try looking for moc-$(suffix) first, if specified.
   ifneq ($(TOOL_QT4_BIN_SUFF),)
    PATH_TOOL_QT4_BIN := $(patsubst %/moc$(TOOL_QT4_BIN_SUFF),%,$(firstword $(wildcard \
+	 $(foreach type,$(KBUILD_OSARCH_2_GNU_SYSTEM_TYPES.$(KBUILD_HOST_DOT_ARCH)),/usr/lib/$(type)/qt4/bin/moc$(TOOL_QT4_BIN_SUFF)) \
 	 /usr/lib/qt4/bin/moc$(TOOL_QT4_BIN_SUFF) \
 	 /usr/qt/4/bin/moc$(TOOL_QT4_BIN_SUFF) \
 	 /usr/share/qt4/bin/moc$(TOOL_QT4_BIN_SUFF) \
@@ -251,27 +256,35 @@ ifndef PATH_TOOL_QT4_BIN
 	 /usr/bin/moc$(TOOL_QT4_BIN_SUFF) \
 	 )))
   else
-   PATH_TOOL_QT4_BIN := $(patsubst %/moc-qt4,%,$(firstword $(wildcard \
+   # No suffix given, so before we check out -qt4 look at qt4 specific locations to avoid choosers and symlinks.
+   PATH_TOOL_QT4_BIN := $(patsubst %/moc,%,$(firstword $(wildcard \
+	$(foreach type,$(KBUILD_OSARCH_2_GNU_SYSTEM_TYPES.$(KBUILD_HOST_DOT_ARCH)),/usr/lib/$(type)/qt4/bin/moc) \
+	$(if $(intersects $(KBUILD_HOST_ARCH), $(KBUILD_ARCHES_64)),/usr/lib64/qt4/bin/moc,) \
+	/usr/lib/qt4/bin/moc \
+	/usr/local/lib/qt4/bin/moc \
+	/usr/qt/4/bin/moc \
+	/usr/local/qt/4/bin/moc \
+	/usr/share/qt4/bin/moc \
+	/usr/local/share/qt4/bin/moc \
+	)))
+   ifeq ($(PATH_TOOL_QT4_BIN),)
+    PATH_TOOL_QT4_BIN := $(patsubst %/moc-qt4,%,$(firstword $(wildcard \
+	$(foreach type,$(KBUILD_OSARCH_2_GNU_SYSTEM_TYPES.$(KBUILD_HOST_DOT_ARCH)),/usr/lib/$(type)/qt4/bin/moc-qt4) \
 	/usr/lib/qt4/bin/moc-qt4 \
 	/usr/qt/4/bin/moc-qt4 \
 	/usr/share/qt4/bin/moc-qt4 \
 	/usr/local/bin/moc-qt4 \
 	/usr/bin/moc-qt4 \
 	)))
-   ifneq ($(PATH_TOOL_QT4_BIN),)
-    TOOL_QT4_BIN_SUFF := -qt4
-   else
-    # If no luck, try looking for moc in the qt4 specific locations.
-    PATH_TOOL_QT4_BIN := $(patsubst %/moc,%,$(firstword $(wildcard \
-	/usr/lib/qt4/bin/moc \
-	/usr/qt/4/bin/moc \
-	/usr/share/qt4/bin/moc \
-	)))
+    ifneq ($(PATH_TOOL_QT4_BIN),)
+     TOOL_QT4_BIN_SUFF := -qt4
+    endif
    endif
   endif
   # If still no go, try looking for qt3to4 and rcc.
   ifeq ($(PATH_TOOL_QT4_BIN),)
    PATH_TOOL_QT4_BIN := $(patsubst %/qt3to4,%,$(firstword $(wildcard \
+	$(foreach type,$(KBUILD_OSARCH_2_GNU_SYSTEM_TYPES.$(KBUILD_HOST_DOT_ARCH)),/usr/lib/$(type)/qt4/bin/qt3to4) \
 	/usr/lib/qt4/bin/qt3to4 \
 	/usr/qt/4/bin/qt3to4 \
 	/usr/share/qt4/bin/qt3to4 \
@@ -281,6 +294,7 @@ ifndef PATH_TOOL_QT4_BIN
   endif
   ifeq ($(PATH_TOOL_QT4_BIN),)
    PATH_TOOL_QT4_BIN := $(patsubst %/rcc$(TOOL_QT4_BIN_SUFF),%,$(firstword $(wildcard \
+	$(foreach type,$(KBUILD_OSARCH_2_GNU_SYSTEM_TYPES.$(KBUILD_HOST_DOT_ARCH)),/usr/lib/$(type)/qt4/bin/rcc$(TOOL_QT4_BIN_SUFF)) \
 	/usr/lib/qt4/bin/rcc$(TOOL_QT4_BIN_SUFF) \
 	/usr/qt/4/bin/rcc$(TOOL_QT4_BIN_SUFF) \
 	/usr/share/qt4/bin/rcc$(TOOL_QT4_BIN_SUFF) \
@@ -290,6 +304,7 @@ ifndef PATH_TOOL_QT4_BIN
   endif
   if "$(PATH_TOOL_QT4_BIN)" == "" && "$(TOOL_QT4_BIN_SUFF)" != ""
    PATH_TOOL_QT4_BIN := $(patsubst %/rcc,%,$(firstword $(wildcard \
+	$(foreach type,$(KBUILD_OSARCH_2_GNU_SYSTEM_TYPES.$(KBUILD_HOST_DOT_ARCH)),/usr/lib/$(type)/qt4/bin/rcc) \
 	/usr/lib/qt4/bin/rcc \
 	/usr/qt/4/bin/rcc \
 	/usr/share/qt4/bin/rcc \
@@ -321,7 +336,7 @@ else
  # Pathless, relies on the environment.
  TOOL_QT4_MOC       ?= moc$(TOOL_QT4_BIN_SUFF)$(HOST_SUFF_EXE)
  TOOL_QT4_UIC       ?= uic$(TOOL_QT4_BIN_SUFF)$(HOST_SUFF_EXE)
- TOOL_QT4_RCC       ?= rcc$(HOST_SUFF_EXE)
+ TOOL_QT4_RCC       ?= rcc$(TOOL_QT4_BIN_SUFF)$(HOST_SUFF_EXE)
  TOOL_QT4_LRC       ?= lrelease$(TOOL_QT4_BIN_SUFF)$(HOST_SUFF_EXE)
  TOOL_QT4_LUPDATE   ?= lupdate$(TOOL_QT4_BIN_SUFF)$(HOST_SUFF_EXE)
 endif

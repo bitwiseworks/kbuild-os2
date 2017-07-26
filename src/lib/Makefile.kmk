@@ -1,10 +1,10 @@
-# $Id: Makefile.kmk 2713 2013-11-21 21:11:00Z bird $
+# $Id: Makefile.kmk 2994 2016-11-01 22:41:41Z bird $
 ## @file
 # Sub-makefile for various libraries and stuff.
 #
 
 #
-# Copyright (c) 2006-2013 knut st. osmundsen <bird-kBuild-spamx@anduin.net>
+# Copyright (c) 2006-2016 knut st. osmundsen <bird-kBuild-spamx@anduin.net>
 #
 # This file is part of kBuild.
 #
@@ -30,7 +30,6 @@ LIBRARIES += kDep
 kDep_TEMPLATE = LIB
 kDep_DEFS.win += NEED_ISBLANK=1 __WIN32__=1
 kDep_SOURCES = kDep.c
-kDep_SOURCES.win = nt_fullpath.c
 kDep_NOINST = 1
 
 LIBRARIES += kUtil
@@ -38,20 +37,32 @@ kUtil_TEMPLATE = LIB
 kUtil_DEFS.win = __WIN__
 kUtil_SOURCES = \
 	crc32.c \
-	md5.c
+	md5.c \
+	maybe_con_write.c \
+	maybe_con_fwrite.c \
+	kbuild_version.c
 kUtil_SOURCES.win = \
+	msc_buffered_printf.c \
 	nt_fullpath.c \
+	nt_fullpath_cached.c \
+	quote_argv.c \
 	quoted_spawn.c \
        nt/nthlpcore.c \
        nt/nthlpfs.c \
        nt/ntdir.c \
        nt/ntstat.c \
-       nt/ntunlink.c
+       nt/ntunlink.c \
+       nt/fts-nt.c \
+       nt/kFsCache.c \
+       kStuff/kHlp/CRT/kHlpCRTString.cpp \
+       kStuff/kHlp/CRT/kHlpCRTAlloc.cpp
 kUtil_SOURCES.solaris = \
 	restartable-syscall-wrappers.c
 #kUtil_SOURCES.linux = \
 #	restartable-syscall-wrappers.c
 kUtil_NOINST = 1
+
+kbuild_version.c_DEFS = KBUILD_SVN_REV=$(KBUILD_SVN_REV)
 
 LIBRARIES.win += kWinStartup
 kWinStartup_TEMPLATE = LIB
@@ -68,6 +79,12 @@ tstNtStat_TEMPLATE = BIN
 tstNtStat_SOURCES = nt/tstNtStat.c
 tstNtStat_LIBS = $(LIB_KUTIL)
 tstNtStat_NOINST = 1
+
+PROGRAMS.win += tstNtFts
+tstNtFts_TEMPLATE = BIN
+tstNtFts_SOURCES = nt/tstNtFts.c nt/fts-nt.c
+tstNtFts_LIBS = $(LIB_KUTIL)
+tstNtFts_NOINST = 1
 
 include $(FILE_KBUILD_SUB_FOOTER)
 

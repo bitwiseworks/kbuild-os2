@@ -590,6 +590,10 @@ find_directory (const char *name)
 
 	  if (HASH_VACANT (dc))
 	    {
+#if defined(WINDOWS32) && defined(KMK)
+              static char s_last_volume[4];
+              static int  s_last_flags;
+#endif
 	      /* Nope; this really is a directory we haven't seen before.  */
 
 #ifndef CONFIG_WITH_ALLOC_CACHES
@@ -621,6 +625,15 @@ find_directory (const char *name)
                * a directory.
                */
               w32_path[3] = '\0';
+# ifdef KMK /* Need for speed: Cache the GetVolumeInformation result. */
+              if (   s_last_volume[0] == w32_path[0]
+                  && s_last_volume[1] == w32_path[1]
+                  && s_last_volume[2] == w32_path[2]
+                  && s_last_volume[3] == w32_path[3])
+                dc->fs_flags = s_last_flags;
+              else
+                {
+# endif
               if (GetVolumeInformation(w32_path,
                      fs_label, sizeof (fs_label),
                      &fs_serno, &fs_len,
@@ -632,6 +645,14 @@ find_directory (const char *name)
                 dc->fs_flags = FS_NTFS;
               else
                 dc->fs_flags = FS_UNKNOWN;
+# ifdef KMK
+                  s_last_volume[0] = w32_path[0];
+                  s_last_volume[1] = w32_path[1];
+                  s_last_volume[2] = w32_path[2];
+                  s_last_volume[3] = w32_path[3];
+                  s_last_flags     = dc->fs_flags;
+                }
+# endif
 #else
 # ifdef VMS
 	      dc->ino[0] = st.st_ino[0];
@@ -1308,13 +1329,18 @@ print_dir_data_base (void)
 #endif
 }
 
+#ifdef CONFIG_WITH_PRINT_STATS_SWITCH
+/* Print stats */
+
+void print_dir_stats (void)
+{
+  /** @todo normal dir stats.  */
+}
+#endif
+
 /* Hooks for globbing.  */
 
-#if defined(KMK) && !defined(__OS2__)
-# include "glob/glob.h"
-#else
 #include <glob.h>
-#endif
 
 /* Structure describing state of iterating through a directory hash table.  */
 
@@ -1449,7 +1475,7 @@ dir_setup_glob (glob_t *gl)
 #ifdef __EMX__ /* The FreeBSD implementation actually uses gl_lstat!! */
   gl->gl_lstat = local_stat;
 #endif
-#if defined(KMK) && !defined(__OS2__)
+#ifdef GLOB_WITH_EXTENDED_KMK_MEMBERS
   gl->gl_exists = file_exists_p;
   gl->gl_isdir = dir_exists_p;
 #endif

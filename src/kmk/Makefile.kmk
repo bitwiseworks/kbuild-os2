@@ -1,4 +1,4 @@
-# $Id: Makefile.kmk 2801 2015-09-20 19:13:24Z bird $
+# $Id: Makefile.kmk 2994 2016-11-01 22:41:41Z bird $
 ## @file
 # Sub-makefile for kmk / GNU Make.
 #
@@ -57,7 +57,7 @@ TEMPLATE_BIN-KMK_INCS = $(kmk_0_OUTDIR) . $(TEMPLATE_BIN-THREADED_INCS)
 ifneq ($(KBUILD_TARGET),os2)
  TEMPLATE_BIN-KMK_INCS += glob
 endif
-TEMPLATE_BIN-KMK_LIBS = $(TEMPLATE_BIN-THREADED_LIBS) $(kmkmissing_1_TARGET) $(LIB_KUTIL)
+TEMPLATE_BIN-KMK_LIBS = $(LIB_KUTIL) $(TEMPLATE_BIN-THREADED_LIBS) $(kmkmissing_1_TARGET) $(LIB_KUTIL)
 ifdef ELECTRIC_HEAP # for electric heap (see electric.c) - windows only.
 ifeq ($(KBUILD_TARGET),win)
  TEMPLATE_BIN-KMK_CFLAGS = $(TEMPLATE_BIN-THREADED_CFLAGS) /FI$(kmk_DEFPATH)/electric.h -DELECTRIC_HEAP=1
@@ -87,8 +87,8 @@ kmkmissing_SOURCES = \
 	kmkbuiltin/fts.c \
 	kmkbuiltin/setmode.c \
 	kmkbuiltin/strmode.c \
-	kmkbuiltin/kbuild_version.c \
 	kmkbuiltin/kbuild_protection.c \
+	kmkbuiltin/common-env-and-cwd-opt.c \
 	getopt.c \
 	getopt1.c \
 	electric.c
@@ -128,7 +128,6 @@ kmkmissing_SOURCES.win += \
 	glob/fnmatch.c \
 	getloadavg.c \
 	w32/subproc/misc.c \
-	w32/subproc/sub_proc.c \
 	w32/subproc/w32err.c \
 	w32/pathstuff.c \
 	w32/imagecache.c
@@ -193,11 +192,11 @@ kmk_DEFS = \
 	CONFIG_WITH_RDONLY_VARIABLE_VALUE \
 	CONFIG_WITH_LAZY_DEPS_VARS \
 	CONFIG_WITH_MEMORY_OPTIMIZATIONS \
-	CONFIG_WITH_COMPILER \
 	\
 	KBUILD_HOST=\"$(KBUILD_TARGET)\" \
 	KBUILD_HOST_ARCH=\"$(KBUILD_TARGET_ARCH)\" \
 	KBUILD_HOST_CPU=\"$(KBUILD_TARGET_CPU)\"
+# kmk_DEFS += CONFIG_WITH_COMPILER  # experimental, doesn't work 101% right it seems.
 kmk_DEFS.x86 = CONFIG_WITH_OPTIMIZATION_HACKS
 kmk_DEFS.amd64 = CONFIG_WITH_OPTIMIZATION_HACKS
 kmk_DEFS.win = CONFIG_NEW_WIN32_CTRL_EVENT CONFIG_WITH_FAST_IS_SPACE
@@ -222,7 +221,6 @@ kmk_SOURCES = \
 	arscan.c \
 	commands.c \
 	default.c \
-	dir.c \
 	expand.c \
 	file.c \
 	function.c \
@@ -243,6 +241,14 @@ kmk_SOURCES = \
        kmk_cc_exec.c \
 	kbuild.c \
 	kbuild-object.c
+ifeq ($(KBUILD_TARGET),win)
+ kmk_SOURCES += dir-nt-bird.c
+else
+ kmk_SOURCES += dir.c
+endif
+
+kmk_SOURCES.win = \
+	w32/subproc/sub_proc.c
 
 kmk_DEFS.freebsd.x86 = CONFIG_WITHOUT_THREADS
 
@@ -253,7 +259,7 @@ kmk_DEFS.freebsd.x86 = CONFIG_WITHOUT_THREADS
 # kmkbuiltin commands
 #
 kmk_DEFS += CONFIG_WITH_KMK_BUILTIN
-kmk_LIBS += $(LIB_KUTIL) $(LIB_KDEP)
+kmk_LIBS += $(LIB_KUTIL) #$(LIB_KDEP)
 kmk_SOURCES += \
 	kmkbuiltin.c \
 	kmkbuiltin/append.c \
@@ -268,15 +274,18 @@ kmk_SOURCES += \
 	kmkbuiltin/install.c \
 	kmkbuiltin/kDepIDB.c \
 	kmkbuiltin/kDepObj.c \
+	../lib/kDep.c \
 	kmkbuiltin/md5sum.c \
 	kmkbuiltin/mkdir.c \
 	kmkbuiltin/mv.c \
 	kmkbuiltin/ln.c \
 	kmkbuiltin/printf.c \
+	kmkbuiltin/redirect.c \
 	kmkbuiltin/rm.c \
 	kmkbuiltin/rmdir.c \
+	$(if-expr $(KBUILD_TARGET) == win,kmkbuiltin/kSubmit.c) \
 	kmkbuiltin/sleep.c \
-	kmkbuiltin/test.c \
+	kmkbuiltin/test.c
 
 ## @todo kmkbuiltin/redirect.c
 
@@ -387,7 +396,6 @@ kmk_rm_SOURCES = \
 	kmkbuiltin/rm.c
 
 kmk_redirect_TEMPLATE = BIN-KMK
-kmk_redirect_DEFS = kmk_builtin_redirect=main
 kmk_redirect_SOURCES = \
 	kmkbuiltin/redirect.c
 kmk_redirect_SOURCES.win = \
@@ -411,14 +419,14 @@ kmk_test_SOURCES = \
 kDepIDB_TEMPLATE = BIN-KMK
 kDepIDB_DEFS = kmk_builtin_kDepIDB=main
 kDepIDB_INCS = .
-kDepIDB_LIBS = $(LIB_KDEP)
+kDepIDB_LIBS = $(LIB_KDEP) $(LIB_KUTIL)
 kDepIDB_SOURCES = \
 	kmkbuiltin/kDepIDB.c
 
 kDepObj_TEMPLATE = BIN-KMK
 kDepObj_DEFS = kmk_builtin_kDepObj=main
 kDepObj_INCS = .
-kDepObj_LIBS = $(LIB_KDEP)
+kDepObj_LIBS = $(LIB_KDEP) $(LIB_KUTIL)
 kDepObj_SOURCES = \
 	kmkbuiltin/kDepObj.c
 
@@ -458,6 +466,9 @@ kmk_gmake_SOURCES = \
 	version.c \
 	vpath.c \
 	remote-stub.c
+
+kmk_gmake_SOURCES.win = \
+	w32/subproc/sub_proc.c
 
 
 #
@@ -509,6 +520,27 @@ kmk_fgmake_SOURCES = \
 	vpath.c \
 	remote-stub.c
 
+kmk_fgmake_SOURCES.win = \
+	w32/subproc/sub_proc.c
+
+
+#
+# tstFileInfo
+#
+PROGRAMS.win += tstFileInfo
+tstFileInfo_TEMPLATE = BIN
+tstFileInfo_SOURCES = w32/tstFileInfo.c
+
+#
+# tstFileInfo
+#
+PROGRAMS.win += tstFtsFake
+tstFtsFake_TEMPLATE = BIN-KMK
+tstFtsFake_NOINST = 1
+tstFtsFake_DEFS = USE_OLD_FTS
+tstFtsFake_SOURCES = ../lib/nt/tstNtFts.c
+
+
 
 include $(FILE_KBUILD_SUB_FOOTER)
 
@@ -524,8 +556,13 @@ $(kmk_0_OUTDIR)/config.h: $(kmk_config.h.$(KBUILD_TARGET))
 #
 # Some missing headers.
 #
+if1of ($(KBUILD_TARGET), win nt)
+$(kmk_0_OUTDIR)/fts.h: $(MAKEFILE) | $(call DIRDEP,$(kmk_0_OUTDIR))
+	$(APPEND) -t "$@" "#include <nt/fts-nt.h>"
+else
 $(kmk_0_OUTDIR)/fts.h: $(kmk_DEFPATH)/kmkbuiltin/ftsfake.h | $(call DIRDEP,$(kmk_0_OUTDIR))
 	$(CP) $^ $@
+endif
 
 $(kmk_0_OUTDIR)/unistd.h: | $(call DIRDEP,$(kmk_0_OUTDIR))
 	$(ECHO_EXT) > $@

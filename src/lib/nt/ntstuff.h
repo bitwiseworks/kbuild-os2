@@ -1,4 +1,4 @@
-/* $Id: ntstuff.h 2713 2013-11-21 21:11:00Z bird $ */
+/* $Id: ntstuff.h 3021 2017-01-07 16:52:16Z bird $ */
 /** @file
  * Definitions, types, prototypes and globals for NT.
  */
@@ -35,9 +35,12 @@
 #define timeval timeval_Windows
 #define WIN32_NO_STATUS
 #include <Windows.h>
+#include <winternl.h>
 #undef WIN32_NO_STATUS
 #include <ntstatus.h>
 #undef timeval
+
+#include <k/kTypes.h>
 
 
 /** @defgroup grp_nt_ntstuff NT Stuff
@@ -72,6 +75,59 @@ typedef struct MY_STRING
     PCHAR               Buffer;
 } MY_STRING;
 typedef MY_STRING MY_ANSI_STRING;
+
+typedef struct MY_CURDIR
+{
+    UNICODE_STRING      DosPath;
+    HANDLE              Handle;
+} MY_CURDIR;
+typedef MY_CURDIR *PMY_CURDIR;
+
+typedef struct MY_RTL_DRIVE_LETTER_CURDIR
+{
+    USHORT              Flags;
+    USHORT              Length;
+    ULONG               TimeStamp;
+    MY_ANSI_STRING      DosPath;
+} MY_RTL_DRIVE_LETTER_CURDIR;
+typedef MY_RTL_DRIVE_LETTER_CURDIR *PRTL_DRIVE_LETTER_CURDIR;
+
+typedef struct MY_RTL_USER_PROCESS_PARAMETERS
+{
+    ULONG               MaximumLength;
+    ULONG               Length;
+    ULONG               Flags;
+    ULONG               DebugFlags;
+    HANDLE              ConsoleHandle;
+    ULONG               ConsoleFlags;
+    HANDLE              StandardInput;
+    HANDLE              StandardOutput;
+    HANDLE              StandardError;
+    MY_CURDIR           CurrentDirectory;
+    MY_UNICODE_STRING   DllPath;
+    MY_UNICODE_STRING   ImagePathName;
+    MY_UNICODE_STRING   CommandLine;
+    PWSTR               Environment;
+    ULONG               StartingX;
+    ULONG               StartingY;
+    ULONG               CountX;
+    ULONG               CountY;
+    ULONG               CountCharsX;
+    ULONG               CountCharsY;
+    ULONG               FillAttribute;
+    ULONG               WindowFlags;
+    ULONG               ShowWindowFlags;
+    MY_UNICODE_STRING   WindowTitle;
+    MY_UNICODE_STRING   DesktopInfo;
+    MY_UNICODE_STRING   ShellInfo;
+    MY_UNICODE_STRING   RuntimeInfo;
+    MY_RTL_DRIVE_LETTER_CURDIR CurrentDirectories[0x20];
+    SIZE_T              EnvironmentSize;        /* >= Vista+ */
+    SIZE_T              EnvironmentVersion;     /* >= Windows 7. */
+    PVOID               PackageDependencyData;  /* >= Windows 8 or Windows 8.1. */
+    ULONG               ProcessGroupId;         /* >= Windows 8 or Windows 8.1. */
+} MY_RTL_USER_PROCESS_PARAMETERS;
+typedef MY_RTL_USER_PROCESS_PARAMETERS *PMY_RTL_USER_PROCESS_PARAMETERS;
 
 typedef struct MY_OBJECT_ATTRIBUTES
 {
@@ -112,6 +168,17 @@ typedef struct MY_FILE_STANDARD_INFORMATION
     BOOLEAN         DeletePending;
     BOOLEAN         Directory;
 } MY_FILE_STANDARD_INFORMATION;
+
+typedef struct MY_FILE_NETWORK_OPEN_INFORMATION
+{
+    LARGE_INTEGER   CreationTime;
+    LARGE_INTEGER   LastAccessTime;
+    LARGE_INTEGER   LastWriteTime;
+    LARGE_INTEGER   ChangeTime;
+    LARGE_INTEGER   AllocationSize;
+    LARGE_INTEGER   EndOfFile;
+    ULONG           FileAttributes;
+} MY_FILE_NETWORK_OPEN_INFORMATION;
 
 typedef struct MY_FILE_INTERNAL_INFORMATION
 {
@@ -199,6 +266,48 @@ typedef struct MY_FILE_ID_FULL_DIR_INFORMATION
 /** The sizeof(MY_FILE_NAMES_INFORMATION) without the FileName. */
 #define MIN_SIZEOF_MY_FILE_ID_FULL_DIR_INFORMATION  ( (size_t)&((MY_FILE_ID_FULL_DIR_INFORMATION *)0)->FileName )
 
+typedef struct MY_FILE_BOTH_DIR_INFORMATION
+{
+    ULONG           NextEntryOffset;
+    ULONG           FileIndex;
+    LARGE_INTEGER   CreationTime;
+    LARGE_INTEGER   LastAccessTime;
+    LARGE_INTEGER   LastWriteTime;
+    LARGE_INTEGER   ChangeTime;
+    LARGE_INTEGER   EndOfFile;
+    LARGE_INTEGER   AllocationSize;
+    ULONG           FileAttributes;
+    ULONG           FileNameLength;
+    ULONG           EaSize;
+    CCHAR           ShortNameLength;
+    WCHAR           ShortName[12];
+    WCHAR           FileName[1];
+} MY_FILE_BOTH_DIR_INFORMATION;
+/** The sizeof(MY_FILE_BOTH_DIR_INFORMATION) without the FileName. */
+#define MIN_SIZEOF_MY_FILE_BOTH_DIR_INFORMATION  ( (size_t)&((MY_FILE_BOTH_DIR_INFORMATION *)0)->FileName )
+
+
+typedef struct MY_FILE_ID_BOTH_DIR_INFORMATION
+{
+    ULONG           NextEntryOffset;
+    ULONG           FileIndex;
+    LARGE_INTEGER   CreationTime;
+    LARGE_INTEGER   LastAccessTime;
+    LARGE_INTEGER   LastWriteTime;
+    LARGE_INTEGER   ChangeTime;
+    LARGE_INTEGER   EndOfFile;
+    LARGE_INTEGER   AllocationSize;
+    ULONG           FileAttributes;
+    ULONG           FileNameLength;
+    ULONG           EaSize;
+    CCHAR           ShortNameLength;
+    WCHAR           ShortName[12];
+    LARGE_INTEGER   FileId;
+    WCHAR           FileName[1];
+} MY_FILE_ID_BOTH_DIR_INFORMATION;
+/** The sizeof(MY_FILE_NAMES_INFORMATION) without the FileName. */
+#define MIN_SIZEOF_MY_FILE_ID_BOTH_DIR_INFORMATION  ( (size_t)&((MY_FILE_ID_BOTH_DIR_INFORMATION *)0)->FileName )
+
 
 typedef struct MY_FILE_DISPOSITION_INFORMATION
 {
@@ -276,6 +385,14 @@ typedef struct MY_FILE_FS_VOLUME_INFORMATION
     WCHAR           VolumeLabel[1];
 } MY_FILE_FS_VOLUME_INFORMATION;
 
+typedef struct _MY_FILE_FS_ATTRIBUTE_INFORMATION
+{
+    ULONG           FileSystemAttributes;
+    LONG            MaximumComponentNameLength;
+    ULONG           FileSystemNameLength;
+    WCHAR           FileSystemName[1];
+} MY_FILE_FS_ATTRIBUTE_INFORMATION;
+
 typedef enum MY_FSINFOCLASS
 {
     MyFileFsVolumeInformation                      = 1,
@@ -351,13 +468,67 @@ typedef struct MY_RTL_RELATIVE_NAME_U
 # define FILE_OPEN_FOR_FREE_SPACE_QUERY     0x00800000U
 #endif
 
+#ifndef DUPLICATE_CLOSE_SOURCE /* For the misnomer NtDuplicateObject. */
+# define DUPLICATE_CLOSE_SOURCE             0x00000001U
+# define DUPLICATE_SAME_ACCESS              0x00000002U
+#endif
+#ifndef DUPLICATE_SAME_ATTRIBUTES
+# define DUPLICATE_SAME_ATTRIBUTES          0x00000004U
+#endif
+
 
 /** @name NT status codes and associated macros.
  * @{ */
 #define MY_NT_SUCCESS(a_ntRc)               ((MY_NTSTATUS)(a_ntRc) >= 0)
 #define MY_NT_FAILURE(a_ntRc)               ((MY_NTSTATUS)(a_ntRc) <  0)
 #define MY_STATUS_NO_MORE_FILES             ((MY_NTSTATUS)0x80000006)
+#define MY_STATUS_OBJECT_NAME_INVALID       ((MY_NTSTATUS)0xc0000033)
+#define MY_STATUS_OBJECT_NAME_NOT_FOUND     ((MY_NTSTATUS)0xc0000034)
+#define MY_STATUS_OBJECT_PATH_INVALID       ((MY_NTSTATUS)0xc0000039)
+#define MY_STATUS_OBJECT_PATH_NOT_FOUND     ((MY_NTSTATUS)0xc000003a)
+#define MY_STATUS_OBJECT_PATH_SYNTAX_BAD    ((MY_NTSTATUS)0xc000003b)
 /** @}  */
+
+/** The pseudohandle for the current process. */
+#define MY_NT_CURRENT_PROCESS               ((HANDLE)~(uintptr_t)0)
+/** The pseudohandle for the current thread. */
+#define MY_NT_CURRENT_THREAD                ((HANDLE)~(uintptr_t)1)
+
+typedef struct MY_CLIENT_ID
+{
+    HANDLE UniqueProcess;
+    HANDLE UniqueThread;
+} MY_CLIENT_ID;
+
+/** Partial TEB.   */
+typedef struct MY_PARTIAL_TEB
+{
+    NT_TIB          NtTib;
+    PVOID           EnvironmentPointer;
+    MY_CLIENT_ID    ClientId;
+    PVOID           ActiveRpcHandle;
+    PVOID           ThreadLocalStoragePointer;
+    PPEB            ProcessEnvironmentBlock;
+    KU32            LastErrorValue;
+    KU32            CountOfOwnedCriticalSections;
+    PVOID           CsrClientThread;
+    PVOID           Win32ThreadInfo;
+} MY_PARTIAL_TEB;
+
+/** Internal macro for reading uintptr_t sized TEB members. */
+#if K_ARCH == K_ARCH_AMD64
+# define MY_NT_READ_TEB_WORKER(a_offTebMember) ( __readgsqword(a_offTebMember) )
+#elif K_ARCH == K_ARCH_X86_32
+# define MY_NT_READ_TEB_WORKER(a_offTebMember) ( __readfsdword(a_offTebMember) )
+#else
+# error "Port me!"
+#endif
+/** Get the PEB pointer.
+ * @remark Needs stddef.h. */
+#define MY_NT_CURRENT_PEB()  ( (PPEB)MY_NT_READ_TEB_WORKER(offsetof(MY_PARTIAL_TEB, ProcessEnvironmentBlock)) )
+/** Get the TEB pointer.
+ * @remark Needs stddef.h. */
+#define MY_NT_CURRENT_TEB()  ( (PTEB)MY_NT_READ_TEB_WORKER(offsetof(NT_TIB, Self)) )
 
 
 /*******************************************************************************
@@ -367,6 +538,11 @@ extern MY_NTSTATUS (WINAPI * g_pfnNtClose)(HANDLE);
 extern MY_NTSTATUS (WINAPI * g_pfnNtCreateFile)(PHANDLE, MY_ACCESS_MASK, MY_OBJECT_ATTRIBUTES *, MY_IO_STATUS_BLOCK *,
                                                 PLARGE_INTEGER, ULONG, ULONG, ULONG, ULONG, PVOID, ULONG);
 extern MY_NTSTATUS (WINAPI * g_pfnNtDeleteFile)(MY_OBJECT_ATTRIBUTES *);
+extern MY_NTSTATUS (WINAPI * g_pfnNtDuplicateObject)(HANDLE hSrcProc, HANDLE hSrc, HANDLE hDstProc, HANDLE *phRet,
+                                                     MY_ACCESS_MASK fDesiredAccess, ULONG fAttribs, ULONG fOptions);
+extern MY_NTSTATUS (WINAPI * g_pfnNtReadFile)(HANDLE hFile, HANDLE hEvent, MY_IO_APC_ROUTINE *pfnApc, PVOID pvApcCtx,
+                                              MY_IO_STATUS_BLOCK *, PVOID pvBuf, ULONG cbToRead, PLARGE_INTEGER poffFile,
+                                              PULONG  puKey);
 extern MY_NTSTATUS (WINAPI * g_pfnNtQueryInformationFile)(HANDLE, MY_IO_STATUS_BLOCK *,
                                                           PVOID, LONG, MY_FILE_INFORMATION_CLASS);
 extern MY_NTSTATUS (WINAPI * g_pfnNtQueryVolumeInformationFile)(HANDLE, MY_IO_STATUS_BLOCK *,
@@ -374,9 +550,20 @@ extern MY_NTSTATUS (WINAPI * g_pfnNtQueryVolumeInformationFile)(HANDLE, MY_IO_ST
 extern MY_NTSTATUS (WINAPI * g_pfnNtQueryDirectoryFile)(HANDLE, HANDLE, MY_IO_APC_ROUTINE *, PVOID, MY_IO_STATUS_BLOCK *,
                                                         PVOID, ULONG, MY_FILE_INFORMATION_CLASS, BOOLEAN,
                                                         MY_UNICODE_STRING *, BOOLEAN);
+extern MY_NTSTATUS (WINAPI * g_pfnNtQueryAttributesFile)(MY_OBJECT_ATTRIBUTES *, MY_FILE_BASIC_INFORMATION *);
+extern MY_NTSTATUS (WINAPI * g_pfnNtQueryFullAttributesFile)(MY_OBJECT_ATTRIBUTES *, MY_FILE_NETWORK_OPEN_INFORMATION *);
 extern MY_NTSTATUS (WINAPI * g_pfnNtSetInformationFile)(HANDLE, MY_IO_STATUS_BLOCK *, PVOID, LONG, MY_FILE_INFORMATION_CLASS);
 extern BOOLEAN     (WINAPI * g_pfnRtlDosPathNameToNtPathName_U)(PCWSTR, MY_UNICODE_STRING *, PCWSTR *, MY_RTL_RELATIVE_NAME_U *);
 extern MY_NTSTATUS (WINAPI * g_pfnRtlAnsiStringToUnicodeString)(MY_UNICODE_STRING *, MY_ANSI_STRING const *, BOOLEAN);
+extern MY_NTSTATUS (WINAPI * g_pfnRtlUnicodeStringToAnsiString)(MY_ANSI_STRING *, MY_UNICODE_STRING *, BOOLEAN);
+extern BOOLEAN     (WINAPI * g_pfnRtlEqualUnicodeString)(MY_UNICODE_STRING const *pUniStr1, MY_UNICODE_STRING const *pUniStr2,
+                                                         BOOLEAN fCaseInsensitive);
+extern BOOLEAN     (WINAPI * g_pfnRtlEqualString)(MY_ANSI_STRING const *pAnsiStr1, MY_ANSI_STRING const *pAnsiStr2,
+                                                  BOOLEAN fCaseInsensitive);
+extern UCHAR       (WINAPI * g_pfnRtlUpperChar)(UCHAR uch);
+extern ULONG       (WINAPI * g_pfnRtlNtStatusToDosError)(MY_NTSTATUS rcNt);
+extern VOID        (WINAPI * g_pfnRtlAcquirePebLock)(VOID);
+extern VOID        (WINAPI * g_pfnRtlReleasePebLock)(VOID);
 
 
 /** @} */

@@ -1,4 +1,4 @@
-# $Id: Config.kmk 2800 2015-09-20 19:12:56Z bird $
+# $Id: Config.kmk 2870 2016-09-04 13:52:39Z bird $
 ## @file
 # Build Configuration.
 #
@@ -48,12 +48,21 @@ ifneq ($(wildcard $(PATH_ROOT)/SvnInfo.kmk),)
 KBUILD_SVN_INFO_KMK := $(PATH_ROOT)/SvnInfo.kmk
 KBUILD_SVN_INFO_DEP := $(KBUILD_SVN_INFO_KMK)
 
-else ifneq ($(wildcard $(PATH_ROOT)/.svn/entries $(PATH_ROOT)/../.svn/entries),)
+else ifneq ($(wildcard $(PATH_ROOT)/.svn/ $(PATH_ROOT)/../.svn/),)
 # Generate from svn info
 KBUILD_SVN_INFO_KMK := $(PATH_OBJ)/SvnInfo.kmk
 KBUILD_SVN_INFO_DEP := $(KBUILD_SVN_INFO_KMK)
 
-$(PATH_OBJ)/SvnInfo.ts +| $(KBUILD_SVN_INFO_KMK): $(wildcard $(PATH_ROOT)/.svn $(PATH_ROOT)/.svn/entries $(PATH_ROOT)/.svn/all-wcprops $(PATH_ROOT)/.svn/format $(PATH_ROOT)/.svn/props $(PATH_ROOT)/.svn/prop-base )
+$(PATH_OBJ)/SvnInfo.ts +| $(KBUILD_SVN_INFO_KMK): $(wildcard $(addprefix $(PATH_ROOT)/.svn/ $(PATH_ROOT)/../.svn/,\
+		. \
+		pristine \
+		wc.db \
+		tmp \
+		entries \
+		all-wcprops \
+		format \
+		props \
+		prop-base ) )
 	$(call MSG_GENERATE,,$(KBUILD_SVN_INFO_KMK))
 	@$(RM) -f $@ $@.tmp
 	@$(MKDIR) -p $(@D)
@@ -198,7 +207,9 @@ TEMPLATE_DOC_GID    ?= $(firstword $(MY_INST_DOC_GID)  $(MY_INST_GID))
 #
 TEMPLATE_BIN = Command line binary
 
-TEMPLATE_BIN_INCS               = $(PATH_ROOT)/src/lib
+TEMPLATE_BIN_INCS               = \
+	$(PATH_ROOT)/src/lib \
+	$(PATH_ROOT)/src/lib/kStuff/include
 TEMPLATE_BIN_DEFS.profile       = NDEBUG
 TEMPLATE_BIN_DEFS.release       = NDEBUG
 if defined(NIX_INSTALL_DIR) && !defined(KBUILD_BOOTSTRAP)
@@ -280,7 +291,7 @@ ifeq ($(filter-out win nt,$(KBUILD_TARGET)),)
 	. \
 	$(PATH_GNUMAKE_SRC)/w32/include \
 	$(PATH_GNUMAKE_SRC)/glob
- TEMPLATE_BIN_LDFLAGS           = /SUBSYSTEM:console /INCREMENTAL:no /NOD /DEBUG
+ TEMPLATE_BIN_LDFLAGS           = /SUBSYSTEM:console /INCREMENTAL:no /NOD /DEBUG /OPT:REF /OPT:ICF /LargeAddressAware
  ifeq ($(KBUILD_TYPE),profile)
   TEMPLATE_BIN_SDKS             = WINPSDKINCS
   TEMPLATE_BIN_CFLAGS          += -MT
@@ -375,6 +386,32 @@ TEMPLATE_LIB_INST    = lib/
 TEMPLATE_LIB_TOOL    = $(TEMPLATE_BIN_TOOL)
 
 
-LIB_KDEP = $(PATH_OBJ)/kDep/$(TOOL_$(TEMPLATE_LIB_TOOL)_ARLIBPREF)kDep$(TOOL_$(TEMPLATE_LIB_TOOL)_ARLIBSUFF)
+#
+# Template for static threaded binaries (windows).
+#
+TEMPLATE_BIN-STATIC-THREADED = Threaded command line binary
+TEMPLATE_BIN-STATIC-THREADED_EXTENDS  = BIN-THREADED
+ifeq ($(filter-out win nt,$(KBUILD_TARGET)),)
+ TEMPLATE_BIN-STATIC-THREADED_CFLAGS  = $(filter-out -MD,$(TEMPLATE_BIN-THREADED_CFLAGS)) -MT
+ TEMPLATE_BIN-STATIC-THREADED_LIBS    = $(filter-out %/msvcrt.lib,$(TEMPLATE_BIN-THREADED_LIBS)) \
+ 	$(PATH_TOOL_$(TEMPLATE_BIN_TOOL)_LIB)/libcmt.lib \
+ 	$(PATH_TOOL_$(TEMPLATE_BIN_TOOL)_LIB)/libcpmt.lib
+else
+ TEMPLATE_BIN-STATIC-THREADED_CFLAGS  = $(TEMPLATE_BIN-THREADED_CFLAGS) -static
+ TEMPLATE_BIN-STATIC-THREADED_LDFLAGS = $(TEMPLATE_BIN-THREADED_LDFLAGS) -static
+endif
+
+#
+# Template for static threaded libraries.
+#
+TEMPLATE_LIB-STATIC-THREADED = Threaded command line library
+TEMPLATE_LIB-STATIC-THREADED_EXTENDS  = BIN-STATIC-THREADED
+TEMPLATE_LIB-STATIC-THREADED_INST     = lib/
+
+
+#
+# Library macros.
+#
+LIB_KDEP  = $(PATH_OBJ)/kDep/$(TOOL_$(TEMPLATE_LIB_TOOL)_ARLIBPREF)kDep$(TOOL_$(TEMPLATE_LIB_TOOL)_ARLIBSUFF)
 LIB_KUTIL = $(PATH_OBJ)/kUtil/$(TOOL_$(TEMPLATE_LIB_TOOL)_ARLIBPREF)kUtil$(TOOL_$(TEMPLATE_LIB_TOOL)_ARLIBSUFF)
 

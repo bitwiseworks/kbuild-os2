@@ -20,6 +20,9 @@ this program.  If not, see <http://www.gnu.org/licenses/>.  */
 #include <string.h>
 #include <stdlib.h>
 #include "pathstuff.h"
+#if 1 /* bird */
+# include "nt_fullpath.h"
+#endif
 
 /*
  * Convert delimiter separated vpath to Canonical format.
@@ -92,10 +95,6 @@ convert_Path_to_windows32(char *Path, char to_delim)
     return Path;
 }
 
-#if 1 /* bird */
-extern void nt_fullpath(const char *pszPath, char *pszFull, size_t cchFull);
-#endif
-
 /*
  * Convert to forward slashes. Resolve to full pathname optionally
  */
@@ -107,7 +106,7 @@ w32ify(const char *filename, int resolve)
 
 #if 1 /* bird */
     if (resolve) {
-        nt_fullpath(filename, w32_path, sizeof(w32_path));
+        nt_fullpath_cached(filename, w32_path, sizeof(w32_path));
     } else {
         w32_path[0] = '\0';
         strncat(w32_path, filename, sizeof(w32_path));
