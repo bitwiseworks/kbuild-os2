@@ -372,7 +372,7 @@ int main(int argc, char **argv, char **envp)
                         char *pszCopy = (char *)malloc(cchVar + 2);
                         memcpy(pszCopy, psz, cchVar);
 
-#if defined(_MSC_VER) || defined(__OS2__)
+#if defined(_MSC_VER)
                         pszCopy[cchVar] = '=';
                         pszCopy[cchVar + 1] = '\0';
                         if (putenv(pszCopy))
