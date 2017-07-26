@@ -230,7 +230,7 @@ TOOL_GXX3OMF_COMPILE_RC_DEPEND =
 TOOL_GXX3OMF_COMPILE_RC_DEPORD =
 define TOOL_GXX3OMF_COMPILE_RC_CMDS
 	$(QUIET)$(REDIRECT) -E 'INCLUDE=' -- $(TOOL_GXX3OMF_RC) -r \
-		$(flags) $(addprefix -i, $(subst /,\\,$(subst /@unixroot,$(UNIXROOT),$(incs)))) $(addprefix -d, $(defs))\
+		$(flags) $(addprefix -i , $(subst /,\\,$(subst /@unixroot,$(UNIXROOT),$(incs)))) $(addprefix -d , $(defs))\
 		$(subst /,\\,$(abspath $(source))) \
 		$(obj)
 endef
