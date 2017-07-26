@@ -2755,7 +2755,7 @@ static void kOCEntrySpawn(PCKOCENTRY pEntry, uint32_t *pcMs, const char * const 
 # ifdef __WIN__
     rc = quoted_spawnvp(_P_WAIT, papszArgv[0], papszArgv);
 # else
-    rc = _spawnvp(_P_WAIT, papszArgv[0], papszArgv);
+    rc = _spawnvp(_P_WAIT, papszArgv[0], (char * const *)papszArgv);
 # endif
     *pcMs = NowMs() - *pcMs;
     if (rc < 0)
@@ -2871,7 +2871,7 @@ static pid_t kOCEntrySpawnChild(PCKOCENTRY pEntry, uint32_t *pcMs, const char * 
 # ifdef __WIN__
     pid = quoted_spawnvp(_P_NOWAIT, papszArgv[0], papszArgv);
 # else
-    pid = _spawnvp(_P_NOWAIT, papszArgv[0], papszArgv);
+    pid = _spawnvp(_P_NOWAIT, papszArgv[0], (char * const *)papszArgv);
 # endif
     if (pid == -1)
         FatalDie("preprocess - _spawnvp failed: %s\n", strerror(errno));

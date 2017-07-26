@@ -737,7 +737,7 @@ dir_contents_file_exists_p (struct directory_contents *dir,
 
 #ifdef __EMX__
   if (filename != 0)
-    _fnlwr (filename); /* lower case for FAT drives */
+    _fnlwr ((char *) filename); /* lower case for FAT drives */
 #endif
 
 #ifdef VMS
