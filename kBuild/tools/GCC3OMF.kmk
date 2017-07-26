@@ -87,7 +87,11 @@ TOOL_GCC3OMF_RCINCS           ?= $(shell $(TOOL_GCC3OMF_CXX) -E -x c++ - 2>&1 < 
 TOOL_GCC3OMF_ARFLAGS          ?= cr
 TOOL_GCC3OMF_ARLIBSUFF        ?= .lib
 
+if1of ($(EMXOMFLD_TYPE), wlink WLINK)
+TOOL_GCC3OMF_LDFLAGS          ?= -Zomf -Zlinker \"DISABLE\ 1121\"
+else
 TOOL_GCC3OMF_LDFLAGS          ?= -Zomf
+endif
 TOOL_GCC3OMF_LDFLAGS.debug    ?= -g
 TOOL_GCC3OMF_LDFLAGS.profile  ?= -g
 
