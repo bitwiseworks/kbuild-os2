@@ -65,6 +65,7 @@ INSTALLS += kBuild_bin
 kBuild_bin_INST = $(TEMPLATE_BIN_INST)
 kBuild_bin_SOURCES =
 
+ifneq ($(wildcard kBuild/bin/$(KBUILD_TARGET).$(KBUILD_TARGET_ARCH)/*),)
 kBuild_bin_SOURCES.os2 = \
 	kBuild/bin/$(KBUILD_TARGET).$(KBUILD_TARGET_ARCH)/libc06.dll=>libc06.dll \
 	kBuild/bin/$(KBUILD_TARGET).$(KBUILD_TARGET_ARCH)/libc061.dll=>libc061.dll \
@@ -79,6 +80,7 @@ kBuild_bin_SOURCES.$(KBUILD_TARGET) = \
 kBuild_bin_SOURCES.profile = \
 	D:/coding/kStuff/svn/trunk/out/win.$(KBUILD_TARGET_ARCH)/release/kStuff/bin/kPrf2.dll \
 	D:/coding/kStuff/svn/trunk/out/win.$(KBUILD_TARGET_ARCH)/release/kStuff/bin/kPrf2WinApiWrappers.dll
+endif
 endif
 
 
