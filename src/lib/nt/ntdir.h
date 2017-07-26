@@ -1,4 +1,4 @@
-/* $Id: ntdir.h 2708 2013-11-21 10:26:40Z bird $ */
+/* $Id: ntdir.h 3005 2016-11-06 00:07:37Z bird $ */
 /** @file
  * MSC + NT opendir, readdir, closedir and friends.
  */
@@ -49,6 +49,21 @@ typedef struct dirent
     char                d_name[512 - sizeof(BirdStat_T) - 2 - 2 - 1];
 } BirdDirEntry_T;
 
+typedef struct direntw
+{
+    /** Optional stat information.
+     * Only provided if using birdDirOpenExtraInfo(). */
+    BirdStat_T          d_stat;
+    /** The record length. */
+    unsigned __int16    d_reclen;
+    /** The name length (in wchar_t). */
+    unsigned __int16    d_namlen;
+    /** The name type. */
+    unsigned char       d_type;
+    /** The name. */
+    wchar_t             d_name[512 - sizeof(BirdStat_T) - 2 - 2 - 1];
+} BirdDirEntryW_T;
+
 #define d_ino           d_stat.st_ino;
 
 /** @name d_type values.
@@ -64,10 +79,26 @@ typedef struct dirent
 #define DT_WHT              14
 /** @}  */
 
+/** @name BIRDDIR_F_XXX - birdDirOpenFromHandle & BirdDir_T::fFlags
+ * @{ */
+/** birdDirClose should also close pvHandle.  */
+#define BIRDDIR_F_CLOSE_HANDLE  1U
+/** birdDirClose should not close the handle.  */
+#define BIRDDIR_F_KEEP_HANDLE   0U
+/** Provide extra info (stat). */
+#define BIRDDIR_F_EXTRA_INFO    2U
+/** Whether to restart the scan. */
+#define BIRDDIR_F_RESTART_SCAN  4U
+/** Set if the BirdDir_T structure is statically allocated. */
+#define BIRDDIR_F_STATIC_ALLOC  8U
+/** @} */
+
 typedef struct BirdDir
 {
     /** Magic value. */
     unsigned            uMagic;
+    /** Flags. */
+    unsigned            fFlags;
     /** The directory handle. */
     void               *pvHandle;
     /** The device number (st_dev). */
@@ -89,7 +120,11 @@ typedef struct BirdDir
     unsigned char      *pabBuf;
 
     /** Static directory entry. */
-    BirdDirEntry_T      DirEntry;
+    union
+    {
+        BirdDirEntry_T  DirEntry;
+        BirdDirEntryW_T DirEntryW;
+    } u;
 } BirdDir_T;
 /** Magic value for BirdDir. */
 #define BIRD_DIR_MAGIC      0x19731120
@@ -97,7 +132,11 @@ typedef struct BirdDir
 
 BirdDir_T      *birdDirOpen(const char *pszPath);
 BirdDir_T      *birdDirOpenExtraInfo(const char *pszPath);
+BirdDir_T      *birdDirOpenExW(void *hRoot, const wchar_t *pwszPath, const wchar_t *pwszFilter, unsigned fFlags);
+BirdDir_T      *birdDirOpenFromHandle(void *hDir, const void *pvReserved, unsigned fFlags);
+BirdDir_T      *birdDirOpenFromHandleWithReuse(BirdDir_T *pDir, void *pvHandle, const void *pvReserved, unsigned fFlags);
 BirdDirEntry_T *birdDirRead(BirdDir_T *pDir);
+BirdDirEntryW_T *birdDirReadW(BirdDir_T *pDir);
 long            birdDirTell(BirdDir_T *pDir);
 void            birdDirSeek(BirdDir_T *pDir, long offDir);
 int             birdDirClose(BirdDir_T *pDir);

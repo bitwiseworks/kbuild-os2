@@ -1,4 +1,4 @@
-# $Id: YASM.kmk 2750 2015-01-23 12:24:02Z bird $
+# $Id: YASM.kmk 2891 2016-09-08 03:02:58Z bird $
 ## @file
 # kBuild Tool Config - YASM 0.4.0 or later.
 #
@@ -49,6 +49,13 @@ else
  TOOL_YASM_AS ?= yasm$(HOSTSUFF_EXE)
 endif
 
+# kSubmit
+ifdef TOOL_YASM_USE_KSUBMIT
+ ifeq ($(KBUILD_HOST),win)
+  TOOL_YASM_KSUBMIT ?= kmk_builtin_kSubmit --
+ endif
+endif
+
 # General Properties used by kBuild
 TOOL_YASM_ASFLAGS ?=
 
@@ -71,6 +78,15 @@ TOOL_YASM_COMPILE_AS_OUTPUT_MAYBE = $(obj).map
 TOOL_YASM_COMPILE_AS_DEPEND =
 TOOL_YASM_COMPILE_AS_DEPORD =
 define TOOL_YASM_COMPILE_AS_CMDS
+ifdef TOOL_YASM_KSUBMIT # yasm 1.3.0 w/ patches.
+	$(QUIET)$(TOOL_YASM_KSUBMIT) $(TOOL_YASM_AS)\
+		$(patsubst --mapfile%,--mapfile=$(obj).map,$(flags))\
+		$(addsuffix /,$(addprefix -I, $(incs))) $(addprefix -D, $(defs))\
+		-l $(outbase).lst\
+		-o $(obj)\
+		-MD="$(dep)" -MP --makedep-dos2unix-slash\
+		$(abspath $(source))
+else
 	$(QUIET)$(TOOL_YASM_AS)\
 		$(patsubst --mapfile%,--mapfile=$(obj).map,$(flags))\
 		$(addsuffix /,$(addprefix -I, $(incs))) $(addprefix -D, $(defs))\
@@ -98,5 +114,6 @@ define TOOL_YASM_COMPILE_AS_CMDS
 		--append "$(dep).tmp"\
 		"$(dep)"
 	$(QUIET)$(MV) -f -- "$(dep).tmp" "$(dep)"
+endif
 endef
 

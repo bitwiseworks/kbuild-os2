@@ -1,4 +1,4 @@
-/* $Id: kbuild.c 2771 2015-02-01 20:48:36Z bird $ */
+/* $Id: kbuild.c 3046 2017-05-15 12:15:05Z bird $ */
 /** @file
  * kBuild specific make functionality.
  */
@@ -28,6 +28,7 @@
 /*******************************************************************************
 *   Header Files                                                               *
 *******************************************************************************/
+#define NO_MEMCOPY_HACK
 #include "make.h"
 #include "filedef.h"
 #include "variable.h"
@@ -382,6 +383,7 @@ kbuild_apply_defpath(struct variable *pDefPath, char **ppsz, unsigned int *pcch,
     const char *pszIterator;
     const char *pszInCur;
     unsigned int cchInCur;
+    unsigned int cchMaxRelative = 0;
     unsigned int cRelativePaths;
 
     /*
@@ -389,7 +391,7 @@ kbuild_apply_defpath(struct variable *pDefPath, char **ppsz, unsigned int *pcch,
      */
     cRelativePaths = 0;
     pszIterator = *ppsz;
-    while ((pszInCur = find_next_token(&pszIterator, &cchInCur)))
+    while ((pszInCur = find_next_token(&pszIterator, &cchInCur)) != NULL)
     {
         /* is relative? */
 #ifdef HAVE_DOS_PATHS
@@ -397,7 +399,11 @@ kbuild_apply_defpath(struct variable *pDefPath, char **ppsz, unsigned int *pcch,
 #else
         if (pszInCur[0] != '/')
 #endif
+        {
             cRelativePaths++;
+            if (cchInCur > cchMaxRelative)
+                cchMaxRelative = cchInCur;
+        }
     }
 
     /*
@@ -405,10 +411,28 @@ kbuild_apply_defpath(struct variable *pDefPath, char **ppsz, unsigned int *pcch,
      */
     if (cRelativePaths)
     {
-        const size_t cchOut = *pcch + cRelativePaths * (pDefPath->value_length + 1) + 1;
-        char *pszOut = xmalloc(cchOut);
-        char *pszOutCur = pszOut;
+        size_t const cchAbsPathBuf = MAX(GET_PATH_MAX, pDefPath->value_length + cchInCur + 1 + 16);
+        char *pszAbsPathOut = (char *)alloca(cchAbsPathBuf);
+        char *pszAbsPathIn  = (char *)alloca(cchAbsPathBuf);
+        size_t cchAbsDefPath;
+        size_t cchOut;
+        char *pszOut;
+        char *pszOutCur;
         const char *pszInNextCopy = *ppsz;
+
+        /* make defpath absolute and have a trailing slash first. */
+        if (abspath(pDefPath->value, pszAbsPathIn) == NULL)
+            memcpy(pszAbsPathIn, pDefPath->value, pDefPath->value_length);
+        cchAbsDefPath = strlen(pszAbsPathIn);
+#ifdef HAVE_DOS_PATHS
+        if (pszAbsPathIn[cchAbsDefPath - 1] != '/' && pszAbsPathIn[cchAbsDefPath - 1] != '\\')
+#else
+        if (pszAbsPathIn[cchAbsDefPath - 1] != '/')
+#endif
+            pszAbsPathIn[cchAbsDefPath++] = '/';
+
+        cchOut = *pcch + cRelativePaths * cchAbsDefPath + 1;
+        pszOutCur = pszOut = xmalloc(cchOut);
 
         cRelativePaths = 0;
         pszIterator = *ppsz;
@@ -421,38 +445,35 @@ kbuild_apply_defpath(struct variable *pDefPath, char **ppsz, unsigned int *pcch,
             if (pszInCur[0] != '/')
 #endif
             {
-                PATH_VAR(szAbsPathIn);
-                PATH_VAR(szAbsPathOut);
-
-                if (pDefPath->value_length + cchInCur + 1 >= GET_PATH_MAX)
-                    continue;
+                const char *pszToCopy;
+                size_t      cchToCopy;
 
                 /* Create the abspath input. */
-                memcpy(szAbsPathIn, pDefPath->value, pDefPath->value_length);
-                szAbsPathIn[pDefPath->value_length] = '/';
-                memcpy(&szAbsPathIn[pDefPath->value_length + 1], pszInCur, cchInCur);
-                szAbsPathIn[pDefPath->value_length + 1 + cchInCur] = '\0';
+                memcpy(&pszAbsPathIn[cchAbsDefPath], pszInCur, cchInCur);
+                pszAbsPathIn[cchAbsDefPath + cchInCur] = '\0';
 
-                if (abspath(szAbsPathIn, szAbsPathOut) != NULL)
+                pszToCopy = abspath(pszAbsPathIn, pszAbsPathOut);
+                if (!pszToCopy)
+                    pszToCopy = pszAbsPathIn;
+
+                /* copy leading input */
+                if (pszInCur != pszInNextCopy)
                 {
-                    const size_t cchAbsPathOut = strlen(szAbsPathOut);
-                    assert(cchAbsPathOut <= pDefPath->value_length + 1 + cchInCur);
-
-                    /* copy leading input */
-                    if (pszInCur != pszInNextCopy)
-                    {
-                        const size_t cchCopy = pszInCur - pszInNextCopy;
-                        memcpy(pszOutCur, pszInNextCopy, cchCopy);
-                        pszOutCur += cchCopy;
-                    }
-                    pszInNextCopy = pszInCur + cchInCur;
-
-                    /* copy out the abspath. */
-                    memcpy(pszOutCur, szAbsPathOut, cchAbsPathOut);
-                    pszOutCur += cchAbsPathOut;
+                    const size_t cchCopy = pszInCur - pszInNextCopy;
+                    memcpy(pszOutCur, pszInNextCopy, cchCopy);
+                    pszOutCur += cchCopy;
                 }
+                pszInNextCopy = pszInCur + cchInCur;
+
+                /* copy out the abspath. */
+                cchToCopy = strlen(pszToCopy);
+                assert(cchToCopy <= cchAbsDefPath + cchInCur);
+                memcpy(pszOutCur, pszToCopy, cchToCopy);
+                pszOutCur += cchToCopy;
             }
+            /* else: Copy absolute paths as bulk when we hit then next relative one or the end. */
         }
+
         /* the final copy (includes the nil). */
         cchInCur = *ppsz + *pcch - pszInNextCopy;
         memcpy(pszOutCur, pszInNextCopy, cchInCur);
@@ -591,8 +612,14 @@ kbuild_lookup_variable_n(const char *pszName, size_t cchName)
         MY_ASSERT_MSG(strlen(pVar->value) == pVar->value_length,
                       ("%u != %u %.*s\n", pVar->value_length, (unsigned int)strlen(pVar->value), (int)cchName, pVar->name));
 
-        /* Make sure the variable is simple, convert it if necessary. */
-        if (pVar->recursive)
+        /* Make sure the variable is simple, convert it if necessary.
+           Note! Must NOT do this for the dynamic INCS of sdks/ReorderCompilerIncs.kmk */
+        if (!pVar->recursive)
+        { /* likely */ }
+        else if (   cchName < sizeof("SDK_ReorderCompilerIncs_INCS.") - 1U
+                 || pszName[0] != 'S'
+                 || pszName[4] != 'R'
+                 || memcmp(pszName, "SDK_ReorderCompilerIncs_INCS.", sizeof("SDK_ReorderCompilerIncs_INCS.") - 1U) == 0)
             kbuild_simplify_variable(pVar);
     }
     return pVar;
@@ -1961,7 +1988,7 @@ dep     := $(obj)$(SUFF_DEP)
 char *
 func_kbuild_source_one(char *o, char **argv, const char *pszFuncName)
 {
-    static int s_fNoCompileCmdsDepsDefined = -1;
+    static int s_fNoCompileDepsDefined = -1;
     struct variable *pTarget    = kbuild_get_variable_n(ST("target"));
     struct variable *pSource    = kbuild_get_variable_n(ST("source"));
     struct variable *pDefPath   = kbuild_get_variable_n(ST("defpath"));
@@ -2024,6 +2051,8 @@ func_kbuild_source_one(char *o, char **argv, const char *pszFuncName)
 
     if (pDefPath && !pDefPath->value_length)
         pDefPath = NULL;
+
+
     pDefs      = kbuild_collect_source_prop(pTarget, pSource, pTool, &Sdks, pType, pBldType, pBldTrg, pBldTrgArch, pBldTrgCpu, NULL,
                                             ST("DEFS"),  ST("defs"), 1/* left-to-right */);
     pIncs      = kbuild_collect_source_prop(pTarget, pSource, pTool, &Sdks, pType, pBldType, pBldTrg, pBldTrgArch, pBldTrgCpu, pDefPath,
@@ -2052,14 +2081,14 @@ func_kbuild_source_one(char *o, char **argv, const char *pszFuncName)
 
     /*
     # dependencies
-    ifndef NO_COMPILE_CMDS_DEPS
+    ifndef NO_COMPILE_DEPS
     _DEPFILES_INCLUDED += $(dep)
     $(if $(wildcard $(dep)),$(eval include $(dep)))
     endif
      */
-    if (s_fNoCompileCmdsDepsDefined == -1)
-        s_fNoCompileCmdsDepsDefined = kbuild_lookup_variable_n(ST("NO_COMPILE_CMDS_DEPS")) != NULL;
-    if (!s_fNoCompileCmdsDepsDefined)
+    if (s_fNoCompileDepsDefined == -1)
+        s_fNoCompileDepsDefined = kbuild_lookup_variable_n(ST("NO_COMPILE_DEPS")) != NULL;
+    if (!s_fNoCompileDepsDefined)
     {
         pVar = kbuild_query_recursive_variable_n("_DEPFILES_INCLUDED", sizeof("_DEPFILES_INCLUDED") - 1);
         if (pVar)

@@ -1,4 +1,4 @@
-/* $Id: nthlp.h 2713 2013-11-21 21:11:00Z bird $ */
+/* $Id: nthlp.h 3009 2016-11-07 02:21:59Z bird $ */
 /** @file
  * MSC + NT helper functions.
  */
@@ -32,6 +32,7 @@
 #define ___nt_nthlp_h
 
 #include "ntstuff.h"
+#include "nttypes.h"
 
 
 /** Lazy resolving of the NTDLL imports. */
@@ -53,17 +54,38 @@ int         birdSetErrnoToInvalidArg(void);
 int         birdSetErrnoToBadFileNo(void);
 
 
-HANDLE      birdOpenFile(const char *pszPath, ACCESS_MASK fDesiredAccess, ULONG fFileAttribs, ULONG fShareAccess,
-                         ULONG fCreateDisposition, ULONG fCreateOptions, ULONG fObjAttribs);
-HANDLE      birdOpenParentDir(const char *pszPath, ACCESS_MASK fDesiredAccess, ULONG fFileAttribs, ULONG fShareAccess,
-                              ULONG fCreateDisposition, ULONG fCreateOptions, ULONG fObjAttribs,
+HANDLE      birdOpenFile(const char *pszPath, ACCESS_MASK fDesiredAccess, ULONG fFileAttribs,
+                         ULONG fShareAccess, ULONG fCreateDisposition, ULONG fCreateOptions, ULONG fObjAttribs);
+HANDLE      birdOpenFileW(const wchar_t *pwszPath, ACCESS_MASK fDesiredAccess, ULONG fFileAttribs,
+                          ULONG fShareAccess, ULONG fCreateDisposition, ULONG fCreateOptions, ULONG fObjAttribs);
+HANDLE      birdOpenFileEx(HANDLE hRoot, const char *pszPath, ACCESS_MASK fDesiredAccess, ULONG fFileAttribs,
+                           ULONG fShareAccess, ULONG fCreateDisposition, ULONG fCreateOptions, ULONG fObjAttribs);
+HANDLE      birdOpenFileExW(HANDLE hRoot, const wchar_t *pwszPath, ACCESS_MASK fDesiredAccess, ULONG fFileAttribs,
+                            ULONG fShareAccess, ULONG fCreateDisposition, ULONG fCreateOptions, ULONG fObjAttribs);
+HANDLE      birdOpenParentDir(HANDLE hRoot, const char *pszPath, ACCESS_MASK fDesiredAccess, ULONG fFileAttribs,
+                              ULONG fShareAccess, ULONG fCreateDisposition, ULONG fCreateOptions, ULONG fObjAttribs,
                               MY_UNICODE_STRING *pNameUniStr);
-MY_NTSTATUS birdOpenFileUniStr(MY_UNICODE_STRING *pNtPath, ACCESS_MASK fDesiredAccess, ULONG fFileAttribs,
+HANDLE      birdOpenParentDirW(HANDLE hRoot, const wchar_t *pwszPath, ACCESS_MASK fDesiredAccess, ULONG fFileAttribs,
+                               ULONG fShareAccess, ULONG fCreateDisposition, ULONG fCreateOptions, ULONG fObjAttribs,
+                               MY_UNICODE_STRING *pNameUniStr);
+MY_NTSTATUS birdOpenFileUniStr(HANDLE hRoot, MY_UNICODE_STRING *pNtPath, ACCESS_MASK fDesiredAccess, ULONG fFileAttribs,
                                ULONG fShareAccess, ULONG fCreateDisposition, ULONG fCreateOptions, ULONG fObjAttribs,
                                HANDLE *phFile);
+HANDLE      birdOpenCurrentDirectory(void);
 void        birdCloseFile(HANDLE hFile);
 int         birdDosToNtPath(const char *pszPath, MY_UNICODE_STRING *pNtPath);
+int         birdDosToNtPathW(const wchar_t *pwszPath, MY_UNICODE_STRING *pNtPath);
+int         birdDosToRelativeNtPath(const char *pszPath, MY_UNICODE_STRING *pNtPath);
+int         birdDosToRelativeNtPathW(const wchar_t *pszPath, MY_UNICODE_STRING *pNtPath);
 void        birdFreeNtPath(MY_UNICODE_STRING *pNtPath);
+
+
+static __inline void birdNtTimeToTimeSpec(__int64 iNtTime, BirdTimeSpec_T *pTimeSpec)
+{
+    iNtTime -= BIRD_NT_EPOCH_OFFSET_UNIX_100NS;
+    pTimeSpec->tv_sec  = iNtTime / 10000000;
+    pTimeSpec->tv_nsec = (iNtTime % 10000000) * 100;
+}
 
 
 #endif

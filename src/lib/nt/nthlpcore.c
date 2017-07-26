@@ -1,4 +1,4 @@
-/* $Id: nthlpcore.c 2715 2013-12-06 17:41:35Z bird $ */
+/* $Id: nthlpcore.c 2998 2016-11-05 19:37:35Z bird $ */
 /** @file
  * MSC + NT core helpers functions and globals.
  */
@@ -45,15 +45,28 @@ MY_NTSTATUS (WINAPI *g_pfnNtClose)(HANDLE);
 MY_NTSTATUS (WINAPI *g_pfnNtCreateFile)(PHANDLE, MY_ACCESS_MASK, MY_OBJECT_ATTRIBUTES *, MY_IO_STATUS_BLOCK *,
                                         PLARGE_INTEGER, ULONG, ULONG, ULONG, ULONG, PVOID, ULONG);
 MY_NTSTATUS (WINAPI *g_pfnNtDeleteFile)(MY_OBJECT_ATTRIBUTES *);
+MY_NTSTATUS (WINAPI *g_pfnNtDuplicateObject)(HANDLE hSrcProc, HANDLE hSrc, HANDLE hDstProc, HANDLE *phRet,
+                                             MY_ACCESS_MASK fDesiredAccess, ULONG fAttribs, ULONG fOptions);
+MY_NTSTATUS (WINAPI *g_pfnNtReadFile)(HANDLE hFile, HANDLE hEvent, MY_IO_APC_ROUTINE *pfnApc, PVOID pvApcCtx,
+                                      MY_IO_STATUS_BLOCK *, PVOID pvBuf, ULONG cbToRead, PLARGE_INTEGER poffFile,
+                                      PULONG puKey);
 MY_NTSTATUS (WINAPI *g_pfnNtQueryInformationFile)(HANDLE, MY_IO_STATUS_BLOCK *, PVOID, LONG, MY_FILE_INFORMATION_CLASS);
 MY_NTSTATUS (WINAPI *g_pfnNtQueryVolumeInformationFile)(HANDLE, MY_IO_STATUS_BLOCK *, PVOID, LONG, MY_FS_INFORMATION_CLASS);
 MY_NTSTATUS (WINAPI *g_pfnNtQueryDirectoryFile)(HANDLE, HANDLE, MY_IO_APC_ROUTINE *, PVOID, MY_IO_STATUS_BLOCK *,
                                                 PVOID, ULONG, MY_FILE_INFORMATION_CLASS, BOOLEAN,
                                                 MY_UNICODE_STRING *, BOOLEAN);
+MY_NTSTATUS (WINAPI *g_pfnNtQueryAttributesFile)(MY_OBJECT_ATTRIBUTES *, MY_FILE_BASIC_INFORMATION *);
+MY_NTSTATUS (WINAPI *g_pfnNtQueryFullAttributesFile)(MY_OBJECT_ATTRIBUTES *, MY_FILE_NETWORK_OPEN_INFORMATION *);
 MY_NTSTATUS (WINAPI *g_pfnNtSetInformationFile)(HANDLE, MY_IO_STATUS_BLOCK *, PVOID, LONG, MY_FILE_INFORMATION_CLASS);
 BOOLEAN     (WINAPI *g_pfnRtlDosPathNameToNtPathName_U)(PCWSTR, MY_UNICODE_STRING *, PCWSTR *, MY_RTL_RELATIVE_NAME_U *);
 MY_NTSTATUS (WINAPI *g_pfnRtlAnsiStringToUnicodeString)(MY_UNICODE_STRING *, MY_ANSI_STRING const *, BOOLEAN);
-
+MY_NTSTATUS (WINAPI *g_pfnRtlUnicodeStringToAnsiString)(MY_ANSI_STRING *, MY_UNICODE_STRING *, BOOLEAN);
+BOOLEAN     (WINAPI *g_pfnRtlEqualUnicodeString)(MY_UNICODE_STRING const *, MY_UNICODE_STRING const *, BOOLEAN);
+BOOLEAN     (WINAPI *g_pfnRtlEqualString)(MY_ANSI_STRING const *, MY_ANSI_STRING const *, BOOLEAN);
+UCHAR       (WINAPI *g_pfnRtlUpperChar)(UCHAR uch);
+ULONG       (WINAPI *g_pfnRtlNtStatusToDosError)(MY_NTSTATUS rcNt);
+VOID        (WINAPI *g_pfnRtlAcquirePebLock)(VOID);
+VOID        (WINAPI *g_pfnRtlReleasePebLock)(VOID);
 
 static struct
 {
@@ -64,12 +77,23 @@ static struct
     { (FARPROC *)&g_pfnNtClose,                         "NtClose" },
     { (FARPROC *)&g_pfnNtCreateFile,                    "NtCreateFile" },
     { (FARPROC *)&g_pfnNtDeleteFile,                    "NtDeleteFile" },
+    { (FARPROC *)&g_pfnNtDuplicateObject,               "NtDuplicateObject" },
+    { (FARPROC *)&g_pfnNtReadFile,                      "NtReadFile" },
     { (FARPROC *)&g_pfnNtQueryInformationFile,          "NtQueryInformationFile" },
     { (FARPROC *)&g_pfnNtQueryVolumeInformationFile,    "NtQueryVolumeInformationFile" },
     { (FARPROC *)&g_pfnNtQueryDirectoryFile,            "NtQueryDirectoryFile" },
+    { (FARPROC *)&g_pfnNtQueryAttributesFile,           "NtQueryAttributesFile" },
+    { (FARPROC *)&g_pfnNtQueryFullAttributesFile,       "NtQueryFullAttributesFile" },
     { (FARPROC *)&g_pfnNtSetInformationFile,            "NtSetInformationFile" },
     { (FARPROC *)&g_pfnRtlDosPathNameToNtPathName_U,    "RtlDosPathNameToNtPathName_U" },
     { (FARPROC *)&g_pfnRtlAnsiStringToUnicodeString,    "RtlAnsiStringToUnicodeString" },
+    { (FARPROC *)&g_pfnRtlUnicodeStringToAnsiString,    "RtlUnicodeStringToAnsiString" },
+    { (FARPROC *)&g_pfnRtlEqualUnicodeString,           "RtlEqualUnicodeString" },
+    { (FARPROC *)&g_pfnRtlEqualString,                  "RtlEqualString" },
+    { (FARPROC *)&g_pfnRtlUpperChar,                    "RtlUpperChar" },
+    { (FARPROC *)&g_pfnRtlNtStatusToDosError,           "RtlNtStatusToDosError" },
+    { (FARPROC *)&g_pfnRtlAcquirePebLock,               "RtlAcquirePebLock" },
+    { (FARPROC *)&g_pfnRtlReleasePebLock,               "RtlReleasePebLock" },
 };
 /** Set to 1 if we've successfully resolved the imports, otherwise 0. */
 int g_fResolvedNtImports = 0;
@@ -141,7 +165,6 @@ int birdErrnoFromNtStatus(MY_NTSTATUS rcNt)
     {
         /* EPERM            =  1 */
         case STATUS_CANNOT_DELETE:
-        case STATUS_DELETE_PENDING:
             return EPERM;
         /* ENOENT           =  2 */
         case STATUS_NOT_FOUND:
@@ -158,6 +181,7 @@ int birdErrnoFromNtStatus(MY_NTSTATUS rcNt)
         case STATUS_BAD_NETWORK_PATH:
         case STATUS_DFS_EXIT_PATH_FOUND:
         case RPC_NT_OBJECT_NOT_FOUND:
+        case STATUS_DELETE_PENDING:
             return ENOENT;
         /* ESRCH            =  3 */
         case STATUS_PROCESS_NOT_IN_JOB:
@@ -363,6 +387,13 @@ int birdErrnoFromNtStatus(MY_NTSTATUS rcNt)
 int birdSetErrnoFromNt(MY_NTSTATUS rcNt)
 {
     errno = birdErrnoFromNtStatus(rcNt);
+#if 0
+    {
+        ULONG rcWin32;
+        _doserrno = rcWin32 = g_pfnRtlNtStatusToDosError(rcNt);
+        SetLastError(rcWin32);
+    }
+#endif
     return -1;
 }
 

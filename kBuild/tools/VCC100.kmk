@@ -1,4 +1,4 @@
-# $Id: VCC100.kmk 2795 2015-09-15 23:35:37Z bird $
+# $Id: VCC100.kmk 2964 2016-09-23 11:08:04Z bird $
 ## @file
 # kBuild Tool Config - Visual C++ 10.0 (aka Visual 2010 and MSC v16), targeting $(KBUILD_TARGET).
 #
@@ -107,19 +107,21 @@ TOOL_VCC100_FN_FIND_SDK_TOOL = $(if-expr !defined($3),$(TOOL_VCC100_FN_FIND_SDK_
 # @param    $(2)        The extension.
 TOOL_VCC100_PDB = $(dir $(1))$(tolower $(notdir $(1))).$(2)
 
+
+# General Properties used by kBuild
 TOOL_VCC100_COBJSUFF         ?= .obj
-TOOL_VCC100_CFLAGS           ?= -TC -nologo
-TOOL_VCC100_CFLAGS.debug     ?= -Zi
-TOOL_VCC100_CFLAGS.dbgopt    ?= -O2 -Zi
+TOOL_VCC100_CFLAGS           ?= -TC -nologo -Zi
+TOOL_VCC100_CFLAGS.debug     ?=
+TOOL_VCC100_CFLAGS.dbgopt    ?= -O2
 TOOL_VCC100_CFLAGS.release   ?= -O2
 TOOL_VCC100_CFLAGS.profile   ?= -O2
 TOOL_VCC100_CINCS            ?= $(PATH_TOOL_VCC100_INC)
 TOOL_VCC100_CDEFS            ?=
 
 TOOL_VCC100_CXXOBJSUFF       ?= .obj
-TOOL_VCC100_CXXFLAGS         ?= -TP -nologo
-TOOL_VCC100_CXXFLAGS.debug   ?= -Zi
-TOOL_VCC100_CXXFLAGS.dbgopt  ?= -O2 -Zi
+TOOL_VCC100_CXXFLAGS         ?= -TP -nologo -Zi
+TOOL_VCC100_CXXFLAGS.debug   ?=
+TOOL_VCC100_CXXFLAGS.dbgopt  ?= -O2
 TOOL_VCC100_CXXFLAGS.release ?= -O2
 TOOL_VCC100_CXXFLAGS.profile ?= -O2
 TOOL_VCC100_CXXINCS          ?= $(PATH_TOOL_VCC100_INC) $(PATH_TOOL_VCC100_ATLMFC_INC)
@@ -162,37 +164,16 @@ TOOL_VCC100_LIBPATH.x86      ?= $(PATH_TOOL_VCC100_LIB.x86) $(PATH_TOOL_VCC100_A
 # @param    $(objsuff)  Object suffix.
 TOOL_VCC100_COMPILE_C_DEPEND =
 TOOL_VCC100_COMPILE_C_DEPORD =
-ifdef KBUILD_USE_KOBJCACHE
-TOOL_VCC100_COMPILE_C_USES_KOBJCACHE = 1
-TOOL_VCC100_COMPILE_C_OUTPUT = $(outbase).i
-TOOL_VCC100_COMPILE_C_OUTPUT_MAYBE =
-define TOOL_VCC100_COMPILE_C_CMDS
-	$(QUIET)$(KOBJCACHE) -f $(outbase).koc -d $(PATH_OBJCACHE) -t $(bld_trg).$(bld_trg_arch) -O2 -r\
-		--make-dep-fix-case --make-dep-gen-stubs --make-dep-quiet --make-dep-file $(dep)\
-		--kObjCache-cpp $(outbase).i\
-		$(TOOL_VCC100_CC) -E\
-		$(subst -Zi,-Z7,$(flags))\
-		$(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
-		$(subst /,\\,$(abspath $(source))) \
-		--kObjCache-cc $(obj)\
-		$(TOOL_VCC100_CC) -c\
-		$(subst -Zi,-Z7,$(flags))\
-		-Fo$(obj)\
-		$(outbase).i
-endef
-else  # !KBUILD_USE_KOBJCACHE
-TOOL_VCC100_COMPILE_C_OUTPUT = $(call TOOL_VCC100_PDB, $(outbase)-obj,idb)
-TOOL_VCC100_COMPILE_C_OUTPUT_MAYBE = $(call TOOL_VCC100_PDB, $(outbase)-obj,pdb)
+TOOL_VCC100_COMPILE_C_OUTPUT =
+TOOL_VCC100_COMPILE_C_OUTPUT_MAYBE = $(call TOOL_VCC100_PDB, $(outbase)-obj,pdb) $(call TOOL_VCC100_PDB, $(outbase)-obj,idb)
 define TOOL_VCC100_COMPILE_C_CMDS
 	$(QUIET)$(TOOL_VCC100_CC) -c\
 		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
 		-Fd$(outbase)-obj.pdb \
-		-FD\
 		-Fo$(obj)\
 		$(subst /,\\,$(abspath $(source)))
-	$(QUIET)$(DEP_IDB) -f -s -q -o $(dep) -t $(obj) $(call TOOL_VCC100_PDB,$(outbase)-obj,idb)
+	$(QUIET)$(DEP_OBJ) -f -s -q -o $(dep) -t $(obj) $(obj)
 endef
-endif # !KBUILD_USE_KOBJCACHE
 
 
 ## Compile C++ source.
@@ -208,39 +189,66 @@ endif # !KBUILD_USE_KOBJCACHE
 #
 # @param    $(outbase)  Output basename (full). Use this for list files and such.
 # @param    $(objsuff)  Object suffix.
-TOOL_VCC100_COMPILE_CXX_DEPEND =
+TOOL_VCC100_COMPILE_CXX_DEPEND = $($(target)_1_VCC_PCH_FILE)
 TOOL_VCC100_COMPILE_CXX_DEPORD =
-ifdef KBUILD_USE_KOBJCACHE
-TOOL_VCC100_COMPILE_CXX_USES_KOBJCACHE = 1
-TOOL_VCC100_COMPILE_CXX_OUTPUT = $(outbase).ii
-TOOL_VCC100_COMPILE_CXX_OUTPUT_MAYBE =
-define TOOL_VCC100_COMPILE_CXX_CMDS
-	$(QUIET)$(KOBJCACHE) -f $(outbase).koc -d $(PATH_OBJCACHE) -t $(bld_trg).$(bld_trg_arch) -O2 -r\
-		--make-dep-fix-case --make-dep-gen-stubs --make-dep-quiet --make-dep-file $(dep)\
-		--kObjCache-cpp $(outbase).ii\
-		$(TOOL_VCC100_CXX) -E\
-		$(subst -Zi,-Z7,$(flags))\
-		$(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
-		$(subst /,\\,$(abspath $(source))) \
-		--kObjCache-cc $(obj)\
-		$(TOOL_VCC100_CXX) -c\
-		$(subst -Zi,-Z7,$(flags))\
-		-Fo$(obj)\
-		$(outbase).ii
-endef
-else  # !KBUILD_USE_KOBJCACHE
-TOOL_VCC100_COMPILE_CXX_OUTPUT = $(call TOOL_VCC100_PDB, $(outbase)-obj,idb)
-TOOL_VCC100_COMPILE_CXX_OUTPUT_MAYBE = $(call TOOL_VCC100_PDB, $(outbase)-obj,pdb)
+TOOL_VCC100_COMPILE_CXX_OUTPUT =
+TOOL_VCC100_COMPILE_CXX_OUTPUT_MAYBE = $(if-expr defined($(target)_1_VCC_COMMON_OBJ_PDB)\
+	,,$(call TOOL_VCC100_PDB, $(outbase)-obj,pdb) $(call TOOL_VCC100_PDB, $(outbase)-obj,idb))
 define TOOL_VCC100_COMPILE_CXX_CMDS
 	$(QUIET)$(TOOL_VCC100_CXX) -c\
 		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
-		-Fd$(outbase)-obj.pdb \
-		-FD\
+		$(if-expr defined($(target)_PCH_HDR)\
+		,-FI$($(target)_PCH_HDR) -Yu$($(target)_PCH_HDR) -Fp$($(target)_1_VCC_PCH_FILE),)\
+		-Fd$(if-expr defined($(target)_1_VCC_COMMON_OBJ_PDB),$($(target)_1_VCC_COMMON_OBJ_PDB),$(outbase)-obj.pdb) \
 		-Fo$(obj)\
 		$(subst /,\\,$(abspath $(source)))
-	$(QUIET)$(DEP_IDB) -f -s -q -o $(dep) -t $(obj) $(call TOOL_VCC100_PDB,$(outbase)-obj,idb)
+	$(QUIET)$(DEP_OBJ) -f -s -q -o $(dep) -t $(obj) $(obj)
 endef
-endif # !KBUILD_USE_KOBJCACHE
+
+
+#
+# Helper tool for creating the precompiled C++ header.
+#
+# It only have the C++ compile bits and it's purpose is to skip bits
+# related _1_VCC_PCH_FILE and add -Yc.
+#
+TOOL_VCC100-PCH                         := Helper for creating precompiled header using CXX handling.
+TOOL_VCC100-PCH_EXTENDS                 := VCC100
+TOOL_VCC100-PCH_CXXOBJSUFF              := .obj
+TOOL_VCC100-PCH_CXXINCS                  = $(TOOL_VCC100_CXXINCS)
+TOOL_VCC100-PCH_CXXFLAGS.debug           = $(TOOL_VCC100_CXXFLAGS.debug)
+TOOL_VCC100-PCH_CXXFLAGS.dbgopt          = $(TOOL_VCC100_CXXFLAGS.dbgopt)
+TOOL_VCC100-PCH_CXXFLAGS.release         = $(TOOL_VCC100_CXXFLAGS.release)
+TOOL_VCC100-PCH_CXXFLAGS.profile         = $(TOOL_VCC100_CXXFLAGS.profile)
+TOOL_VCC100-PCH_COMPILE_CXX_DEPEND       = $(NO_SUCH_VARIABLE)
+TOOL_VCC100-PCH_COMPILE_CXX_DEPORD       = $(NO_SUCH_VARIABLE)
+TOOL_VCC100-PCH_COMPILE_CXX_OUTPUT       = $($(target)_1_VCC_PCH_FILE) $($(target)_1_VCC_COMMON_OBJ_PDB)
+TOOL_VCC100-PCH_COMPILE_CXX_OUTPUT_MAYBE = $(NO_SUCH_VARIABLE)
+ifdef TOOL_VCC100_KSUBMIT
+ define TOOL_VCC100-PCH_COMPILE_CXX_CMDS
+	$(QUIET)$(TOOL_VCC100_KSUBMIT) --no-pch-caching -P $(DEP_OBJ_INT) -f -s -q -e .pch -o $(dep) -t $(obj) $(obj)\
+		-- $(TOOL_VCC100_CXX) -c -Yc\
+		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+               -Fp$($(target)_1_VCC_PCH_FILE) \
+		-Fd$($(target)_1_VCC_COMMON_OBJ_PDB) \
+		-Fo$(obj)\
+               -TP \
+		$(subst /,\\,$(abspath $(source)))
+ endef
+else
+ define TOOL_VCC100-PCH_COMPILE_CXX_CMDS
+	$(QUIET)$(TOOL_VCC100_CXX) -c -Yc\
+		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+               -Fp$($(target)_1_VCC_PCH_FILE) \
+		-Fd$($(target)_1_VCC_COMMON_OBJ_PDB) \
+		-Fo$(obj)\
+               -TP \
+		$(subst /,\\,$(abspath $(source)))
+	$(QUIET)$(DEP_OBJ) -f -s -q  -e .pch -o $(dep) -t $(obj) $(obj)
+
+ endef
+endif # !TOOL_VCC100_KSUBMIT
+
 
 ## @todo configure the assembler template.
 
@@ -291,8 +299,6 @@ define TOOL_VCC100_LINK_LIBRARY_CMDS
 			,\"$(arg)\")
 	$(QUIET)$(TOOL_VCC100_AR) $(flags) /OUT:$(out) @$(outbase).rsp
 endef
-
-
 
 
 ## Link program

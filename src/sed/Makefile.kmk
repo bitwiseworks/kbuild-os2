@@ -1,4 +1,4 @@
-# $Id: Makefile.kmk 2546 2011-10-01 19:49:54Z bird $
+# $Id: Makefile.kmk 2909 2016-09-09 22:54:17Z bird $
 ## @file
 # Sub-Makefile for kmk_sed.
 #
@@ -36,6 +36,7 @@ kmk_sed_DEPS = \
 	$(kmk_sed_0_OUTDIR)/config.h \
 	$(kmk_sed_0_OUTDIR)/regex.h
 kmk_sed_CLEAN = $(kmk_sed_DEPS)
+kmk_sed_CFLAGS.solaris = -std=gnu99
 kmk_sed_INCS = \
 	$(kmk_sed_0_OUTDIR) \
 	. \
@@ -78,17 +79,16 @@ kmk_sed_SOURCES.openbsd = \
 	lib/getline.c
 kmk_sed_SOURCES.solaris = \
 	lib/strverscmp.c \
-	lib/obstack.c
-ifdef KBUILD_SOLARIS_10
-kmk_sed_SOURCES.solaris += \
+	lib/obstack.c \
 	lib/getline.c
-endif
 kmk_sed_SOURCES.win = \
 	lib/strverscmp.c \
 	lib/obstack.c \
 	lib/mkstemp.c \
 	lib/getline.c \
 	../lib/startuphacks-win.c
+
+kmk_sed_LIBS.win = $(LIB_KUTIL) # for stdout optimizations.
 
 include $(FILE_KBUILD_SUB_FOOTER)
 

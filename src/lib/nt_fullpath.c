@@ -1,4 +1,4 @@
-/* $Id: nt_fullpath.c 2455 2011-07-07 23:16:02Z bird $ */
+/* $Id: nt_fullpath.c 2849 2016-08-30 14:28:46Z bird $ */
 /** @file
  * fixcase - fixes the case of paths, windows specific.
  */
@@ -32,6 +32,9 @@
 #include <string.h>
 #include <ctype.h>
 #include <direct.h>
+
+#include "nt_fullpath.h"
+
 
 /*
  * Corrects the case of a path.

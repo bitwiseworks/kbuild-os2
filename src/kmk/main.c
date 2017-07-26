@@ -89,6 +89,7 @@ void verify_file_data_base (void);
 
 #ifdef CONFIG_WITH_PRINT_STATS_SWITCH
 void print_variable_stats (void);
+void print_dir_stats (void);
 void print_file_stats (void);
 #endif
 
@@ -460,6 +461,8 @@ static const char *const usage[] =
                                 3 = normal / nice 0;\n\
                                 4 = high / nice -10;\n\
                                 5 = realtime / nice -19;\n"),
+    N_("\
+  --nice                      Alias for --priority=1\n"),
 #endif /* KMK */
 #ifdef CONFIG_PRETTY_COMMAND_PRINTING
     N_("\
@@ -533,6 +536,7 @@ static const struct command_switch switches[] =
       (char *) &process_priority, (char *) &process_priority, "priority" },
     { CHAR_MAX+15, positive_int, (char *) &process_affinity, 1, 1, 0,
       (char *) &process_affinity, (char *) &process_affinity, "affinity" },
+    { CHAR_MAX+17, flag, (char *) &process_priority, 1, 1, 0, 0, 0, "nice" },
 #endif
     { 'q', flag, &question_flag, 1, 1, 1, 0, 0, "question" },
     { 'r', flag, &no_builtin_rules_flag, 1, 1, 0, 0, 0, "no-builtin-rules" },
@@ -854,24 +858,29 @@ static void
 set_make_priority_and_affinity (void)
 {
 # ifdef WINDOWS32
-  DWORD dwPriority;
+  DWORD dwClass, dwPriority;
+
   if (process_affinity)
     if (!SetProcessAffinityMask (GetCurrentProcess (), process_affinity))
-      fprintf (stderr, "warning: SetPriorityClass (,%#x) failed with last error %d\n",
+      fprintf (stderr, "warning: SetProcessAffinityMask (,%#x) failed with last error %d\n",
                process_affinity, GetLastError ());
 
   switch (process_priority)
     {
       case 0:     return;
-      case 1:     dwPriority = IDLE_PRIORITY_CLASS; break;
-      case 2:     dwPriority = BELOW_NORMAL_PRIORITY_CLASS; break;
-      case 3:     dwPriority = NORMAL_PRIORITY_CLASS; break;
-      case 4:     dwPriority = HIGH_PRIORITY_CLASS; break;
-      case 5:     dwPriority = REALTIME_PRIORITY_CLASS; break;
+      case 1:     dwClass = IDLE_PRIORITY_CLASS;         dwPriority = THREAD_PRIORITY_IDLE; break;
+      case 2:     dwClass = BELOW_NORMAL_PRIORITY_CLASS; dwPriority = THREAD_PRIORITY_BELOW_NORMAL; break;
+      case 3:     dwClass = NORMAL_PRIORITY_CLASS;       dwPriority = THREAD_PRIORITY_NORMAL; break;
+      case 4:     dwClass = HIGH_PRIORITY_CLASS;         dwPriority = 0xffffffff; break;
+      case 5:     dwClass = REALTIME_PRIORITY_CLASS;     dwPriority = 0xffffffff; break;
       default:    fatal (NILF, _("invalid priority %d\n"), process_priority);
     }
-  if (!SetPriorityClass (GetCurrentProcess (), dwPriority))
+  if (!SetPriorityClass (GetCurrentProcess (), dwClass))
     fprintf (stderr, "warning: SetPriorityClass (,%#x) failed with last error %d\n",
+             dwClass, GetLastError ());
+  if (dwPriority != 0xffffffff
+      && !SetThreadPriority (GetCurrentThread (), dwPriority))
+    fprintf (stderr, "warning: SetThreadPriority (,%#x) failed with last error %d\n",
              dwPriority, GetLastError ());
 
 #elif defined(__HAIKU__)
@@ -915,6 +924,7 @@ set_make_priority_and_affinity (void)
 
 
 #ifdef WINDOWS32
+# ifndef KMK
 /*
  * HANDLE runtime exceptions by avoiding a requestor on the GUI. Capture
  * exception and print it to stderr instead.
@@ -989,6 +999,7 @@ handle_runtime_exceptions( struct _EXCEPTION_POINTERS *exinfo )
   return (255); /* not reached */
 #endif
 }
+# endif /* !KMK */
 
 /*
  * On WIN32 systems we don't have the luxury of a /bin directory that
@@ -1231,16 +1242,33 @@ get_online_cpu_count(void)
 {
 # ifdef WINDOWS32
     /* Windows: Count the active CPUs. */
-    int cpus, i;
-    SYSTEM_INFO si;
-    GetSystemInfo(&si);
-    for (i = cpus = 0; i < sizeof(si.dwActiveProcessorMask) * 8; i++)
+    int cpus;
+
+    /* Process groups (W7+). */
+    typedef DWORD (WINAPI *PFNGETACTIVEPROCESSORCOUNT)(DWORD);
+    PFNGETACTIVEPROCESSORCOUNT pfnGetActiveProcessorCount;
+    pfnGetActiveProcessorCount = (PFNGETACTIVEPROCESSORCOUNT)GetProcAddress(GetModuleHandleW(L"kernel32.dll"),
+                                                                            "GetActiveProcessorCount");
+    if (pfnGetActiveProcessorCount)
+      cpus = pfnGetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+    /* Legacy (<= Vista). */
+    else
       {
-        if (si.dwActiveProcessorMask & 1)
-          cpus++;
-        si.dwActiveProcessorMask >>= 1;
+        int i;
+        SYSTEM_INFO si;
+        GetSystemInfo(&si);
+        for (i = cpus = 0; i < sizeof(si.dwActiveProcessorMask) * 8; i++)
+          {
+            if (si.dwActiveProcessorMask & 1)
+              cpus++;
+            si.dwActiveProcessorMask >>= 1;
+          }
       }
-    return cpus ? cpus : 1;
+    if (!cpus)
+      cpus = 1;
+    if (cpus > 64)
+      cpus = 64; /* (wait for multiple objects limit) */
+    return cpus;
 
 # elif defined(__OS2__)
     /* OS/2: Count the active CPUs. */
@@ -1375,9 +1403,11 @@ main (int argc, char **argv, char **envp)
   char *unix_path = NULL;
   char *windows32_path = NULL;
 
-#ifndef ELECTRIC_HEAP /* Drop this because it prevents JIT debugging. */
+# ifndef ELECTRIC_HEAP /* Drop this because it prevents JIT debugging. */
+#  ifndef KMK /* Don't want none of this crap. */
   SetUnhandledExceptionFilter(handle_runtime_exceptions);
-#endif /* !ELECTRIC_HEAP */
+#  endif
+# endif /* !ELECTRIC_HEAP */
 
   /* start off assuming we have no shell */
   unixy_shell = 0;
@@ -3841,7 +3871,10 @@ print_stats ()
   when = time ((time_t *) 0);
   printf (_("\n# Make statistics, printed on %s"), ctime (&when));
 
-  /* Aallocators: */
+  /* Allocators: */
+#ifdef CONFIG_WITH_COMPILER
+  kmk_cc_print_stats ();
+#endif
 # ifndef CONFIG_WITH_STRCACHE2
   strcache_print_stats ("#");
 # else
@@ -3855,6 +3888,7 @@ print_stats ()
   /* Make stuff: */
   print_variable_stats ();
   print_file_stats ();
+  print_dir_stats ();
 # ifdef KMK
   print_kbuild_define_stats ();
 # endif

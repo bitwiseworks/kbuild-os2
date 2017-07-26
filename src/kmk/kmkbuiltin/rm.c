@@ -388,14 +388,28 @@ rm_tree(char **argv)
 			switch (p->fts_info) {
 			case FTS_DP:
 			case FTS_DNR:
+#ifdef KBUILD_OS_WINDOWS
+				if (p->fts_parent->fts_dirfd != NT_FTS_INVALID_HANDLE_VALUE) {
+				    rval = birdUnlinkForcedEx(p->fts_parent->fts_dirfd, p->fts_name);
+				} else {
+				    rval = birdUnlinkForced(p->fts_accpath);
+				}
+#else
 				rval = rmdir(p->fts_accpath);
+#endif
 				if (rval == 0 || (fflag && errno == ENOENT)) {
 					if (rval == 0 && vflag)
 						(void)printf("%s\n",
 						    p->fts_path);
+#if defined(KMK) && defined(KBUILD_OS_WINDOWS)
+					if (rval == 0) {
+					    extern int dir_cache_deleted_directory(const char *pszDir);
+					    dir_cache_deleted_directory(p->fts_accpath);
+					}
+#endif
 					continue;
 				}
-				operation = "mkdir";
+				operation = "rmdir";
 				break;
 
 #ifdef FTS_W
@@ -424,7 +438,11 @@ rm_tree(char **argv)
 					if (!rm_overwrite(p->fts_accpath, NULL))
 						continue;
 #ifdef KBUILD_OS_WINDOWS
-				rval = birdUnlinkForcedFast(p->fts_accpath);
+				if (p->fts_parent->fts_dirfd != NT_FTS_INVALID_HANDLE_VALUE) {
+				    rval = birdUnlinkForcedFastEx(p->fts_parent->fts_dirfd, p->fts_name);
+				} else {
+				    rval = birdUnlinkForcedFast(p->fts_accpath);
+				}
 #else
 				rval = unlink(p->fts_accpath);
 #endif

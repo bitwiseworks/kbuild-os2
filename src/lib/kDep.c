@@ -1,31 +1,40 @@
-/* $Id: kDep.c 2413 2010-09-11 17:43:04Z bird $ */
+/* $Id: kDep.c 2955 2016-09-21 19:05:53Z bird $ */
 /** @file
  * kDep - Common Dependency Managemnt Code.
  */
 
 /*
- * Copyright (c) 2004-2010 knut st. osmundsen <bird-kBuild-spamx@anduin.net>
+ * Copyright (c) 2004-2013 knut st. osmundsen <bird-kBuild-spamx@anduin.net>
  *
- * This file is part of kBuild.
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
  *
- * kBuild is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 3 of the License, or
- * (at your option) any later version.
+ * The above copyright notice and this permission notice shall be included
+ * in all copies or substantial portions of the Software.
  *
- * kBuild is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+ * IN THE SOFTWARE.
  *
- * You should have received a copy of the GNU General Public License
- * along with kBuild.  If not, see <http://www.gnu.org/licenses/>
- *
+ * Alternatively, the content of this file may be used under the terms of the
+ * GPL version 2 or later, or LGPL version 2.1 or later.
  */
+
 
 /*******************************************************************************
 *   Header Files                                                               *
 *******************************************************************************/
+#ifdef KMK /* For when it gets compiled and linked into kmk. */
+# include "make.h"
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,7 +48,8 @@
 # define USE_WIN_MMAP
 # include <io.h>
 # include <Windows.h>
- extern void nt_fullpath(const char *pszPath, char *pszFull, size_t cchFull); /* nt_fullpath.c */
+# include "nt_fullpath.h"
+# include "nt/ntstat.h"
 #else
 # include <dirent.h>
 # include <unistd.h>
@@ -47,6 +57,10 @@
 #endif
 
 #include "kDep.h"
+
+#ifdef KWORKER
+extern int kwFsPathExists(const char *pszPath);
+#endif
 
 
 /*******************************************************************************
@@ -172,13 +186,14 @@ static void fixcase(char *pszFilename)
 /**
  * 'Optimizes' and corrects the dependencies.
  */
-void depOptimize(int fFixCase, int fQuiet)
+void depOptimize(int fFixCase, int fQuiet, const char *pszIgnoredExt)
 {
     /*
      * Walk the list correct the names and re-insert them.
      */
-    PDEP pDepOrg = g_pDeps;
-    PDEP pDep = g_pDeps;
+    size_t  cchIgnoredExt = pszIgnoredExt ? strlen(pszIgnoredExt) : 0;
+    PDEP    pDepOrg = g_pDeps;
+    PDEP    pDep = g_pDeps;
     g_pDeps = NULL;
     for (; pDep; pDep = pDep->pNext)
     {
@@ -188,7 +203,9 @@ void depOptimize(int fFixCase, int fQuiet)
         char        szFilename[PATH_MAX + 1];
 #endif
         char       *pszFilename;
+#if !defined(KWORKER) && !defined(KMK)
         struct stat s;
+#endif
 
         /*
          * Skip some fictive names like <built-in> and <command line>.
@@ -197,6 +214,14 @@ void depOptimize(int fFixCase, int fQuiet)
             &&  pDep->szFilename[pDep->cchFilename - 1] == '>')
             continue;
         pszFilename = pDep->szFilename;
+
+        /*
+         * Skip pszIgnoredExt if given.
+         */
+        if (   pszIgnoredExt
+            && pDep->cchFilename > cchIgnoredExt
+            && memcmp(&pDep->szFilename[pDep->cchFilename - cchIgnoredExt], pszIgnoredExt, cchIgnoredExt) == 0)
+            continue;
 
 #if K_OS != K_OS_OS2 && K_OS != K_OS_WINDOWS
         /*
@@ -213,7 +238,7 @@ void depOptimize(int fFixCase, int fQuiet)
         if (fFixCase)
         {
 #if K_OS == K_OS_WINDOWS
-            nt_fullpath(pszFilename, szFilename, sizeof(szFilename));
+            nt_fullpath_cached(pszFilename, szFilename, sizeof(szFilename));
             fixslash(szFilename);
 #else
             strcpy(szFilename, pszFilename);
@@ -226,7 +251,15 @@ void depOptimize(int fFixCase, int fQuiet)
         /*
          * Check that the file exists before we start depending on it.
          */
-        if (stat(pszFilename, &s))
+#ifdef KWORKER
+        if (!kwFsPathExists(pszFilename))
+#elif defined(KMK)
+        if (!file_exists_p(pszFilename))
+#elif K_OS == K_OS_WINDOWS
+        if (birdStatModTimeOnly(pszFilename, &s.st_mtim, 1 /*fFollowLink*/) != 0)
+#else
+        if (stat(pszFilename, &s) != 0)
+#endif
         {
             if (   !fQuiet
                 || errno != ENOENT

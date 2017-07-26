@@ -1,4 +1,4 @@
-# $Id: NASM.kmk 2803 2015-11-15 19:44:38Z bird $
+# $Id: NASM.kmk 2929 2016-09-16 21:19:14Z bird $
 ## @file
 # kBuild Tool Config - Netwide Assembler v0.98+.
 #
@@ -35,9 +35,9 @@ TOOL_NASM := Netwide Assembler v0.98+
 
 # Tool Specific Properties
 ifndef PATH_TOOL_NASM
- PATH_TOOL_NASM := $(sort $(wildcard $(KBUILD_DEVTOOLS_HST)/nasm/v*.*))
- ifneq ($(PATH_TOOL_NASM),)
-  PATH_TOOL_NASM := $(call lastword,$(PATH_TOOL_NASM))
+ PATH_TOOL_NASM := $(firstword $(rsort $(wildcard $(KBUILD_DEVTOOLS_HST)/nasm/v*.*)))
+ if "$(PATH_TOOL_NASM)" == "" && "$(KBUILD_DEVTOOLS_HST_ALT)" != ""
+  PATH_TOOL_NASM := $(firstword $(rsort $(wildcard $(KBUILD_DEVTOOLS_HST_ALT)/nasm/v*.*)))
  endif
 else
  # Resolve any fancy stuff once and for all.
@@ -48,6 +48,13 @@ ifneq ($(PATH_TOOL_NASM),)
  TOOL_NASM_AS ?= $(PATH_TOOL_NASM)/nasm$(HOSTSUFF_EXE)
 else
  TOOL_NASM_AS ?= nasm$(HOSTSUFF_EXE)
+endif
+
+# kSubmit
+ifdef TOOL_NASM_USE_KSUBMIT
+ ifeq ($(KBUILD_HOST),win)
+  TOOL_NASM_KSUBMIT ?= kmk_builtin_kSubmit $1 --
+ endif
 endif
 
 # General Properties used by kBuild
@@ -71,16 +78,20 @@ TOOL_NASM_COMPILE_AS_OUTPUT = $(outbase).lst
 TOOL_NASM_COMPILE_AS_DEPEND =
 TOOL_NASM_COMPILE_AS_DEPORD =
 define TOOL_NASM_COMPILE_AS_CMDS
-	$(QUIET)$(TOOL_NASM_AS)\
+ifdef TOOL_NASM_KSUBMIT
+	$(QUIET)$(call TOOL_NASM_KSUBMIT, -C $(PATH_OUT_BASE)) $(TOOL_NASM_AS)\
 		$(flags) $(addsuffix /,$(addprefix -i, $(incs))) $(addprefix -D, $(defs))\
 		-l $(outbase).lst\
 		-o $(obj)\
+		-MD "$(dep)" -MP\
 		$(abspath $(source))
-	$(QUIET)$(REDIRECT) -wo $(dep) -- $(TOOL_NASM_AS) -DKBUILD_GENERATING_MAKEFILE_DEPENDENCIES\
+else
+	$(QUIET)$(REDIRECT) -C $(PATH_OUT_BASE) -- $(TOOL_NASM_AS)\
 		$(flags) $(addsuffix /,$(addprefix -i, $(incs))) $(addprefix -D, $(defs))\
 		-l $(outbase).lst\
 		-o $(obj)\
-		$(abspath $(source)) \
-		-M
+		-MD "$(dep)" -MP\
+		$(abspath $(source))
+endif
 endef
 
