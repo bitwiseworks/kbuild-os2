@@ -103,7 +103,7 @@ TOOL_OPENWATCOM-16_LINK_LIBRARY_OUTPUT = $(outbase).rsp
 TOOL_OPENWATCOM-16_LINK_LIBRARY_DEPEND = $(othersrc)
 TOOL_OPENWATCOM-16_LINK_LIBRARY_DEPORD =
 define TOOL_OPENWATCOM-16_LINK_LIBRARY_CMDS
-	$(QUIET)$(APPEND) -tn $(outbase).rsp $(foreach obj,$(call TOOL_OPENWATCOM_FIX_SLASHES,$(objs) $(othersrc)),'+"$(obj)"')
+	$(QUIET)$(APPEND) -tn $(outbase).rsp $(foreach obj,$(call TOOL_OPENWATCOM_FIX_SLASHES_SQ,$(objs) $(othersrc)),'+"$(obj)"')
 	$(QUIET)$(TOOL_OPENWATCOM_ENV_SETUP_BD) $(TOOL_OPENWATCOM_AR) $(flags) $(call TOOL_OPENWATCOM_FIX_SLASHES,$(out)) @$(outbase).rsp
 endef
 

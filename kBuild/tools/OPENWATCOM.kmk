@@ -268,7 +268,7 @@ TOOL_OPENWATCOM_LINK_LIBRARY_OUTPUT = ## @todo $(outbase).rsp
 TOOL_OPENWATCOM_LINK_LIBRARY_DEPEND = $(othersrc)
 TOOL_OPENWATCOM_LINK_LIBRARY_DEPORD =
 define TOOL_OPENWATCOM_LINK_LIBRARY_CMDS
-	$(QUIET)$(APPEND) -tn $(outbase).rsp $(foreach obj,$(call TOOL_OPENWATCOM_FIX_SLASHES,$(objs) $(filter-out %.imp,$(othersrc))),'+"$(obj)"')
+	$(QUIET)$(APPEND) -tn $(outbase).rsp $(foreach obj,$(call TOOL_OPENWATCOM_FIX_SLASHES_SQ,$(objs) $(filter-out %.imp,$(othersrc))),'+"$(obj)"')
 	$(if $(filter %.imp,$(othersrc)),$(SED) \
 		-e 's/;.*$(DOLLAR)$(DOLLAR)//g' \
 		-e 's/^[[:space:]][[:space:]]*//g' \
