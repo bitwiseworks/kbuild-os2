@@ -80,6 +80,27 @@ $(PATH_OBJ)/SvnInfo.ts +| $(KBUILD_SVN_INFO_KMK): $(wildcard $(addprefix $(PATH_
 OTHER_CLEAN += $(KBUILD_SVN_INFO_KMK) $(PATH_OBJ)/SvnInfo.ts
  endif
 
+else ifneq ($(wildcard $(PATH_ROOT)/.git/ $(PATH_ROOT)/../.git/),)
+# Generate from git info
+KBUILD_SVN_INFO_KMK := $(PATH_OBJ)/SvnInfo.kmk
+KBUILD_SVN_INFO_DEP := $(KBUILD_SVN_INFO_KMK)
+
+$(KBUILD_SVN_INFO_KMK): $(wildcard $(addprefix $(PATH_ROOT)/.git/ $(PATH_ROOT)/../.git/,\
+		. \
+		HEAD \
+		index \
+		refs/heads/* ) )
+	$(call MSG_GENERATE,,$(KBUILD_SVN_INFO_KMK))
+	@$(RM) -f "$@"
+	@$(MKDIR) -p "$(@D)"
+	@$(REDIRECT) -o "$@" -E 'LC_ALL=C' -- git log -n 1 '--pretty=format:KBUILD_SVN_REV := 0x%h%n'
+	@$(APPEND) -N "$@" 'KBUILD_SVN_URL := '
+	@$(REDIRECT) -ao "$@" -E 'LC_ALL=C' -- git config --get remote.origin.url
+
+ ifeq ($(DEPTH),.)
+OTHER_CLEAN += $(KBUILD_SVN_INFO_KMK)
+ endif
+
 else
 # Some incomplete source export...
 KBUILD_SVN_INFO_KMK := $(PATH_OBJ)/SvnInfo.kmk
