@@ -899,7 +899,7 @@ static int kRedirectDoSpawn(const char *pszExecutable, int cArgs, char **papszAr
                     rcExit = err(10, "_spawnvpe(%s) failed", pszExecutable);
 
 # elif defined(KBUILD_OS_OS2)
-                *pPidSpawned = _spawnve(P_NOWAIT, pszExecutable, papszArgs, papszEnvVars);
+                *pPidSpawned = _spawnvpe(P_NOWAIT, pszExecutable, papszArgs, papszEnvVars);
                 kRedirectRestoreFdOrders(cOrders, paOrders, &pWorkingStdErr);
                 if (*pPidSpawned != -1)
                 {
