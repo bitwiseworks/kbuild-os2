@@ -36,7 +36,7 @@ ifeq ($(BUILD_TARGET),os2)
  TEMPLATE_TST_TOOL              = GCC3OMF
  TEMPLATE_TST_CFLAGS.profile    = -pg
  TEMPLATE_TST_CFLAGS.release    = -O3
- TEMPLATE_TST_LDFLAGS           = -Zhigh-mem -Zstack=1024
+ TEMPLATE_TST_LDFLAGS           = -Zhigh-mem -Zstack 1024
 endif
 
 ifeq ($(BUILD_TARGET),darwin)

@@ -216,7 +216,7 @@ TEMPLATE_BIN_TOOL               = GCC3OMF
 TEMPLATE_BIN_CFLAGS             = -g
 TEMPLATE_BIN_CFLAGS.profile     = -pg
 TEMPLATE_BIN_CFLAGS.release     = -O3
-TEMPLATE_BIN_LDFLAGS            = -Zhigh-mem -Zstack=1024 -g
+TEMPLATE_BIN_LDFLAGS            = -Zhigh-mem -Zstack 1024 -g
 endif
 
 ifeq ($(KBUILD_TARGET),darwin)

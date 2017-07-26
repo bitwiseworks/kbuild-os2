@@ -108,6 +108,8 @@ extern void bsd_strmode(mode_t mode, char *p);
 
 #if !defined(__FreeBSD__) && !defined(__APPLE__) && !defined(__DragonFly__) && !defined(__OpenBSD__)
 # ifdef __OS2__
+/* pwd.h in kLIBC declares user_from_uid (never implemented), hide it */
+#define user_from_uid kmk_user_from_uid
 static
 # endif
 const char *user_from_uid(uid_t id, int x)
@@ -118,6 +120,8 @@ const char *user_from_uid(uid_t id, int x)
 	return s_buf;
 }
 # ifdef __OS2__
+/* grp.h in kLIBC declares group_from_gid (never implemented), hide it */
+#define group_from_gid kmk_group_from_gid
 static
 # endif
 const char *group_from_gid(gid_t id, int x)
