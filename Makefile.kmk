@@ -45,6 +45,7 @@ kBuild-data_SOURCES := \
 			kBuild/tools/*.kmk \
 			kBuild/sdks/*.kmk \
 			kBuild/units/*.kmk \
+			kBuild/units/*.sed \
 			kBuild/msgstyles/*.kmk \
 			kBuild/templates/*.kmk),\
 		$(src)=>$(subst kBuild/,,$(src)))
