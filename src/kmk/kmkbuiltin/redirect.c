@@ -899,7 +899,7 @@ static int kRedirectDoSpawn(const char *pszExecutable, int cArgs, char **papszAr
                     rcExit = err(10, "_spawnvpe(%s) failed", pszExecutable);
 
 # elif defined(KBUILD_OS_OS2)
-                *pPidSpawned = _spawnve(_P_NOWAIT, pszExecutable, papszArgs, papszEnvVars);
+                *pPidSpawned = _spawnve(P_NOWAIT, pszExecutable, papszArgs, papszEnvVars);
                 kRedirectRestoreFdOrders(cOrders, paOrders, &pWorkingStdErr);
                 if (*pPidSpawned != -1)
                 {
@@ -931,7 +931,7 @@ static int kRedirectDoSpawn(const char *pszExecutable, int cArgs, char **papszAr
                  */
 # if defined(KBUILD_OS_WINDOWS) || defined(KBUILD_OS_OS2)
                 errno  = 0;
-                rcExit = (int)_spawnvpe(_P_WAIT, pszExecutable, papszArgs, papszEnvVars);
+                rcExit = (int)_spawnvpe(P_WAIT, pszExecutable, papszArgs, papszEnvVars);
                 kRedirectRestoreFdOrders(cOrders, paOrders, &pWorkingStdErr);
                 if (rcExit != -1 || errno == 0)
                 {
@@ -1222,7 +1222,7 @@ int main(int argc, char **argv, char **envp)
                     if (apszSavedLibPaths[ulVar] == NULL)
                     {
                         /* The max length is supposed to be 1024 bytes. */
-                        apszSavedLibPaths[ulVar] = calloc(1024 * 2);
+                        apszSavedLibPaths[ulVar] = calloc(2, 1024);
                         if (apszSavedLibPaths[ulVar])
                         {
                             rc = DosQueryExtLIBPATH(apszSavedLibPaths[ulVar], ulVar);
@@ -1676,7 +1676,7 @@ int main(int argc, char **argv, char **envp)
             if (rc != 0)
                 warnx("DosSetExtLIBPATH('%s',%u) failed with %u when restoring the original values!",
                       apszSavedLibPaths[ulLibPath], ulLibPath, rc);
-            free(apszSavedLibPaths[ulLibPath])
+            free(apszSavedLibPaths[ulLibPath]);
         }
 #endif
 
