@@ -75,13 +75,18 @@ else
   # Check if it's the framework or not.
   _SDK_LIBSDK_IS_FRAMEWORK := $(if $(wildcard $(PATH_SDK_LIBSDL)/Headers/SDL.h),yes)
  endif
+ ifeq ($(KBUILD_TARGET),os2)
+  # Abuse _SDK_LIBSDK_IS_FRAMEWORK to indicate we have a PATH_SDK_LIBSDL override
+  # (which implies a non-Linux directory structure).
+  _SDK_LIBSDK_IS_FRAMEWORK := yes
+ endif
 endif
 
 #
 # The way libsdl is distributed on the different platforms
 # varies quite a bit, thus this kludge.
 #
-ifeq ($(KBUILD_TARGET),os2)
+ifeq ($(KBUILD_TARGET).$(_SDK_LIBSDK_IS_FRAMEWORK),os2.yes)
  LIB_SDK_LIBSDL_SDLMAIN  ?=
  DLL_SDK_LIBSDL_SDL      ?= $(PATH_SDK_LIBSDL)/SDL/SDL12.dll
  DLL_SDK_LIBSDL_FSLIB    ?= $(PATH_SDK_LIBSDL)/SDL/FSLib.dll
@@ -145,7 +150,9 @@ else ifeq ($(KBUILD_TARGET).$(_SDK_LIBSDK_IS_FRAMEWORK),darwin.yes)
  SDK_LIBSDL_LDFLAGS      ?= -framework SDL
 
 else # ASSUMES Unix like system
- LIB_SDK_LIBSDL_SDLMAIN  ?= SDLmain
+ ifneq ($(KBUILD_TARGET),os2)
+  LIB_SDK_LIBSDL_SDLMAIN ?= SDLmain
+ endif
  LIB_SDK_LIBSDL_SDL      ?= SDL
  LIB_SDK_LIBSDL_SDLGFX   ?= SDL_gfx
  LIB_SDK_LIBSDL_SDLIMAGE ?= SDL_image
