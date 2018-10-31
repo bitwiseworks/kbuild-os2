@@ -71,7 +71,7 @@
 
 #include "kbuild_version.h"
 #ifndef KMK_BUILTIN_STANDALONE
-# include "../output.h"
+# include "output.h"
 #endif
 
 struct child;

@@ -93,8 +93,8 @@ static void membuf_dump (struct output *out)
          We want to keep this lock for as little time as possible.  */
       void *sem = acquire_semaphore ();
 # if defined (KBUILD_OS_WINDOWS) || defined (KBUILD_OS_OS2) || defined (KBUILD_OS_DOS)
-      int prev_mode_out = _setmode (fileno (stdout), _O_BINARY);
-      int prev_mode_err = _setmode (fileno (stderr), _O_BINARY);
+      int prev_mode_out = _setmode (fileno (stdout), O_BINARY);
+      int prev_mode_err = _setmode (fileno (stderr), O_BINARY);
 # endif
 
 # ifndef KMK /* this drives me bananas. */
@@ -415,7 +415,7 @@ output_write_bin (struct output *out, int is_err, const char *src, size_t len)
          standard output/error.  Also optimize for console output. */
       int saved_errno;
       int fd = fileno (f);
-      int prev_mode = _setmode (fd, _O_BINARY);
+      int prev_mode = _setmode (fd, O_BINARY);
       maybe_con_fwrite (src, len, 1, f);
       if (fflush (f) == EOF)
         ret = -1;
@@ -732,7 +732,7 @@ pump_from_tmp (int from, FILE *to)
 
   /* "from" is opened by open_tmpfd, which does it in binary mode, so
      we need the mode of "to" to match that.  */
-  prev_mode = _setmode (fileno (to), _O_BINARY);
+  prev_mode = _setmode (fileno (to), O_BINARY);
 #endif
 
   if (lseek (from, 0, SEEK_SET) == -1)

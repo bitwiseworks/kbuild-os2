@@ -48,6 +48,10 @@
 # define fwrite maybe_con_fwrite
 #endif
 
+#ifdef KBUILD_OS_OS2
+# include <stdlib.h> /* malloc/free */
+#endif
+
 int err(PKMKBUILTINCTX pCtx, int eval, const char *fmt, ...)
 {
     /*

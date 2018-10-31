@@ -45,6 +45,9 @@
 #ifdef HAVE_ALLOCA_H
 # include <alloca.h>
 #endif
+#ifdef KBUILD_OS_OS2
+# include <stdlib.h> /* malloc/free */
+#endif
 #if !defined(KMK_BUILTIN_STANDALONE) && defined(KBUILD_OS_WINDOWS) && defined(CONFIG_NEW_WIN_CHILDREN)
 # include "../w32/winchildren.h"
 #endif

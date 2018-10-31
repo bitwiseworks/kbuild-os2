@@ -5291,7 +5291,7 @@ func_os2_libpath (char *o, char **argv, const char *funcname UNUSED)
       len = end - val;
       if (len >= len_max)
         {
-          OSNN (error,  NILF, _("$(libpath): The new `%s' value is too long (%d bytes, max %d)"),
+          OSNN (error, NILF, _("$(libpath): The new `%s' value is too long (%d bytes, max %d)"),
                 argv[0], len, len_max);
           return variable_buffer_output (o, "", 0);
         }
@@ -5302,7 +5302,7 @@ func_os2_libpath (char *o, char **argv, const char *funcname UNUSED)
       rc = DosSetExtLIBPATH (buf, fVar);
       if (rc != NO_ERROR)
         {
-          OSSN (error, (NILF, _("$(libpath): failed to set `%s' to `%s', rc=%d"), argv[0], buf, rc);
+          OSNN (error, NILF, _("$(libpath): failed to set `%s' to `%s', rc=%d"), argv[0], buf, rc);
           return variable_buffer_output (o, "", 0);
         }
 
