@@ -1,10 +1,10 @@
-/* $Id: kDefs.h 84 2016-09-04 13:54:11Z bird $ */
+/* $Id: kDefs.h 111 2018-03-16 12:46:58Z bird $ */
 /** @file
  * kTypes - Defines and Macros.
  */
 
 /*
- * Copyright (c) 2006-2008 Knut St. Osmundsen <bird-kStuff-spamix@anduin.net>
+ * Copyright (c) 2006-2017 Knut St. Osmundsen <bird-kStuff-spamix@anduin.net>
  *
  * Permission is hereby granted, free of charge, to any person
  * obtaining a copy of this software and associated documentation
@@ -46,22 +46,30 @@
 #define K_OS_DRAGONFLY  2
 /** FreeBSD. */
 #define K_OS_FREEBSD    3
+/** GNU/Hurd. */
+#define K_OS_GNU_HURD   4
+/** GNU/kFreeBSD. */
+#define K_OS_GNU_KFBSD  5
+/** GNU/kNetBSD or GNU/NetBSD or whatever the decide to call it. */
+#define K_OS_GNU_KNBSD  6
+/** Haiku. */
+#define K_OS_HAIKU      7
 /** Linux. */
-#define K_OS_LINUX      4
+#define K_OS_LINUX      8
 /** NetBSD. */
-#define K_OS_NETBSD     5
+#define K_OS_NETBSD     9
 /** NT (native). */
-#define K_OS_NT         6
+#define K_OS_NT         10
 /** OpenBSD*/
-#define K_OS_OPENBSD    7
+#define K_OS_OPENBSD    11
 /** OS/2 */
-#define K_OS_OS2        8
+#define K_OS_OS2        12
 /** Solaris */
-#define K_OS_SOLARIS    9
+#define K_OS_SOLARIS    13
 /** Windows. */
-#define K_OS_WINDOWS    10
+#define K_OS_WINDOWS    14
 /** The max K_OS_* value (exclusive). */
-#define K_OS_MAX        11
+#define K_OS_MAX        15
 /** @} */
 
 /** @def K_OS
@@ -80,12 +88,18 @@
 #  define K_OS      K_OS_DARWIN
 # elif defined(__DragonFly__)
 #  define K_OS      K_OS_DRAGONFLY
-# elif defined(__FreeBSD__) /*??*/
+# elif defined(__FreeBSD__)
 #  define K_OS      K_OS_FREEBSD
+# elif defined(__FreeBSD_kernel__)
+#  define K_OS      K_OS_GNU_KFBSD
+# elif defined(__gnu_hurd__)
+#  define K_OS      K_OS_GNU_HURD
 # elif defined(__gnu_linux__)
 #  define K_OS      K_OS_LINUX
 # elif defined(__NetBSD__) /*??*/
 #  define K_OS      K_OS_NETBSD
+# elif defined(__NetBSD_kernel__)
+#  define K_OS      K_OS_GNU_KNBSD
 # elif defined(__OpenBSD__) /*??*/
 #  define K_OS      K_OS_OPENBSD
 # elif defined(__OS2__)
@@ -94,6 +108,8 @@
 #  define K_OS      K_OS_SOLARIS
 # elif defined(_WIN32) || defined(_WIN64)
 #  define K_OS      K_OS_WINDOWS
+# elif defined(__haiku__) || defined(__HAIKU__)
+#  define K_OS      K_OS_HAIKU
 # else
 #  error "Port Me"
 # endif
@@ -133,41 +149,47 @@
 /** Clone or Intel 16-bit x86. */
 #define K_ARCH_X86_16           ( 1 | K_ARCH_BIT_16 | K_ARCH_END_LITTLE)
 /** Clone or Intel 32-bit x86. */
-#define K_ARCH_X86_32           ( 2 | K_ARCH_BIT_32 | K_ARCH_END_LITTLE)
+#define K_ARCH_X86_32           ( 1 | K_ARCH_BIT_32 | K_ARCH_END_LITTLE)
 /** AMD64 (including clones). */
-#define K_ARCH_AMD64            ( 3 | K_ARCH_BIT_64 | K_ARCH_END_LITTLE)
+#define K_ARCH_AMD64            ( 2 | K_ARCH_BIT_64 | K_ARCH_END_LITTLE)
 /** Itanic (64-bit). */
-#define K_ARCH_IA64             ( 4 | K_ARCH_BIT_64 | K_ARCH_END_BI)
+#define K_ARCH_IA64             ( 3 | K_ARCH_BIT_64 | K_ARCH_END_BI)
 /** ALPHA (64-bit). */
-#define K_ARCH_ALPHA            ( 5 | K_ARCH_BIT_64 | K_ARCH_END_BI)
+#define K_ARCH_ALPHA            ( 4 | K_ARCH_BIT_64 | K_ARCH_END_BI)
 /** ALPHA limited to 32-bit. */
-#define K_ARCH_ALPHA_32         ( 6 | K_ARCH_BIT_32 | K_ARCH_END_BI)
+#define K_ARCH_ALPHA_32         ( 4 | K_ARCH_BIT_32 | K_ARCH_END_BI)
 /** 32-bit ARM. */
-#define K_ARCH_ARM_32           ( 7 | K_ARCH_BIT_32 | K_ARCH_END_BI)
+#define K_ARCH_ARM_32           ( 5 | K_ARCH_BIT_32 | K_ARCH_END_BI)
 /** 64-bit ARM. */
-#define K_ARCH_ARM_64           ( 8 | K_ARCH_BIT_64 | K_ARCH_END_BI)
+#define K_ARCH_ARM_64           ( 5 | K_ARCH_BIT_64 | K_ARCH_END_BI)
+/** Motorola 68000 (32-bit). */
+#define K_ARCH_M68K             ( 6 | K_ARCH_BIT_32 | K_ARCH_END_BIG)
 /** 32-bit MIPS. */
-#define K_ARCH_MIPS_32          ( 9 | K_ARCH_BIT_32 | K_ARCH_END_BI)
+#define K_ARCH_MIPS_32          ( 7 | K_ARCH_BIT_32 | K_ARCH_END_BI)
 /** 64-bit MIPS. */
-#define K_ARCH_MIPS_64          (10 | K_ARCH_BIT_64 | K_ARCH_END_BI)
+#define K_ARCH_MIPS_64          ( 7 | K_ARCH_BIT_64 | K_ARCH_END_BI)
 /** 32-bit PA-RISC. */
-#define K_ARCH_PARISC_32        (11 | K_ARCH_BIT_32 | K_ARCH_END_BI)
+#define K_ARCH_PARISC_32        ( 8 | K_ARCH_BIT_32 | K_ARCH_END_BI)
 /** 64-bit PA-RISC. */
-#define K_ARCH_PARISC_64        (12 | K_ARCH_BIT_64 | K_ARCH_END_BI)
+#define K_ARCH_PARISC_64        ( 8 | K_ARCH_BIT_64 | K_ARCH_END_BI)
 /** 32-bit PowerPC. */
-#define K_ARCH_POWERPC_32       (13 | K_ARCH_BIT_32 | K_ARCH_END_BI)
+#define K_ARCH_POWERPC_32       ( 9 | K_ARCH_BIT_32 | K_ARCH_END_BI)
 /** 64-bit PowerPC. */
-#define K_ARCH_POWERPC_64       (14 | K_ARCH_BIT_64 | K_ARCH_END_BI)
+#define K_ARCH_POWERPC_64       ( 9 | K_ARCH_BIT_64 | K_ARCH_END_BI)
 /** 32(31)-bit S390. */
-#define K_ARCH_S390_32          (15 | K_ARCH_BIT_32 | K_ARCH_END_BIG)
+#define K_ARCH_S390_32          (10 | K_ARCH_BIT_32 | K_ARCH_END_BIG)
 /** 64-bit S390. */
-#define K_ARCH_S390_64          (16 | K_ARCH_BIT_64 | K_ARCH_END_BIG)
+#define K_ARCH_S390_64          (10 | K_ARCH_BIT_64 | K_ARCH_END_BIG)
+/** 32-bit SuperH. */
+#define K_ARCH_SH_32            (11 | K_ARCH_BIT_32 | K_ARCH_END_BI)
+/** 64-bit SuperH. */
+#define K_ARCH_SH_64            (11 | K_ARCH_BIT_64 | K_ARCH_END_BI)
 /** 32-bit SPARC. */
-#define K_ARCH_SPARC_32         (17 | K_ARCH_BIT_32 | K_ARCH_END_BIG)
+#define K_ARCH_SPARC_32         (12 | K_ARCH_BIT_32 | K_ARCH_END_BIG)
 /** 64-bit SPARC. */
-#define K_ARCH_SPARC_64         (18 | K_ARCH_BIT_64 | K_ARCH_END_BI)
+#define K_ARCH_SPARC_64         (12 | K_ARCH_BIT_64 | K_ARCH_END_BI)
 /** The end of the valid architecture values (exclusive). */
-#define K_ARCH_MAX              (19)
+#define K_ARCH_MAX              (12+1)
 /** @} */
 
 
@@ -186,10 +208,14 @@
 #  define K_ARCH    K_ARCH_ALPHA
 # elif defined(__arm__) || defined(__arm32__)
 #  define K_ARCH    K_ARCH_ARM_32
+# elif defined(__aarch64__) || defined(__arm64__)
+#  define K_ARCH    K_ARCH_ARM_64
 # elif defined(__hppa__) && defined(__LP64__)
 #  define K_ARCH    K_ARCH_PARISC_64
 # elif defined(__hppa__)
 #  define K_ARCH    K_ARCH_PARISC_32
+# elif defined(__m68k__)
+#  define K_ARCH    K_ARCH_M68K
 # elif defined(__mips64)
 #  define K_ARCH    K_ARCH_MIPS_64
 # elif defined(__mips__)
@@ -206,6 +232,16 @@
 #  define K_ARCH    K_ARCH_S390_64
 # elif defined(__s390__)
 #  define K_ARCH    K_ARCH_S390_32
+# elif defined(__sh__)
+#  if !defined(__SH5__)
+#   define K_ARCH    K_ARCH_SH_32
+#  else
+#   if __SH5__ == 64
+#    define K_ARCH   K_ARCH_SH_64
+#   else
+#    define K_ARCH   K_ARCH_SH_32
+#   endif
+#  endif
 # else
 #  error "Port Me"
 # endif
@@ -300,12 +336,20 @@
   /* use K_ARCH if possible. */
 # if K_ARCH_ENDIAN != K_ENDIAN_BI
 #  define K_ENDIAN K_ARCH_ENDIAN
+# elif defined(__BYTE_ORDER__) && defined(__ORDER_LITTLE_ENDIAN__) && defined(__ORDER_BIG_ENDIAN__)
+#  if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+#  define K_ENDIAN K_ARCH_LITTLE
+#  elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+#  define K_ENDIAN K_ARCH_BIG
+#  else
+#   error "Port Me or define K_ENDIAN."
+#  endif
 # else
 #  error "Port Me or define K_ENDIAN."
 # endif
 #else
   /* validate the user defined value. */
-# if K_ENDIAN != K_ENDIAN_LITTLE
+# if K_ENDIAN != K_ENDIAN_LITTLE \
   && K_ENDIAN != K_ENDIAN_BIG
 #  error "K_ENDIAN must either be defined as K_ENDIAN_LITTLE or as K_ENDIAN_BIG."
 # endif

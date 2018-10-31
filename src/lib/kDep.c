@@ -1,4 +1,4 @@
-/* $Id: kDep.c 2955 2016-09-21 19:05:53Z bird $ */
+/* $Id: kDep.c 3174 2018-03-21 21:37:52Z bird $ */
 /** @file
  * kDep - Common Dependency Managemnt Code.
  */
@@ -33,7 +33,7 @@
 *   Header Files                                                               *
 *******************************************************************************/
 #ifdef KMK /* For when it gets compiled and linked into kmk. */
-# include "make.h"
+# include "makeint.h"
 #endif
 #include <stdio.h>
 #include <stdlib.h>
@@ -63,11 +63,42 @@ extern int kwFsPathExists(const char *pszPath);
 #endif
 
 
-/*******************************************************************************
-*   Global Variables                                                           *
-*******************************************************************************/
-/** List of dependencies. */
-static PDEP g_pDeps = NULL;
+/*********************************************************************************************************************************
+*   Defined Constants And Macros                                                                                                 *
+*********************************************************************************************************************************/
+/* For the GNU/hurd weirdo. */
+#if !defined(PATH_MAX) && !defined(_MAX_PATH)
+# define PATH_MAX 4096
+#endif
+
+
+/**
+ * Initializes the dep instance.
+ *
+ * @param   pThis       The dep instance to init.
+ */
+void depInit(PDEPGLOBALS pThis)
+{
+    pThis->pDeps = NULL;
+}
+
+
+/**
+ * Cleans up the dep instance (frees resources).
+ *
+ * @param   pThis       The dep instance to cleanup.
+ */
+void depCleanup(PDEPGLOBALS pThis)
+{
+    PDEP pDep = pThis->pDeps;
+    pThis->pDeps = NULL;
+    while (pDep)
+    {
+        PDEP pFree = pDep;
+        pDep = pDep->pNext;
+        free(pFree);
+    }
+}
 
 
 /**
@@ -129,7 +160,7 @@ static void fixcase(char *pszFilename)
          * Find the next slash (or end of string) and terminate the string there.
          */
         while (*psz != '/' && *psz)
-            *psz++;
+            psz++;
         chSlash = *psz;
         *psz = '\0';
 
@@ -186,15 +217,15 @@ static void fixcase(char *pszFilename)
 /**
  * 'Optimizes' and corrects the dependencies.
  */
-void depOptimize(int fFixCase, int fQuiet, const char *pszIgnoredExt)
+void depOptimize(PDEPGLOBALS pThis, int fFixCase, int fQuiet, const char *pszIgnoredExt)
 {
     /*
      * Walk the list correct the names and re-insert them.
      */
     size_t  cchIgnoredExt = pszIgnoredExt ? strlen(pszIgnoredExt) : 0;
-    PDEP    pDepOrg = g_pDeps;
-    PDEP    pDep = g_pDeps;
-    g_pDeps = NULL;
+    PDEP    pDepOrg = pThis->pDeps;
+    PDEP    pDep = pThis->pDeps;
+    pThis->pDeps = NULL;
     for (; pDep; pDep = pDep->pNext)
     {
 #ifndef PATH_MAX
@@ -251,6 +282,7 @@ void depOptimize(int fFixCase, int fQuiet, const char *pszIgnoredExt)
         /*
          * Check that the file exists before we start depending on it.
          */
+        errno = 0;
 #ifdef KWORKER
         if (!kwFsPathExists(pszFilename))
 #elif defined(KMK)
@@ -277,7 +309,7 @@ void depOptimize(int fFixCase, int fQuiet, const char *pszIgnoredExt)
         /*
          * Insert the corrected dependency.
          */
-        depAdd(pszFilename, strlen(pszFilename));
+        depAdd(pThis, pszFilename, strlen(pszFilename));
     }
 
     /*
@@ -295,13 +327,13 @@ void depOptimize(int fFixCase, int fQuiet, const char *pszIgnoredExt)
 /**
  * Prints the dependency chain.
  *
- * @returns Pointer to the allocated dependency.
+ * @param   pThis       The 'dep' instance.
  * @param   pOutput     Output stream.
  */
-void depPrint(FILE *pOutput)
+void depPrint(PDEPGLOBALS pThis, FILE *pOutput)
 {
     PDEP pDep;
-    for (pDep = g_pDeps; pDep; pDep = pDep->pNext)
+    for (pDep = pThis->pDeps; pDep; pDep = pDep->pNext)
         fprintf(pOutput, " \\\n\t%s", pDep->szFilename);
     fprintf(pOutput, "\n\n");
 }
@@ -309,11 +341,14 @@ void depPrint(FILE *pOutput)
 
 /**
  * Prints empty dependency stubs for all dependencies.
+ *
+ * @param   pThis       The 'dep' instance.
+ * @param   pOutput     Output stream.
  */
-void depPrintStubs(FILE *pOutput)
+void depPrintStubs(PDEPGLOBALS pThis, FILE *pOutput)
 {
     PDEP pDep;
-    for (pDep = g_pDeps; pDep; pDep = pDep->pNext)
+    for (pDep = pThis->pDeps; pDep; pDep = pDep->pNext)
         fprintf(pOutput, "%s:\n\n", pDep->szFilename);
 }
 
@@ -345,10 +380,11 @@ static unsigned sdbm(const char *str, size_t size)
  * Adds a dependency.
  *
  * @returns Pointer to the allocated dependency.
+ * @param   pThis       The 'dep' instance.
  * @param   pszFilename     The filename. Does not need to be terminated.
  * @param   cchFilename     The length of the filename.
  */
-PDEP depAdd(const char *pszFilename, size_t cchFilename)
+PDEP depAdd(PDEPGLOBALS pThis, const char *pszFilename, size_t cchFilename)
 {
     unsigned    uHash = sdbm(pszFilename, cchFilename);
     PDEP        pDep;
@@ -358,7 +394,7 @@ PDEP depAdd(const char *pszFilename, size_t cchFilename)
      * Check if we've already got this one.
      */
     pDepPrev = NULL;
-    for (pDep = g_pDeps; pDep; pDepPrev = pDep, pDep = pDep->pNext)
+    for (pDep = pThis->pDeps; pDep; pDepPrev = pDep, pDep = pDep->pNext)
         if (    pDep->uHash == uHash
             &&  pDep->cchFilename == cchFilename
             &&  !memcmp(pDep->szFilename, pszFilename, cchFilename))
@@ -387,26 +423,10 @@ PDEP depAdd(const char *pszFilename, size_t cchFilename)
     }
     else
     {
-        pDep->pNext = g_pDeps;
-        g_pDeps = pDep;
+        pDep->pNext = pThis->pDeps;
+        pThis->pDeps = pDep;
     }
     return pDep;
-}
-
-
-/**
- * Frees the current dependency chain.
- */
-void depCleanup(void)
-{
-    PDEP pDep = g_pDeps;
-    g_pDeps = NULL;
-    while (pDep)
-    {
-        PDEP pFree = pDep;
-        pDep = pDep->pNext;
-        free(pFree);
-    }
 }
 
 

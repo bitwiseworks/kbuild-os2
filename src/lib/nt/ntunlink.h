@@ -1,4 +1,4 @@
-/* $Id: ntunlink.h 3009 2016-11-07 02:21:59Z bird $ */
+/* $Id: ntunlink.h 3060 2017-09-21 15:11:07Z bird $ */
 /** @file
  * MSC + NT unlink and variations.
  */
@@ -32,6 +32,7 @@
 #define ___nt_ntunlink_h
 
 #include "nttypes.h"
+#include <wchar.h>
 
 int birdUnlink(const char *pszFile);
 int birdUnlinkW(const wchar_t *pwszFile);

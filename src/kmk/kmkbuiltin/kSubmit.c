@@ -1,4 +1,4 @@
-/* $Id: kSubmit.c 3051 2017-07-24 10:59:59Z bird $ */
+/* $Id: kSubmit.c 3224 2018-04-08 15:49:07Z bird $ */
 /** @file
  * kMk Builtin command - submit job to a kWorker.
  */
@@ -29,7 +29,7 @@
 #ifdef __APPLE__
 # define _POSIX_C_SOURCE 1 /* 10.4 sdk and unsetenv */
 #endif
-#include "make.h"
+#include "makeint.h"
 #include "job.h"
 #include "variable.h"
 #include "pathstuff.h"
@@ -50,7 +50,12 @@
 # include <unistd.h>
 #endif
 #ifdef KBUILD_OS_WINDOWS
-# include "sub_proc.h"
+# ifndef CONFIG_NEW_WIN_CHILDREN
+#  include "sub_proc.h"
+# else
+#  include "../w32/winchildren.h"
+# endif
+# include "nt/nt_child_inject_standard_handles.h"
 #endif
 
 #include "kbuild.h"
@@ -63,6 +68,8 @@
 *********************************************************************************************************************************/
 /** Hashes a pid. */
 #define KWORKER_PID_HASH(a_pid) ((size_t)(a_pid) % 61)
+
+#define TUPLE(a_sz)     a_sz, sizeof(a_sz) - 1
 
 
 /*********************************************************************************************************************************
@@ -103,6 +110,12 @@ typedef struct WORKERINSTANCE
     HANDLE                  hPipe;
     /** For overlapped read (have valid event semaphore). */
     OVERLAPPED              OverlappedRead;
+# ifdef CONFIG_NEW_WIN_CHILDREN
+    /** Standard output catcher (reused). */
+    PWINCCWPIPE             pStdOut;
+    /** Standard error catcher (reused). */
+    PWINCCWPIPE             pStdErr;
+# endif
 #else
     /** The socket descriptor we use to talk to the kWorker process. */
     int                     fdSocket;
@@ -164,6 +177,11 @@ static unsigned             g_cAltArchBits = 64;
 static char const           g_szAltArch[]  = "amd64";
 #else
 # error "Port me!"
+#endif
+
+#ifdef KBUILD_OS_WINDOWS
+/** Pointer to kernel32!SetThreadGroupAffinity. */
+static BOOL (WINAPI *g_pfnSetThreadGroupAffinity)(HANDLE, const GROUP_AFFINITY*, GROUP_AFFINITY *);
 #endif
 
 
@@ -285,79 +303,142 @@ static PWORKERINSTANCE kSubmitFindWorkerByPid(pid_t pid)
 
 
 /**
+ * Calcs the path to the kWorker binary for the worker.
+ *
+ * @returns
+ * @param   pCtx            The command execution context.
+ * @param   pWorker         The worker (for its bitcount).
+ * @param   pszExecutable   The output buffer.
+ * @param   cbExecutable    The output buffer size.
+ */
+static int kSubmitCalcExecutablePath(PKMKBUILTINCTX pCtx, PWORKERINSTANCE pWorker, char *pszExecutable, size_t cbExecutable)
+{
+#if defined(KBUILD_OS_WINDOWS) || defined(KBUILD_OS_OS2)
+    static const char   s_szWorkerName[] = "kWorker.exe";
+#else
+    static const char   s_szWorkerName[] = "kWorker";
+#endif
+    const char         *pszBinPath = get_kbuild_bin_path();
+    size_t const        cchBinPath = strlen(pszBinPath);
+    size_t              cchExecutable;
+    if (   pWorker->cBits == g_cArchBits
+        ?  cchBinPath + 1 + sizeof(s_szWorkerName) <= cbExecutable
+        :  cchBinPath + 1 - sizeof(g_szArch) + sizeof(g_szAltArch) + sizeof(s_szWorkerName) <= cbExecutable )
+    {
+        memcpy(pszExecutable, pszBinPath, cchBinPath);
+        cchExecutable = cchBinPath;
+
+        /* Replace the arch bin directory extension with the alternative one if requested. */
+        if (pWorker->cBits != g_cArchBits)
+        {
+            if (   cchBinPath < sizeof(g_szArch)
+                || memcmp(&pszExecutable[cchBinPath - sizeof(g_szArch) + 1], g_szArch, sizeof(g_szArch) - 1) != 0)
+                return errx(pCtx, 1, "KBUILD_BIN_PATH does not end with main architecture (%s) as expected: %s",
+                            pszBinPath, g_szArch);
+            cchExecutable -= sizeof(g_szArch) - 1;
+            memcpy(&pszExecutable[cchExecutable], g_szAltArch, sizeof(g_szAltArch) - 1);
+            cchExecutable += sizeof(g_szAltArch) - 1;
+        }
+
+        /* Append a slash and the worker name. */
+        pszExecutable[cchExecutable++] = '/';
+        memcpy(&pszExecutable[cchExecutable], s_szWorkerName, sizeof(s_szWorkerName));
+        return 0;
+    }
+    return errx(pCtx, 1, "KBUILD_BIN_PATH is too long");
+}
+
+
+#ifdef KBUILD_OS_WINDOWS
+/**
+ * Calcs the UTF-16 path to the kWorker binary for the worker.
+ *
+ * @returns
+ * @param   pCtx            The command execution context.
+ * @param   pWorker         The worker (for its bitcount).
+ * @param   pwszExecutable  The output buffer.
+ * @param   cwcExecutable   The output buffer size.
+ */
+static int kSubmitCalcExecutablePathW(PKMKBUILTINCTX pCtx, PWORKERINSTANCE pWorker, wchar_t *pwszExecutable, size_t cwcExecutable)
+{
+    char szExecutable[MAX_PATH];
+    int rc = kSubmitCalcExecutablePath(pCtx, pWorker, szExecutable, sizeof(szExecutable));
+    if (rc == 0)
+    {
+        int cwc = MultiByteToWideChar(CP_ACP, 0 /*fFlags*/, szExecutable, strlen(szExecutable) + 1,
+                                      pwszExecutable, cwcExecutable);
+        if (cwc > 0)
+            return 0;
+        return errx(pCtx, 1, "MultiByteToWideChar failed on '%s': %u", szExecutable, GetLastError());
+    }
+    return rc;
+}
+#endif
+
+
+/**
  * Creates a new worker process.
  *
  * @returns 0 on success, non-zero value on failure.
+ * @param   pCtx                The command execution context.
  * @param   pWorker             The worker structure.  Caller does the linking
  *                              (as we might be reusing an existing worker
  *                              instance because a worker shut itself down due
  *                              to high resource leak level).
  * @param   cVerbosity          The verbosity level.
  */
-static int kSubmitSpawnWorker(PWORKERINSTANCE pWorker, int cVerbosity)
+static int kSubmitSpawnWorker(PKMKBUILTINCTX pCtx, PWORKERINSTANCE pWorker, int cVerbosity)
 {
-#if defined(KBUILD_OS_WINDOWS) || defined(KBUILD_OS_OS2)
-    static const char s_szWorkerName[] = "kWorker.exe";
+    int rc;
+#ifdef KBUILD_OS_WINDOWS
+    wchar_t wszExecutable[MAX_PATH];
 #else
-    static const char s_szWorkerName[] = "kWorker";
-#endif
-    const char     *pszBinPath = get_kbuild_bin_path();
-    size_t const    cchBinPath = strlen(pszBinPath);
-    size_t          cchExectuable;
-    size_t const    cbExecutableBuf = GET_PATH_MAX;
     PATH_VAR(szExecutable);
-#define TUPLE(a_sz)     a_sz, sizeof(a_sz) - 1
+#endif
+
+    /*
+     * Get the output path so it can be passed on as a volatile.
+     */
+    const char      *pszVarVolatile;
     struct variable *pVarVolatile = lookup_variable(TUPLE("PATH_OUT"));
     if (pVarVolatile)
-    { /* likely */ }
+        pszVarVolatile = "PATH_OUT";
     else
     {
         pVarVolatile = lookup_variable(TUPLE("PATH_OUT_BASE"));
-        if (!pVarVolatile)
-            warn("Neither PATH_OUT_BASE nor PATH_OUT was found.");
+        if (pVarVolatile)
+            pszVarVolatile = "PATH_OUT_BASE";
+        else
+            warn(pCtx, "Neither PATH_OUT_BASE nor PATH_OUT was found.");
     }
+    if (pVarVolatile && strchr(pVarVolatile->value, '"'))
+        return errx(pCtx, -1, "%s contains double quotes.", pszVarVolatile);
+    if (pVarVolatile && strlen(pVarVolatile->value) >= GET_PATH_MAX)
+        return errx(pCtx, -1, "%s is too long (max %u)", pszVarVolatile, GET_PATH_MAX);
 
     /*
      * Construct the executable path.
      */
-    if (   pWorker->cBits == g_cArchBits
-        ?  cchBinPath + 1 + sizeof(s_szWorkerName) <= cbExecutableBuf
-        :  cchBinPath + 1 - sizeof(g_szArch) + sizeof(g_szAltArch) + sizeof(s_szWorkerName) <= cbExecutableBuf )
+#ifdef KBUILD_OS_WINDOWS
+    rc = kSubmitCalcExecutablePathW(pCtx, pWorker, wszExecutable, K_ELEMENTS(wszExecutable));
+#else
+    rc = kSubmitCalcExecutablePath(pCtx, pWorker, szExecutable, GET_PATH_MAX);
+#endif
+    if (rc == 0)
     {
 #ifdef KBUILD_OS_WINDOWS
         static DWORD        s_fDenyRemoteClients = ~(DWORD)0;
-        wchar_t             wszPipeName[64];
+        wchar_t             wszPipeName[128];
         HANDLE              hWorkerPipe;
-        SECURITY_ATTRIBUTES SecAttrs = { /*nLength:*/ sizeof(SecAttrs), /*pAttrs:*/ NULL, /*bInheritHandle:*/ TRUE };
-#else
-        int                 aiPair[2] = { -1, -1 };
-#endif
+        int                 iProcessorGroup = -1; /** @todo determine process group. */
 
-        memcpy(szExecutable, pszBinPath, cchBinPath);
-        cchExectuable = cchBinPath;
-
-        /* Replace the arch bin directory extension with the alternative one if requested. */
-        if (pWorker->cBits != g_cArchBits)
-        {
-            if (   cchBinPath < sizeof(g_szArch)
-                || memcmp(&szExecutable[cchBinPath - sizeof(g_szArch) + 1], g_szArch, sizeof(g_szArch) - 1) != 0)
-                return errx(1, "KBUILD_BIN_PATH does not end with main architecture (%s) as expected: %s", pszBinPath, g_szArch);
-            cchExectuable -= sizeof(g_szArch) - 1;
-            memcpy(&szExecutable[cchExectuable], g_szAltArch, sizeof(g_szAltArch) - 1);
-            cchExectuable += sizeof(g_szAltArch) - 1;
-        }
-
-        /* Append a slash and the worker name. */
-        szExecutable[cchExectuable++] = '/';
-        memcpy(&szExecutable[cchExectuable], s_szWorkerName, sizeof(s_szWorkerName));
-
-#ifdef KBUILD_OS_WINDOWS
         /*
-         * Create the bi-directional pipe.  Worker end is marked inheritable, our end is not.
+         * Create the bi-directional pipe with overlapping I/O enabled.
          */
         if (s_fDenyRemoteClients == ~(DWORD)0)
             s_fDenyRemoteClients = GetVersion() >= 0x60000 ? PIPE_REJECT_REMOTE_CLIENTS : 0;
-        _snwprintf(wszPipeName, sizeof(wszPipeName), L"\\\\.\\pipe\\kmk-%u-kWorker-%u", getpid(), g_uWorkerSeqNo++);
+        _snwprintf(wszPipeName, sizeof(wszPipeName), L"\\\\.\\pipe\\kmk-%u-kWorker-%u-%u",
+                   GetCurrentProcessId(), g_uWorkerSeqNo++, GetTickCount());
         hWorkerPipe = CreateNamedPipeW(wszPipeName,
                                        PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE /* win2k sp2+ */,
                                        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | s_fDenyRemoteClients,
@@ -365,7 +446,7 @@ static int kSubmitSpawnWorker(PWORKERINSTANCE pWorker, int cVerbosity)
                                        64 /*cbOutBuffer*/,
                                        65536 /*cbInBuffer*/,
                                        0 /*cMsDefaultTimeout -> 50ms*/,
-                                       &SecAttrs /* inherit */);
+                                       NULL /* pSecAttr - no inherit */);
         if (hWorkerPipe != INVALID_HANDLE_VALUE)
         {
             pWorker->hPipe = CreateFileW(wszPipeName,
@@ -381,71 +462,162 @@ static int kSubmitSpawnWorker(PWORKERINSTANCE pWorker, int cVerbosity)
                                                               TRUE /*bInitialState*/, NULL /*pwszName*/);
                 if (pWorker->OverlappedRead.hEvent != NULL)
                 {
-                    char        szHandleArg[32];
-                    extern int process_priority; /* main.c */
-                    char        szPriorityArg[32];
-                    const char *apszArgs[10];
-                    int         cArgs = 0;
-                    apszArgs[cArgs++] = szExecutable;
-                    apszArgs[cArgs++] = "--pipe";
-                    _snprintf(szHandleArg, sizeof(szHandleArg), "%p", hWorkerPipe);
-                    apszArgs[cArgs++] = szHandleArg;
-                    if (pVarVolatile)
+                    extern int          process_priority; /* main.c */
+                    wchar_t             wszCommandLine[MAX_PATH * 3];
+                    wchar_t            *pwszDst = wszCommandLine;
+                    size_t              cwcDst = K_ELEMENTS(wszCommandLine);
+                    int                 cwc;
+                    DWORD               fFlags;
+                    STARTUPINFOW        StartupInfo;
+                    PROCESS_INFORMATION ProcInfo = { NULL, NULL, 0, 0 };
+
+                    /*
+                     * Compose the command line.
+                     */
+                    cwc = _snwprintf(pwszDst, cwcDst, L"\"%s\" ", wszExecutable);
+                    assert(cwc > 0 && cwc < cwcDst);
+                    pwszDst += cwc;
+                    cwcDst  -= cwc;
+                    if (pVarVolatile && *pVarVolatile->value)
                     {
-                        apszArgs[cArgs++] = "--volatile";
-                        apszArgs[cArgs++] = pVarVolatile->value;
+                        char chEnd = strchr(pVarVolatile->value, '\0')[-1];
+                        if (chEnd == '\\')
+                            cwc = _snwprintf(pwszDst, cwcDst, L" --volatile \"%S.\"", pVarVolatile->value);
+                        else
+                            cwc = _snwprintf(pwszDst, cwcDst, L" --volatile \"%S\"", pVarVolatile->value);
+                        assert(cwc > 0 && cwc < cwcDst);
+                        pwszDst += cwc;
+                        cwcDst  -= cwc;
                     }
-                    if (process_priority != 0)
+                    *pwszDst = '\0';
+
+                    /*
+                     * Fill in the startup information.
+                     */
+                    memset(&StartupInfo, 0, sizeof(StartupInfo));
+                    StartupInfo.cb = sizeof(StartupInfo);
+                    GetStartupInfoW(&StartupInfo);
+                    StartupInfo.dwFlags    &= ~STARTF_USESTDHANDLES;
+                    StartupInfo.lpReserved2 = NULL;
+                    StartupInfo.cbReserved2 = 0;
+
+                    /*
+                     * Flags and such.
+                     */
+                    fFlags = CREATE_SUSPENDED;
+                    switch (process_priority)
                     {
-                        apszArgs[cArgs++] = "--priority";
-                        _snprintf(szPriorityArg, sizeof(szPriorityArg), "%u", process_priority);
-                        apszArgs[cArgs++] = szPriorityArg;
+                        case 1: fFlags |= CREATE_SUSPENDED | IDLE_PRIORITY_CLASS; break;
+                        case 2: fFlags |= CREATE_SUSPENDED | BELOW_NORMAL_PRIORITY_CLASS; break;
+                        case 3: fFlags |= CREATE_SUSPENDED | NORMAL_PRIORITY_CLASS; break;
+                        case 4: fFlags |= CREATE_SUSPENDED | HIGH_PRIORITY_CLASS; break;
+                        case 5: fFlags |= CREATE_SUSPENDED | REALTIME_PRIORITY_CLASS; break;
                     }
-                    apszArgs[cArgs] = NULL;
 
                     /*
                      * Create the worker process.
                      */
-                    pWorker->hProcess = (HANDLE) _spawnve(_P_NOWAIT, szExecutable, apszArgs, environ);
-                    if ((intptr_t)pWorker->hProcess != -1)
+                    if (CreateProcessW(wszExecutable, wszCommandLine, NULL /*pProcSecAttr*/, NULL /*pThreadSecAttr*/,
+                                       FALSE /*fInheritHandles*/, fFlags, NULL /*pwszzEnvironment*/,
+                                       NULL /*pwszCwd*/, &StartupInfo, &ProcInfo))
                     {
-                        CloseHandle(hWorkerPipe);
-                        pWorker->pid = GetProcessId(pWorker->hProcess);
-                        if (cVerbosity > 0)
-                            fprintf(stderr, "kSubmit: created %d bit worker %d\n", pWorker->cBits, pWorker->pid);
-                        return 0;
+                        char   szErrMsg[256];
+                        BOOL   afReplace[3] = { TRUE, FALSE, FALSE };
+                        HANDLE ahReplace[3] = { hWorkerPipe, INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE };
+                        if (pWorker->pStdOut)
+                        {
+                            afReplace[1] = TRUE;
+                            afReplace[2] = TRUE;
+                            ahReplace[1] = pWorker->pStdOut->hPipeChild;
+                            ahReplace[2] = pWorker->pStdErr->hPipeChild;
+                        }
+
+                        rc = nt_child_inject_standard_handles(ProcInfo.hProcess, afReplace, ahReplace, szErrMsg, sizeof(szErrMsg));
+                        if (rc == 0)
+                        {
+                            BOOL fRet;
+                            switch (process_priority)
+                            {
+                                case 1: fRet = SetThreadPriority(ProcInfo.hThread, THREAD_PRIORITY_IDLE); break;
+                                case 2: fRet = SetThreadPriority(ProcInfo.hThread, THREAD_PRIORITY_BELOW_NORMAL); break;
+                                case 3: fRet = SetThreadPriority(ProcInfo.hThread, THREAD_PRIORITY_NORMAL); break;
+                                case 4: fRet = SetThreadPriority(ProcInfo.hThread, THREAD_PRIORITY_HIGHEST); break;
+                                case 5: fRet = SetThreadPriority(ProcInfo.hThread, THREAD_PRIORITY_TIME_CRITICAL); break;
+                                default: fRet = TRUE;
+                            }
+                            if (!fRet)
+                                warnx(pCtx, "warning: failed to set kWorker thread priority: %u\n", GetLastError());
+
+                            if (iProcessorGroup >= 0)
+                            {
+                                GROUP_AFFINITY NewAff = { ~(uintptr_t)0, (WORD)iProcessorGroup, 0, 0, 0 };
+                                GROUP_AFFINITY OldAff = {             0,                     0, 0, 0, 0 };
+                                if (!g_pfnSetThreadGroupAffinity(ProcInfo.hThread, &NewAff, &OldAff))
+                                    warnx(pCtx, "warning: Failed to set processor group to %d: %u\n",
+                                          iProcessorGroup, GetLastError());
+                            }
+
+                            /*
+                             * Now, we just need to resume the thread.
+                             */
+                            if (ResumeThread(ProcInfo.hThread))
+                            {
+                                CloseHandle(hWorkerPipe);
+                                CloseHandle(ProcInfo.hThread);
+                                pWorker->pid      = ProcInfo.dwProcessId;
+                                pWorker->hProcess = ProcInfo.hProcess;
+                                if (cVerbosity > 0)
+                                    warnx(pCtx, "created %d bit worker %d\n", pWorker->cBits, pWorker->pid);
+                                return 0;
+                            }
+
+                            /*
+                             * Failed, bail out.
+                             */
+                            rc = errx(pCtx, -3, "ResumeThread failed: %u", GetLastError());
+                        }
+                        else
+                            rc = errx(pCtx, -3, "%s", szErrMsg);
+                        TerminateProcess(ProcInfo.hProcess, 1234);
+                        CloseHandle(ProcInfo.hThread);
+                        CloseHandle(ProcInfo.hProcess);
                     }
-                    err(1, "_spawnve(,%s,,)", szExecutable);
+                    else
+                        rc = errx(pCtx, -2, "CreateProcessW failed: %u (exe=%S cmdline=%S)",
+                                  GetLastError(), wszExecutable, wszCommandLine);
                     CloseHandle(pWorker->OverlappedRead.hEvent);
                     pWorker->OverlappedRead.hEvent = INVALID_HANDLE_VALUE;
                 }
                 else
-                    errx(1, "CreateEventW failed: %u", GetLastError());
+                    rc = errx(pCtx, -1, "CreateEventW failed: %u", GetLastError());
                 CloseHandle(pWorker->hPipe);
                 pWorker->hPipe = INVALID_HANDLE_VALUE;
             }
             else
-                errx(1, "Opening named pipe failed: %u", GetLastError());
+                rc = errx(pCtx, -1, "Opening named pipe failed: %u", GetLastError());
             CloseHandle(hWorkerPipe);
         }
         else
-            errx(1, "CreateNamedPipeW failed: %u", GetLastError());
+            rc = errx(pCtx, -1, "CreateNamedPipeW failed: %u", GetLastError());
 
 #else
         /*
          * Create a socket pair.
          */
+        int aiPair[2] = { -1, -1 };
         if (socketpair(AF_LOCAL, SOCK_STREAM, 0, aiPair) == 0)
         {
             pWorker->fdSocket = aiPair[1];
+
+            rc = -1;
         }
         else
-            err(1, "socketpair");
+            rc = err(pCtx, -1, "socketpair");
 #endif
     }
     else
-        errx(1, "KBUILD_BIN_PATH is too long");
-    return -1;
+        rc = errx(pCtx, -1, "KBUILD_BIN_PATH is too long");
+    return rc;
 }
 
 
@@ -453,11 +625,12 @@ static int kSubmitSpawnWorker(PWORKERINSTANCE pWorker, int cVerbosity)
  * Selects an idle worker or spawns a new one.
  *
  * @returns Pointer to the selected worker instance.  NULL on error.
+ * @param   pCtx                The command execution context.
  * @param   pWorker             The idle worker instance to respawn.
  *                              On failure this will be freed!
  * @param   cBitsWorker         The worker bitness - 64 or 32.
  */
-static int kSubmitRespawnWorker(PWORKERINSTANCE pWorker, int cVerbosity)
+static int kSubmitRespawnWorker(PKMKBUILTINCTX pCtx, PWORKERINSTANCE pWorker, int cVerbosity)
 {
     /*
      * Clean up after the old worker.
@@ -470,13 +643,16 @@ static int kSubmitRespawnWorker(PWORKERINSTANCE pWorker, int cVerbosity)
     if (pWorker->hPipe != INVALID_HANDLE_VALUE)
     {
         if (!CloseHandle(pWorker->hPipe))
-            warnx("CloseHandle(pWorker->hPipe): %u", GetLastError());
+            warnx(pCtx, "CloseHandle(pWorker->hPipe): %u", GetLastError());
         pWorker->hPipe = INVALID_HANDLE_VALUE;
     }
 
     if (!CloseHandle(pWorker->OverlappedRead.hEvent))
-        warnx("CloseHandle(pWorker->OverlappedRead.hEvent): %u", GetLastError());
+        warnx(pCtx, "CloseHandle(pWorker->OverlappedRead.hEvent): %u", GetLastError());
     pWorker->OverlappedRead.hEvent = INVALID_HANDLE_VALUE;
+
+    if (pWorker->pStdOut)
+        MkWinChildcareWorkerDrainPipes(NULL, pWorker->pStdOut, pWorker->pStdErr);
 
     /* It's probably shutdown already, if not give it 10 milliseconds before
        we terminate it forcefully. */
@@ -484,13 +660,20 @@ static int kSubmitRespawnWorker(PWORKERINSTANCE pWorker, int cVerbosity)
     if (rcWait != WAIT_OBJECT_0)
     {
         BOOL fRc = TerminateProcess(pWorker->hProcess, 127);
+
+        if (pWorker->pStdOut)
+            MkWinChildcareWorkerDrainPipes(NULL, pWorker->pStdOut, pWorker->pStdErr);
+
         rcWait = WaitForSingleObject(pWorker->hProcess, 100);
         if (rcWait != WAIT_OBJECT_0)
-            warnx("WaitForSingleObject returns %u (and TerminateProcess %d)", rcWait, fRc);
+            warnx(pCtx, "WaitForSingleObject returns %u (and TerminateProcess %d)", rcWait, fRc);
     }
 
+    if (pWorker->pStdOut)
+        MkWinChildcareWorkerDrainPipes(NULL, pWorker->pStdOut, pWorker->pStdErr);
+
     if (!CloseHandle(pWorker->hProcess))
-        warnx("CloseHandle(pWorker->hProcess): %u", GetLastError());
+        warnx(pCtx, "CloseHandle(pWorker->hProcess): %u", GetLastError());
     pWorker->hProcess = INVALID_HANDLE_VALUE;
 
 #else
@@ -500,14 +683,14 @@ static int kSubmitRespawnWorker(PWORKERINSTANCE pWorker, int cVerbosity)
     if (pWorker->fdSocket != -1)
     {
         if (close(pWorker->fdSocket) != 0)
-            warn("close(pWorker->fdSocket)");
+            warn(pCtx, "close(pWorker->fdSocket)");
         pWorker->fdSocket = -1;
     }
 
     kill(pWorker->pid, SIGTERM);
     pidWait = waitpid(pWorker->pid, &rc, 0);
     if (pidWait != pWorker->pid)
-        warn("waitpid(pWorker->pid,,0)");
+        warn(pCtx, "waitpid(pWorker->pid,,0)");
 #endif
 
     /*
@@ -518,7 +701,7 @@ static int kSubmitRespawnWorker(PWORKERINSTANCE pWorker, int cVerbosity)
     /*
      * Respawn it.
      */
-    if (kSubmitSpawnWorker(pWorker, cVerbosity) == 0)
+    if (kSubmitSpawnWorker(pCtx, pWorker, cVerbosity) == 0)
     {
         /*
          * Insert it into the process ID hash table and idle list.
@@ -541,7 +724,7 @@ static int kSubmitRespawnWorker(PWORKERINSTANCE pWorker, int cVerbosity)
  * @returns Pointer to the selected worker instance.  NULL on error.
  * @param   cBitsWorker         The worker bitness - 64 or 32.
  */
-static PWORKERINSTANCE kSubmitSelectWorkSpawnNewIfNecessary(unsigned cBitsWorker, int cVerbosity)
+static PWORKERINSTANCE kSubmitSelectWorkSpawnNewIfNecessary(PKMKBUILTINCTX pCtx, unsigned cBitsWorker, int cVerbosity)
 {
     /*
      * Lookup up an idle worker.
@@ -559,18 +742,36 @@ static PWORKERINSTANCE kSubmitSelectWorkSpawnNewIfNecessary(unsigned cBitsWorker
      */
     pWorker = (PWORKERINSTANCE)xcalloc(sizeof(*pWorker));
     pWorker->cBits = cBitsWorker;
-    if (kSubmitSpawnWorker(pWorker, cVerbosity) == 0)
+#if defined(CONFIG_NEW_WIN_CHILDREN) && defined(KBUILD_OS_WINDOWS)
+    if (output_sync != OUTPUT_SYNC_NONE)
     {
-        /*
-         * Insert it into the process ID hash table and idle list.
-         */
-        size_t idxHash = KWORKER_PID_HASH(pWorker->pid);
-        pWorker->pNextPidHash = g_apPidHash[idxHash];
-        g_apPidHash[idxHash] = pWorker;
-
-        kSubmitListAppend(&g_IdleList, pWorker);
-        return pWorker;
+        pWorker->pStdOut = MkWinChildcareCreateWorkerPipe(1, g_uWorkerSeqNo << 1);
+        pWorker->pStdErr = MkWinChildcareCreateWorkerPipe(2, g_uWorkerSeqNo << 1);
     }
+    if (   output_sync == OUTPUT_SYNC_NONE
+        || (   pWorker->pStdOut != NULL
+            && pWorker->pStdErr != NULL))
+#endif
+    {
+        if (kSubmitSpawnWorker(pCtx, pWorker, cVerbosity) == 0)
+        {
+            /*
+             * Insert it into the process ID hash table and idle list.
+             */
+            size_t idxHash = KWORKER_PID_HASH(pWorker->pid);
+            pWorker->pNextPidHash = g_apPidHash[idxHash];
+            g_apPidHash[idxHash] = pWorker;
+
+            kSubmitListAppend(&g_IdleList, pWorker);
+            return pWorker;
+        }
+    }
+#if defined(CONFIG_NEW_WIN_CHILDREN) && defined(KBUILD_OS_WINDOWS)
+    if (pWorker->pStdErr)
+        MkWinChildcareDeleteWorkerPipe(pWorker->pStdErr);
+    if (pWorker->pStdOut)
+        MkWinChildcareDeleteWorkerPipe(pWorker->pStdOut);
+#endif
 
     free(pWorker);
     return NULL;
@@ -710,6 +911,7 @@ static void *kSubmitComposeJobMessage(const char *pszExecutable, char **papszArg
  *
  * @returns 0 on success, non-zero on failure.
  *
+ * @param   pCtx                The command execution context.
  * @param   pWorker             The work to send the request to.  The worker is
  *                              on the idle list.
  * @param   pvMsg               The message to send.
@@ -717,7 +919,8 @@ static void *kSubmitComposeJobMessage(const char *pszExecutable, char **papszArg
  * @param   fNoRespawning       Set if
  * @param   cVerbosity          The verbosity level.
  */
-static int kSubmitSendJobMessage(PWORKERINSTANCE pWorker, void const *pvMsg, uint32_t cbMsg, int fNoRespawning, int cVerbosity)
+static int kSubmitSendJobMessage(PKMKBUILTINCTX pCtx, PWORKERINSTANCE pWorker, void const *pvMsg, uint32_t cbMsg,
+                                 int fNoRespawning, int cVerbosity)
 {
     int cRetries;
 
@@ -733,8 +936,8 @@ static int kSubmitSendJobMessage(PWORKERINSTANCE pWorker, void const *pvMsg, uin
         if (!fNoRespawning)
         {
             if (cVerbosity > 0)
-                fprintf(stderr,  "kSubmit: Respawning worker (#1)...\n");
-            if (kSubmitRespawnWorker(pWorker, cVerbosity) != 0)
+                warnx(pCtx, "Respawning worker (#1)...\n");
+            if (kSubmitRespawnWorker(pCtx, pWorker, cVerbosity) != 0)
                 return 2;
         }
 
@@ -767,7 +970,7 @@ static int kSubmitSendJobMessage(PWORKERINSTANCE pWorker, void const *pvMsg, uin
         if (   (   dwErr != ERROR_BROKEN_PIPE
                 && dwErr != ERROR_NO_DATA)
             || cRetries <= 0)
-            return errx(1, "Error writing to worker: %u", dwErr);
+            return errx(pCtx, 1, "Error writing to worker: %u", dwErr);
 #else
         ssize_t cbWritten
         while ((cbWritten = write(pWorker->fdSocket, pbLeft, cbLeft)) >= 0)
@@ -783,7 +986,7 @@ static int kSubmitSendJobMessage(PWORKERINSTANCE pWorker, void const *pvMsg, uin
                && errno != ENOTCONN
                && errno != ECONNRESET))
             || cRetries <= 0)
-            return err(1, "Error writing to worker");
+            return err(pCtx, 1, "Error writing to worker");
 # error "later"
 #endif
 
@@ -791,8 +994,8 @@ static int kSubmitSendJobMessage(PWORKERINSTANCE pWorker, void const *pvMsg, uin
          * Broken connection. Try respawn the worker.
          */
         if (cVerbosity > 0)
-            fprintf(stderr,  "kSubmit: Respawning worker (#2)...\n");
-        if (kSubmitRespawnWorker(pWorker, cVerbosity) != 0)
+            warnx(pCtx, "Respawning worker (#2)...\n");
+        if (kSubmitRespawnWorker(pCtx, pWorker, cVerbosity) != 0)
             return 2;
     }
 }
@@ -809,17 +1012,18 @@ static int kSubmitSendJobMessage(PWORKERINSTANCE pWorker, void const *pvMsg, uin
  * time the worker is engaged.  This will usually mean there's a little delay in
  * which the process can terminate without us having to actively wait for it.
  *
+ * @param   pCtx                The command execution context.
  * @param   pWorker             The worker instance.
  */
-static void kSubmitCloseConnectOnExitingWorker(PWORKERINSTANCE pWorker)
+static void kSubmitCloseConnectOnExitingWorker(PKMKBUILTINCTX pCtx, PWORKERINSTANCE pWorker)
 {
 #ifdef KBUILD_OS_WINDOWS
     if (!CloseHandle(pWorker->hPipe))
-        warnx("CloseHandle(pWorker->hPipe): %u", GetLastError());
+        warnx(pCtx, "CloseHandle(pWorker->hPipe): %u", GetLastError());
     pWorker->hPipe = INVALID_HANDLE_VALUE;
 #else
     if (close(pWorker->fdSocket) != 0)
-        warn("close(pWorker->fdSocket)");
+        warn(pCtx, "close(pWorker->fdSocket)");
     pWorker->fdSocket = -1;
 #endif
 }
@@ -831,18 +1035,19 @@ static void kSubmitCloseConnectOnExitingWorker(PWORKERINSTANCE pWorker)
  * Handles read failure.
  *
  * @returns Exit code.
+ * @param   pCtx                The command execution context.
  * @param   pWorker             The worker instance.
  * @param   dwErr               The error code.
  * @param   pszWhere            Where it failed.
  */
-static int kSubmitWinReadFailed(PWORKERINSTANCE pWorker, DWORD dwErr, const char *pszWhere)
+static int kSubmitWinReadFailed(PKMKBUILTINCTX pCtx, PWORKERINSTANCE pWorker, DWORD dwErr, const char *pszWhere)
 {
     DWORD dwExitCode;
 
     if (pWorker->cbResultRead == 0)
-        errx(1, "%s/ReadFile failed: %u", pszWhere, dwErr);
+        errx(pCtx, 1, "%s/ReadFile failed: %u", pszWhere, dwErr);
     else
-        errx(1, "%s/ReadFile failed: %u (read %u bytes)", pszWhere, dwErr, pWorker->cbResultRead);
+        errx(pCtx, 1, "%s/ReadFile failed: %u (read %u bytes)", pszWhere, dwErr, pWorker->cbResultRead);
     assert(dwErr != 0);
 
     /* Complete the result. */
@@ -865,9 +1070,10 @@ static int kSubmitWinReadFailed(PWORKERINSTANCE pWorker, DWORD dwErr, const char
  * Used by
  * @returns 0 if we got the whole result, -1 if I/O is pending, and windows last
  *          error on ReadFile failure.
+ * @param   pCtx                The command execution context.
  * @param   pWorker             The worker instance.
  */
-static int kSubmitReadMoreResultWin(PWORKERINSTANCE pWorker, const char *pszWhere)
+static int kSubmitReadMoreResultWin(PKMKBUILTINCTX pCtx, PWORKERINSTANCE pWorker, const char *pszWhere)
 {
     /*
      * Set up the result read, telling the sub_proc.c unit about it.
@@ -890,7 +1096,7 @@ static int kSubmitReadMoreResultWin(PWORKERINSTANCE pWorker, const char *pszWher
             DWORD dwErr = GetLastError();
             if (dwErr == ERROR_IO_PENDING)
                 return -1;
-            return kSubmitWinReadFailed(pWorker, dwErr, pszWhere);
+            return kSubmitWinReadFailed(pCtx, pWorker, dwErr, pszWhere);
         }
 
         pWorker->cbResultRead += cbRead;
@@ -908,6 +1114,7 @@ static int kSubmitReadMoreResultWin(PWORKERINSTANCE pWorker, const char *pszWher
  * sub_proc.c about the process.
  *
  * @returns Exit code.
+ * @param   pCtx                The command execution context.
  * @param   pWorker             The worker instance to mark as active.
  * @param   cVerbosity          The verbosity level.
  * @param   pChild              The kmk child to associate the job with.
@@ -915,7 +1122,7 @@ static int kSubmitReadMoreResultWin(PWORKERINSTANCE pWorker, const char *pszWher
  *                              running, otherwise the worker is already done
  *                              and we've returned the exit code of the job.
  */
-static int kSubmitMarkActive(PWORKERINSTANCE pWorker, int cVerbosity, struct child *pChild, pid_t *pPidSpawned)
+static int kSubmitMarkActive(PKMKBUILTINCTX pCtx, PWORKERINSTANCE pWorker, int cVerbosity, struct child *pChild, pid_t *pPidSpawned)
 {
 #ifdef KBUILD_OS_WINDOWS
     int rc;
@@ -929,24 +1136,37 @@ static int kSubmitMarkActive(PWORKERINSTANCE pWorker, int cVerbosity, struct chi
      * very fast, this may actually get the result immediately.
      */
 l_again:
-    rc = kSubmitReadMoreResultWin(pWorker, "kSubmitMarkActive");
+    rc = kSubmitReadMoreResultWin(pCtx, pWorker, "kSubmitMarkActive");
     if (rc == -1)
     {
+# ifndef CONFIG_NEW_WIN_CHILDREN
         if (process_kmk_register_submit(pWorker->OverlappedRead.hEvent, (intptr_t)pWorker, pPidSpawned) == 0)
         { /* likely */ }
         else
         {
             /* We need to do the waiting here because sub_proc.c has too much to do. */
-            warnx("Too many processes for sub_proc.c to handle!");
+            warnx(pCtx, "Too many processes for sub_proc.c to handle!");
             WaitForSingleObject(pWorker->OverlappedRead.hEvent, INFINITE);
             goto l_again;
         }
+# else
+        if (MkWinChildCreateSubmit((intptr_t)pWorker->OverlappedRead.hEvent, pWorker,
+                                   pWorker->pStdOut, pWorker->pStdErr, pChild, pPidSpawned) == 0)
+        { /* likely */ }
+        else
+        {
+            /* We need to do the waiting here because sub_proc.c has too much to do. */
+            warnx(pCtx, "MkWinChildCreateSubmit failed!");
+            WaitForSingleObject(pWorker->OverlappedRead.hEvent, INFINITE);
+            goto l_again;
+        }
+# endif
     }
     else
     {
         assert(rc == 0 || pWorker->Result.s.rcExit != 0);
         if (pWorker->Result.s.bWorkerExiting)
-            kSubmitCloseConnectOnExitingWorker(pWorker);
+            kSubmitCloseConnectOnExitingWorker(pCtx, pWorker);
         *pPidSpawned = 0;
         return pWorker->Result.s.rcExit;
     }
@@ -975,19 +1195,22 @@ l_again:
  *
  * @returns 0 on success, -1 if ReadFile was restarted.
  * @param   pvUser              The worker instance.
+ * @param   fBlock              if we're to block waiting for the result or not.
  * @param   prcExit             Where to return the exit code.
  * @param   piSigNo             Where to return the signal number.
  */
-int kSubmitSubProcGetResult(intptr_t pvUser, int *prcExit, int *piSigNo)
+int kSubmitSubProcGetResult(intptr_t pvUser, int fBlock, int *prcExit, int *piSigNo)
 {
     PWORKERINSTANCE pWorker = (PWORKERINSTANCE)pvUser;
+    KMKBUILTINCTX   FakeCtx = { "kSubmit/GetResult", NULL };
+    PKMKBUILTINCTX  pCtx = &FakeCtx;
 
     /*
      * Get the overlapped result.  There should be one since we're here
      * because of a satisfied WaitForMultipleObject.
      */
     DWORD cbRead = 0;
-    if (GetOverlappedResult(pWorker->hPipe, &pWorker->OverlappedRead, &cbRead, TRUE))
+    if (GetOverlappedResult(pWorker->hPipe, &pWorker->OverlappedRead, &cbRead, fBlock ? TRUE : FALSE))
     {
         pWorker->cbResultRead += cbRead;
         assert(pWorker->cbResultRead <= sizeof(pWorker->Result));
@@ -995,7 +1218,7 @@ int kSubmitSubProcGetResult(intptr_t pvUser, int *prcExit, int *piSigNo)
         /* More to be read? */
         while (pWorker->cbResultRead < sizeof(pWorker->Result))
         {
-            int rc = kSubmitReadMoreResultWin(pWorker, "kSubmitSubProcGetResult/more");
+            int rc = kSubmitReadMoreResultWin(pCtx, pWorker, "kSubmitSubProcGetResult/more");
             if (rc == -1)
                 return -1;
             assert(rc == 0 || pWorker->Result.s.rcExit != 0);
@@ -1005,7 +1228,9 @@ int kSubmitSubProcGetResult(intptr_t pvUser, int *prcExit, int *piSigNo)
     else
     {
         DWORD dwErr = GetLastError();
-        kSubmitWinReadFailed(pWorker, dwErr, "kSubmitSubProcGetResult/result");
+        if (dwErr == ERROR_IO_INCOMPLETE && !fBlock)
+            return -1;
+        kSubmitWinReadFailed(pCtx, pWorker, dwErr, "kSubmitSubProcGetResult/result");
     }
 
     /*
@@ -1022,7 +1247,7 @@ int kSubmitSubProcGetResult(intptr_t pvUser, int *prcExit, int *piSigNo)
         case STATUS_ILLEGAL_INSTRUCTION:        *piSigNo = SIGILL; break;
     }
     if (pWorker->Result.s.bWorkerExiting)
-        kSubmitCloseConnectOnExitingWorker(pWorker);
+        kSubmitCloseConnectOnExitingWorker(pCtx, pWorker);
 
     return 0;
 }
@@ -1057,14 +1282,16 @@ static void kSubmitAtExitCallback(void)
     PWORKERINSTANCE pWorker;
     DWORD           msStartTick;
     DWORD           cKillRaids = 0;
+    KMKBUILTINCTX   FakeCtx = { "kSubmit/atexit", NULL };
+    PKMKBUILTINCTX  pCtx = &FakeCtx;
 
     /*
      * Tell all the workers to exit by breaking the connection.
      */
     for (pWorker = g_IdleList.pHead; pWorker != NULL; pWorker = pWorker->pNext)
-        kSubmitCloseConnectOnExitingWorker(pWorker);
+        kSubmitCloseConnectOnExitingWorker(pCtx, pWorker);
     for (pWorker = g_BusyList.pHead; pWorker != NULL; pWorker = pWorker->pNext)
-        kSubmitCloseConnectOnExitingWorker(pWorker);
+        kSubmitCloseConnectOnExitingWorker(pCtx, pWorker);
 
     /*
      * Wait a little while for them to stop.
@@ -1140,7 +1367,7 @@ static void kSubmitAtExitCallback(void)
                 cKillRaids++;
                 if (cKillRaids == 1 && getenv("KMK_KSUBMIT_NO_KILL") == NULL)
                 {
-                    fprintf(stderr, "kmk/kSubmit: Killing %u lingering worker processe(s)!\n", cHandles);
+                    warnx(pCtx, "Killing %u lingering worker processe(s)!\n", cHandles);
                     for (pWorker = g_IdleList.pHead; pWorker != NULL; pWorker = pWorker->pNext)
                         if (pWorker->hProcess != INVALID_HANDLE_VALUE)
                             TerminateProcess(pWorker->hProcess, WAIT_TIMEOUT);
@@ -1150,7 +1377,7 @@ static void kSubmitAtExitCallback(void)
                 }
                 else
                 {
-                    fprintf(stderr, "kmk/kSubmit: Giving up on the last %u worker processe(s). :-(\n", cHandles);
+                    warnx(pCtx, "Giving up on the last %u worker processe(s). :-(\n", cHandles);
                     return;
                 }
             }
@@ -1159,8 +1386,8 @@ static void kSubmitAtExitCallback(void)
                 /* Some kind of wait error.  Could be a bad handle, check each and remove
                    bad ones as well as completed ones. */
                 size_t idx;
-                fprintf(stderr, "kmk/kSubmit: WaitForMultipleObjects unexpectedly returned %#u (err=%u)\n",
-                        dwWait, GetLastError());
+                warnx(pCtx, "WaitForMultipleObjects unexpectedly returned %#u (err=%u)\n",
+                      dwWait, GetLastError());
                 for (idx = 0; idx < cHandles; idx++)
                 {
                     dwWait = WaitForSingleObject(ahHandles[idx], 0 /*ms*/);
@@ -1177,65 +1404,64 @@ static void kSubmitAtExitCallback(void)
 }
 
 
-static int usage(FILE *pOut,  const char *argv0)
+static int kmk_builtin_kSubmit_usage(PKMKBUILTINCTX pCtx, int fIsErr)
 {
-    fprintf(pOut,
-            "usage: %s [-Z|--zap-env] [-E|--set <var=val>] [-U|--unset <var=val>]\n"
-            "           [-A|--append <var=val>] [-D|--prepend <var=val>]\n"
-            "           [-C|--chdir <dir>] [--wcc-brain-damage] [--no-pch-caching]\n"
-            "           [-3|--32-bit] [-6|--64-bit] [-v]\n"
-            "           [-P|--post-cmd <cmd> [args]] -- <program> [args]\n"
-            "   or: %s --help\n"
-            "   or: %s --version\n"
-            "\n"
-            "Options:\n"
-            "  -Z, --zap-env, -i, --ignore-environment\n"
-            "    Zaps the environment. Position dependent.\n"
-            "  -E, --set <var>=[value]\n"
-            "    Sets an enviornment variable putenv fashion. Position dependent.\n"
-            "  -U, --unset <var>\n"
-            "    Removes an environment variable. Position dependent.\n"
-            "  -A, --append <var>=<value>\n"
-            "    Appends the given value to the environment variable.\n"
-            "  -D,--prepend <var>=<value>\n"
-            "    Prepends the given value to the environment variable.\n"
-            "  -C, --chdir <dir>\n"
-            "    Specifies the current directory for the program.  Relative paths\n"
-            "    are relative to the previous -C option.  Default is getcwd value.\n"
-            "  -3, --32-bit\n"
-            "    Selects a 32-bit kWorker process. Default: kmk bit count\n"
-            "  -6, --64-bit\n"
-            "    Selects a 64-bit kWorker process. Default: kmk bit count\n"
-            "  --wcc-brain-damage\n"
-            "    Works around wcc and wcc386 (Open Watcom) not following normal\n"
-            "    quoting conventions on Windows, OS/2, and DOS.\n"
-            "  --no-pch-caching\n"
-            "    Do not cache precompiled header files because they're being created.\n"
-            "  -v,--verbose\n"
-            "    More verbose execution.\n"
-            "  -P|--post-cmd <cmd> ...\n"
-            "    For running a built-in command on the output, specifying the command\n"
-            "    and all it's parameters.  Currently supported commands:\n"
-            "        kDepObj\n"
-            "  -V,--version\n"
-            "    Show the version number.\n"
-            "  -h,--help\n"
-            "    Show this usage information.\n"
-            "\n"
-            ,
-            argv0, argv0, argv0);
+    kmk_builtin_ctx_printf(pCtx, fIsErr,
+                           "usage: %s [-Z|--zap-env] [-E|--set <var=val>] [-U|--unset <var=val>]\n"
+                           "           [-A|--append <var=val>] [-D|--prepend <var=val>]\n"
+                           "           [-C|--chdir <dir>] [--wcc-brain-damage] [--no-pch-caching]\n"
+                           "           [-3|--32-bit] [-6|--64-bit] [-v]\n"
+                           "           [-P|--post-cmd <cmd> [args]] -- <program> [args]\n"
+                           "   or: %s --help\n"
+                           "   or: %s --version\n"
+                           "\n"
+                           "Options:\n"
+                           "  -Z, --zap-env, -i, --ignore-environment\n"
+                           "    Zaps the environment. Position dependent.\n"
+                           "  -E, --set <var>=[value]\n"
+                           "    Sets an enviornment variable putenv fashion. Position dependent.\n"
+                           "  -U, --unset <var>\n"
+                           "    Removes an environment variable. Position dependent.\n"
+                           "  -A, --append <var>=<value>\n"
+                           "    Appends the given value to the environment variable.\n"
+                           "  -D,--prepend <var>=<value>\n"
+                           "    Prepends the given value to the environment variable.\n"
+                           "  -C, --chdir <dir>\n"
+                           "    Specifies the current directory for the program.  Relative paths\n"
+                           "    are relative to the previous -C option.  Default is getcwd value.\n"
+                           "  -3, --32-bit\n"
+                           "    Selects a 32-bit kWorker process. Default: kmk bit count\n"
+                           "  -6, --64-bit\n"
+                           "    Selects a 64-bit kWorker process. Default: kmk bit count\n"
+                           "  --wcc-brain-damage\n"
+                           "    Works around wcc and wcc386 (Open Watcom) not following normal\n"
+                           "    quoting conventions on Windows, OS/2, and DOS.\n"
+                           "  --no-pch-caching\n"
+                           "    Do not cache precompiled header files because they're being created.\n"
+                           "  -v,--verbose\n"
+                           "    More verbose execution.\n"
+                           "  -P|--post-cmd <cmd> ...\n"
+                           "    For running a built-in command on the output, specifying the command\n"
+                           "    and all it's parameters.  Currently supported commands:\n"
+                           "        kDepObj\n"
+                           "  -V,--version\n"
+                           "    Show the version number.\n"
+                           "  -h,--help\n"
+                           "    Show this usage information.\n"
+                           "\n"
+                           ,
+                           pCtx->pszProgName, pCtx->pszProgName, pCtx->pszProgName);
     return 2;
 }
 
 
-int kmk_builtin_kSubmit(int argc, char **argv, char **envp, struct child *pChild, pid_t *pPidSpawned)
+int kmk_builtin_kSubmit(int argc, char **argv, char **envp, PKMKBUILTINCTX pCtx, struct child *pChild, pid_t *pPidSpawned)
 {
     int             rcExit = 0;
     int             iArg;
     unsigned        cAllocatedEnvVars;
-    unsigned        iEnvVar;
     unsigned        cEnvVars;
-    char          **papszEnv            = NULL;
+    char          **papszEnvVars;
     const char     *pszExecutable       = NULL;
     int             iPostCmd            = argc;
     int             cPostCmdArgs        = 0;
@@ -1246,23 +1472,23 @@ int kmk_builtin_kSubmit(int argc, char **argv, char **envp, struct child *pChild
     size_t const    cbCwdBuf            = GET_PATH_MAX;
     PATH_VAR(szCwd);
 
-    g_progname = argv[0];
-
     /*
      * Create default program environment.
+     *
+     * Note! We only clean up the environment on successful return, assuming
+     *       make will stop after that.
      */
     if (getcwd_fs(szCwd, cbCwdBuf) != NULL)
     { /* likely */ }
     else
-        return err(1, "getcwd_fs failed\n");
+        return err(pCtx, 1, "getcwd_fs failed\n");
 
-    papszEnv = pChild->environment;
-    if (!papszEnv)
-        pChild->environment = papszEnv = target_environment(pChild->file);
+    /* The environment starts out in read-only mode and will be duplicated if modified. */
+    cAllocatedEnvVars = 0;
+    papszEnvVars = envp;
     cEnvVars = 0;
-    while (papszEnv[cEnvVars] != NULL)
+    while (papszEnvVars[cEnvVars] != NULL)
         cEnvVars++;
-    cAllocatedEnvVars = cEnvVars;
 
     /*
      * Parse the command line.
@@ -1280,8 +1506,8 @@ int kmk_builtin_kSubmit(int argc, char **argv, char **envp, struct child *pChild
                 { /* likely */ }
                 else
                 {
-                    errx(1, "Incomplete option: '-'");
-                    return usage(stderr, argv[0]);
+                    errx(pCtx, 1, "Incomplete option: '-'");
+                    return kmk_builtin_kSubmit_usage(pCtx, 1);
                 }
             }
             else
@@ -1336,8 +1562,8 @@ int kmk_builtin_kSubmit(int argc, char **argv, char **envp, struct child *pChild
                     chOpt = 'e';
                 else
                 {
-                    errx(2, "Unknown option: '%s'", pszArg - 2);
-                    return usage(stderr, argv[0]);
+                    errx(pCtx, 2, "Unknown option: '%s'", pszArg - 2);
+                    return kmk_builtin_kSubmit_usage(pCtx, 1);
                 }
                 pszArg = "";
             }
@@ -1360,8 +1586,8 @@ int kmk_builtin_kSubmit(int argc, char **argv, char **envp, struct child *pChild
                             pszValue = argv[iArg];
                         else
                         {
-                            errx(1, "Option -%c requires a value!", chOpt);
-                            return usage(stderr, argv[0]);
+                            errx(pCtx, 1, "Option -%c requires a value!", chOpt);
+                            return kmk_builtin_kSubmit_usage(pCtx, 1);
                         }
                         break;
                 }
@@ -1370,53 +1596,49 @@ int kmk_builtin_kSubmit(int argc, char **argv, char **envp, struct child *pChild
                 {
                     case 'Z':
                     case 'i': /* GNU env compatibility. */
-                        for (iEnvVar = 0; iEnvVar < cEnvVars; iEnvVar++)
-                            free(papszEnv[iEnvVar]);
-                        papszEnv[0] = NULL;
-                        cEnvVars = 0;
-                        break;
+                        rcExit = kBuiltinOptEnvZap(pCtx, &papszEnvVars, &cEnvVars, &cAllocatedEnvVars, cVerbosity);
+                        if (rcExit == 0)
+                            break;
+                        return rcExit;
 
                     case 'E':
-                        rcExit = kBuiltinOptEnvSet(&papszEnv, &cEnvVars, &cAllocatedEnvVars, cVerbosity, pszValue);
-                        pChild->environment = papszEnv;
+                        rcExit = kBuiltinOptEnvSet(pCtx, &papszEnvVars, &cEnvVars, &cAllocatedEnvVars, cVerbosity, pszValue);
                         if (rcExit == 0)
                             break;
                         return rcExit;
 
                     case 'A':
-                        rcExit = kBuiltinOptEnvAppend(&papszEnv, &cEnvVars, &cAllocatedEnvVars, cVerbosity, pszValue);
-                        pChild->environment = papszEnv;
+                        rcExit = kBuiltinOptEnvAppend(pCtx, &papszEnvVars, &cEnvVars, &cAllocatedEnvVars, cVerbosity, pszValue);
                         if (rcExit == 0)
                             break;
                         return rcExit;
 
                     case 'D':
-                        rcExit = kBuiltinOptEnvPrepend(&papszEnv, &cEnvVars, &cAllocatedEnvVars, cVerbosity, pszValue);
-                        pChild->environment = papszEnv;
+                        rcExit = kBuiltinOptEnvPrepend(pCtx, &papszEnvVars, &cEnvVars, &cAllocatedEnvVars, cVerbosity, pszValue);
                         if (rcExit == 0)
                             break;
                         return rcExit;
 
                     case 'U':
-                        rcExit = kBuiltinOptEnvUnset(papszEnv, &cEnvVars, cVerbosity, pszValue);
+                        rcExit = kBuiltinOptEnvUnset(pCtx, &papszEnvVars, &cEnvVars, &cAllocatedEnvVars, cVerbosity, pszValue);
                         if (rcExit == 0)
                             break;
                         return rcExit;
 
                     case 'C':
-                        rcExit = kBuiltinOptChDir(szCwd, cbCwdBuf, pszValue);
+                        rcExit = kBuiltinOptChDir(pCtx, szCwd, cbCwdBuf, pszValue);
                         if (rcExit == 0)
                             break;
                         return rcExit;
 
                     case 'P':
                         if (cPostCmdArgs > 0)
-                            return errx(1, "The -P option can only be used once!");
+                            return errx(pCtx, 1, "The -P option can only be used once!");
                         if (*pszArg != '\0')
-                            return errx(1, "The cmd part of the -P needs to be a separate argument!");
+                            return errx(pCtx, 1, "The cmd part of the -P needs to be a separate argument!");
                         iPostCmd = ++iArg;
                         if (iArg >= argc)
-                            return errx(1, "The -P option requires a command following it!");
+                            return errx(pCtx, 1, "The -P option requires a command following it!");
                         while (iArg < argc && strcmp(argv[iArg], "--") != 0)
                             iArg++;
                         cPostCmdArgs = iArg - iPostCmd;
@@ -1440,18 +1662,20 @@ int kmk_builtin_kSubmit(int argc, char **argv, char **envp, struct child *pChild
                         break;
 
                     case 'h':
-                        usage(stdout, argv[0]);
+                        kmk_builtin_kSubmit_usage(pCtx, 0);
+                        kBuiltinOptEnvCleanup(&papszEnvVars, cEnvVars, &cAllocatedEnvVars);
                         return 0;
 
                     case 'V':
+                        kBuiltinOptEnvCleanup(&papszEnvVars, cEnvVars, &cAllocatedEnvVars);
                         return kbuild_version(argv[0]);
                 }
             } while ((chOpt = *pszArg++) != '\0');
         }
         else
         {
-            errx(1, "Unknown argument: '%s'", pszArg);
-            return usage(stderr, argv[0]);
+            errx(pCtx, 1, "Unknown argument: '%s'", pszArg);
+            return kmk_builtin_kSubmit_usage(pCtx, 1);
         }
     }
 
@@ -1461,18 +1685,24 @@ int kmk_builtin_kSubmit(int argc, char **argv, char **envp, struct child *pChild
     if (iArg < argc)
     {
         uint32_t        cbMsg;
-        void           *pvMsg   = kSubmitComposeJobMessage(pszExecutable, &argv[iArg], papszEnv, szCwd,
+        void           *pvMsg   = kSubmitComposeJobMessage(pszExecutable, &argv[iArg], papszEnvVars, szCwd,
                                                            fWatcomBrainDamage, fNoPchCaching,
                                                            &argv[iPostCmd], cPostCmdArgs, &cbMsg);
-        PWORKERINSTANCE pWorker = kSubmitSelectWorkSpawnNewIfNecessary(cBitsWorker, cVerbosity);
+        PWORKERINSTANCE pWorker = kSubmitSelectWorkSpawnNewIfNecessary(pCtx, cBitsWorker, cVerbosity);
         if (pWorker)
         {
-            if (!pszExecutable)
-                pszExecutable = argv[iArg];
-
-            rcExit = kSubmitSendJobMessage(pWorker, pvMsg, cbMsg, 0 /*fNoRespawning*/, cVerbosity);
+            /* Before we send off the job, we should dump pending output, since
+               the kWorker process currently does not coordinate its output with
+               the output.c mechanics. */
+#ifdef CONFIG_NEW_WIN_CHILDREN
+            if (pCtx->pOut && !pWorker->pStdOut)
+#else
+            if (pCtx->pOut)
+#endif
+                output_dump(pCtx->pOut);
+            rcExit = kSubmitSendJobMessage(pCtx, pWorker, pvMsg, cbMsg, 0 /*fNoRespawning*/, cVerbosity);
             if (rcExit == 0)
-                rcExit = kSubmitMarkActive(pWorker, cVerbosity, pChild, pPidSpawned);
+                rcExit = kSubmitMarkActive(pCtx, pWorker, cVerbosity, pChild, pPidSpawned);
 
             if (!g_fAtExitRegistered)
                 if (atexit(kSubmitAtExitCallback) == 0)
@@ -1484,10 +1714,11 @@ int kmk_builtin_kSubmit(int argc, char **argv, char **envp, struct child *pChild
     }
     else
     {
-        errx(1, "Nothing to executed!");
-        rcExit = usage(stderr, argv[0]);
+        errx(pCtx, 1, "Nothing to executed!");
+        rcExit = kmk_builtin_kSubmit_usage(pCtx, 1);
     }
 
+    kBuiltinOptEnvCleanup(&papszEnvVars, cEnvVars, &cAllocatedEnvVars);
     return rcExit;
 }
 

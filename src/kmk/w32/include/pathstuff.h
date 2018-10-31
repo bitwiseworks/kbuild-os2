@@ -1,6 +1,5 @@
 /* Definitions for Windows path manipulation.
-Copyright (C) 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005, 2006,
-2007, 2008, 2009, 2010 Free Software Foundation, Inc.
+Copyright (C) 1996-2016 Free Software Foundation, Inc.
 This file is part of GNU Make.
 
 GNU Make is free software; you can redistribute it and/or modify it under the
@@ -20,7 +19,12 @@ this program.  If not, see <http://www.gnu.org/licenses/>.  */
 
 char *convert_Path_to_windows32(char *Path, char to_delim);
 char *convert_vpath_to_windows32(char *Path, char to_delim);
+#if 1
+char *unix_slashes(char *filename); /* bird */
+char *unix_slashes_resolved(const char *src, char *dst, unsigned len); /* bird */
+#else
 char *w32ify(const char *filename, int resolve);
+#endif
 char *getcwd_fs(char *buf, int len);
 
 #endif

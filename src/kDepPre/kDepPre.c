@@ -1,4 +1,4 @@
-/* $Id: kDepPre.c 2955 2016-09-21 19:05:53Z bird $ */
+/* $Id: kDepPre.c 3167 2018-03-20 21:47:25Z bird $ */
 /** @file
  * kDepPre - Dependency Generator using Precompiler output.
  */
@@ -55,9 +55,10 @@
  *
  * @returns 0 on success.
  * @returns 1 or other approriate exit code on failure.
+ * @param   pThis       Pointer to the 'dep' instance.
  * @param   pInput      Input stream. (probably not seekable)
  */
-static int ParseCPrecompiler(FILE *pInput)
+static int ParseCPrecompiler(PDEPGLOBALS pThis, FILE *pInput)
 {
     enum
     {
@@ -185,7 +186,7 @@ static int ParseCPrecompiler(FILE *pInput)
                         if (    !pDep
                             ||  pDep->cchFilename != cchFilename
                             ||  memcmp(pDep->szFilename, szBuf, cchFilename))
-                            pDep = depAdd(szBuf, cchFilename);
+                            pDep = depAdd(pThis, szBuf, cchFilename);
                         break;
                     }
                 }
@@ -224,6 +225,7 @@ static int usage(FILE *pOut,  const char *argv0)
 int main(int argc, char *argv[])
 {
     int         i;
+    DEPGLOBALS  This;
 
     /* Arguments. */
     int         iExec = 0;
@@ -293,14 +295,14 @@ int main(int argc, char *argv[])
                  */
                 case 'l':
                 {
-                    const char *psz = &argv[i][2];
-                    if (*psz == '=')
-                        psz++;
-                    if (!strcmp(psz, "c"))
+                    const char *pszValue = &argv[i][2];
+                    if (*pszValue == '=')
+                        pszValue++;
+                    if (!strcmp(pszValue, "c"))
                         ;
                     else
                     {
-                        fprintf(stderr, "%s: error: The '%s' language is not supported.\n", argv[0], psz);
+                        fprintf(stderr, "%s: error: The '%s' language is not supported.\n", argv[0], pszValue);
                         return 1;
                     }
                     break;
@@ -449,7 +451,8 @@ int main(int argc, char *argv[])
     /*
      * Do the parsing.
      */
-    i = ParseCPrecompiler(pInput);
+    depInit(&This);
+    i = ParseCPrecompiler(&This, pInput);
 
     /*
      * Reap child.
@@ -464,11 +467,11 @@ int main(int argc, char *argv[])
      */
     if (!i)
     {
-        depOptimize(fFixCase, 0 /* fQuiet */, NULL /*pszIgnoredExt*/);
+        depOptimize(&This, fFixCase, 0 /* fQuiet */, NULL /*pszIgnoredExt*/);
         fprintf(pOutput, "%s:", pszTarget);
-        depPrint(pOutput);
+        depPrint(&This, pOutput);
         if (fStubs)
-            depPrintStubs(pOutput);
+            depPrintStubs(&This, pOutput);
     }
 
     /*
@@ -485,6 +488,8 @@ int main(int argc, char *argv[])
         if (unlink(pszOutput))
             fprintf(stderr, "%s: warning: failed to remove output file '%s' on failure.\n", argv[0], pszOutput);
     }
+
+    depCleanup(&This);
 
     return i;
 }

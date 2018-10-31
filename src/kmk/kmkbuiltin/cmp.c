@@ -34,6 +34,13 @@
 static char sccsid[] = "@(#)cmp.c	8.3 (Berkeley) 4/2/94";
 __RCSID("$NetBSD: cmp.c,v 1.15 2006/01/19 20:44:57 garbled Exp $"); */
 
+/*********************************************************************************************************************************
+*   Header Files                                                                                                                 *
+*********************************************************************************************************************************/
+#define FAKES_NO_GETOPT_H /* bird */
+#ifdef _MSC_VER
+# define MSC_DO_64_BIT_IO /* for correct off_t */
+#endif
 #include "config.h"
 #include <sys/types.h>
 #include "err.h"
@@ -45,14 +52,16 @@ __RCSID("$NetBSD: cmp.c,v 1.15 2006/01/19 20:44:57 garbled Exp $"); */
 #ifndef _MSC_VER
 # include <unistd.h>
 #else
-# define MSC_DO_64_BIT_IO /* for correct off_t */
 # include "mscfakes.h"
 #endif
-#include "getopt.h"
+#include "getopt_r.h"
 #include "kmkbuiltin.h"
 #include "cmp_extern.h"
 
 
+/*********************************************************************************************************************************
+*   Global Variables                                                                                                             *
+*********************************************************************************************************************************/
 static const struct option long_options[] =
 {
     { "help",   					no_argument, 0, 261 },
@@ -61,28 +70,19 @@ static const struct option long_options[] =
 };
 
 
-static int usage(FILE *);
+static int usage(PKMKBUILTINCTX pCtx, int is_err);
 
 int
-kmk_builtin_cmp(int argc, char *argv[], char **envp)
+kmk_builtin_cmp(int argc, char **argv, char **envp, PKMKBUILTINCTX pCtx)
 {
+    struct getopt_state_r gos;
     off_t skip1 = 0, skip2 = 0;
     int lflag = 0, sflag = 0;
     int ch;
     char *file1, *file2;
 
-#ifdef kmk_builtin_cmp
-    setlocale(LC_ALL, "");
-#endif
-
-    /* reset getopt and set progname. */
-    g_progname = argv[0];
-    opterr = 1;
-    optarg = NULL;
-    optopt = 0;
-    optind = 0; /* init */
-
-    while ((ch = getopt_long(argc, argv, "ls", long_options, NULL)) != -1)
+    getopt_initialize_r(&gos, argc, argv, "ls", long_options, envp, pCtx);
+    while ((ch = getopt_long_r(&gos, NULL)) != -1)
     {
         switch (ch)
         {
@@ -93,20 +93,20 @@ kmk_builtin_cmp(int argc, char *argv[], char **envp)
                 sflag = 1;
                 break;
             case 261:
-                usage(stdout);
+                usage(pCtx, 0);
                 return 0;
             case 262:
                 return kbuild_version(argv[0]);
             case '?':
             default:
-                return usage(stderr);
+                return usage(pCtx, 1);
         }
     }
-    argv += optind;
-    argc -= optind;
+    argv += gos.optind;
+    argc -= gos.optind;
 
     if (argc < 2 || argc > 4)
-        return usage(stderr);
+        return usage(pCtx, 1);
 
     file1 = argv[0];
     file2 = argv[1];
@@ -118,25 +118,36 @@ kmk_builtin_cmp(int argc, char *argv[], char **envp)
         errno = 0;
         skip1 = strtoll(argv[2], &ep, 0);
         if (errno || ep == argv[2])
-            return errx(ERR_EXIT, "strtoll(%s,,) failed", argv[2]);
+            return errx(pCtx, ERR_EXIT, "strtoll(%s,,) failed", argv[2]);
 
         if (argc == 4)
         {
             skip2 = strtoll(argv[3], &ep, 0);
             if (errno || ep == argv[3])
-                return errx(ERR_EXIT, "strtoll(%s,,) failed", argv[3]);
+                return errx(pCtx, ERR_EXIT, "strtoll(%s,,) failed", argv[3]);
 	}
     }
 
-    return cmp_file_and_file_ex(file1, skip1, file2, skip2, sflag, lflag, 0);
+    return cmp_file_and_file_ex(pCtx, file1, skip1, file2, skip2, sflag, lflag, 0);
 }
 
 static int
-usage(FILE *fp)
+usage(PKMKBUILTINCTX pCtx, int is_err)
 {
-    fprintf(fp, "usage: %s [-l | -s] file1 file2 [skip1 [skip2]]\n"
-                "   or: %s --help\n"
-                "   or: %s --version\n",
-            g_progname, g_progname, g_progname);
+    kmk_builtin_ctx_printf(pCtx, is_err,
+                           "usage: %s [-l | -s] file1 file2 [skip1 [skip2]]\n"
+                           "   or: %s --help\n"
+                           "   or: %s --version\n",
+                           pCtx->pszProgName, pCtx->pszProgName, pCtx->pszProgName);
     return ERR_EXIT;
 }
+
+#ifdef KMK_BUILTIN_STANDALONE
+int main(int argc, char **argv, char **envp)
+{
+    KMKBUILTINCTX Ctx = { "kmk_cmp", NULL };
+    setlocale(LC_ALL, "");
+    return kmk_builtin_cmp(argc, argv, envp, &Ctx);
+}
+#endif
+

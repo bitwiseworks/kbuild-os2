@@ -1,4 +1,4 @@
-/* $Id: mscfakes.h 2766 2015-01-30 03:32:38Z bird $ */
+/* $Id: mscfakes.h 3213 2018-03-30 21:03:28Z bird $ */
 /** @file
  * Unix fakes for MSC.
  */
@@ -27,6 +27,8 @@
 #define ___mscfakes_h
 #ifdef _MSC_VER
 
+#define timeval windows_timeval
+
 /* Include the config file (kmk's) so we don't need to duplicate stuff from it here. */
 #include "config.h"
 
@@ -35,7 +37,9 @@
 #include <time.h>
 #include <stdarg.h>
 #include <malloc.h>
-#include "getopt.h"
+#ifndef FAKES_NO_GETOPT_H
+# include "getopt.h"
+#endif
 #ifndef MSCFAKES_NO_WINDOWS_H
 # include <Windows.h>
 #endif
@@ -45,10 +49,14 @@
 #include <direct.h>
 #include "nt/ntstat.h"
 #include "nt/ntunlink.h"
-#if defined(MSC_DO_64_BIT_IO) && _MSC_VER >= 1400 /* We want 64-bit file lengths here when possible. */
-# define off_t __int64
-# define lseek _lseeki64
+#ifdef MSC_DO_64_BIT_IO
+# if _MSC_VER >= 1400 /* We want 64-bit file lengths here when possible. */
+#  define off_t __int64
+#  define lseek _lseeki64
+# endif
 #endif
+
+#undef timeval
 
 #undef  PATH_MAX
 #define PATH_MAX   _MAX_PATH
@@ -83,11 +91,7 @@ typedef unsigned short nlink_t;
 typedef unsigned short uid_t;
 typedef unsigned short gid_t;
 #endif
-#if defined(_M_AMD64) || defined(_M_X64) || defined(_M_IA64) || defined(_WIN64)
-typedef __int64 ssize_t;
-#else
-typedef long ssize_t;
-#endif
+typedef intptr_t ssize_t;
 typedef unsigned long u_long;
 typedef unsigned int u_int;
 typedef unsigned short u_short;
@@ -103,13 +107,12 @@ typedef signed short   int16_t;
 typedef signed int     int32_t;
 #endif
 
-#if !defined(timerisset) && defined(MSCFAKES_NO_WINDOWS_H)
-struct timeval
+struct msc_timeval
 {
-    long tv_sec;
+    __time64_t tv_sec;
     long tv_usec;
 };
-#endif
+#define timeval msc_timeval
 
 struct iovec
 {
@@ -133,7 +136,6 @@ int lchmod(const char *path, mode_t mode);
 int msc_chmod(const char *path, mode_t mode);
 #define chmod msc_chmod
 #define lchown(path, uid, gid) chown(path, uid, gid)
-#define lutimes(path, tvs) utimes(path, tvs)
 int link(const char *pszDst, const char *pszLink);
 int mkdir_msc(const char *path, mode_t mode);
 #define mkdir(path, mode) mkdir_msc(path, mode)
@@ -156,8 +158,15 @@ int snprintf(char *buf, size_t size, const char *fmt, ...);
 #define snprintf _snprintf
 #endif
 int symlink(const char *pszDst, const char *pszLink);
-int utimes(const char *pszPath, const struct timeval *paTimes);
+int utimes(const char *pszPath, const struct msc_timeval *paTimes);
+int lutimes(const char *pszPath, const struct msc_timeval *paTimes);
 ssize_t writev(int fd, const struct iovec *vector, int count);
+
+int gettimeofday(struct msc_timeval *pNow, void *pvIgnored);
+struct tm *localtime_r(const __time64_t *pNow, struct tm *pResult);
+__time64_t timegm(struct tm *pNow);
+#undef mktime
+#define mktime _mktime64
 
 /* bird write ENOSPC hacks. */
 #undef write

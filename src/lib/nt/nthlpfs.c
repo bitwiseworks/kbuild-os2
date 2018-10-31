@@ -1,4 +1,4 @@
-/* $Id: nthlpfs.c 2997 2016-11-01 23:28:02Z bird $ */
+/* $Id: nthlpfs.c 3223 2018-03-31 02:29:56Z bird $ */
 /** @file
  * MSC + NT helpers for file system related functions.
  */
@@ -82,7 +82,7 @@ static int birdHasTrailingSlashW(const wchar_t *pwszPath)
 }
 
 
-static int birdIsPathDirSpec(const char *pszPath)
+int birdIsPathDirSpec(const char *pszPath)
 {
     char ch, ch2;
 

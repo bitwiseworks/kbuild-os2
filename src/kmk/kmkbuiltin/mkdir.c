@@ -41,6 +41,7 @@ static char sccsid[] = "@(#)mkdir.c	8.2 (Berkeley) 1/25/94";
 __FBSDID("$FreeBSD: src/bin/mkdir/mkdir.c,v 1.28 2004/04/06 20:06:48 markm Exp $");
 #endif
 
+#define FAKES_NO_GETOPT_H /* bird */
 #include "config.h"
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -60,7 +61,7 @@ __FBSDID("$FreeBSD: src/bin/mkdir/mkdir.c,v 1.28 2004/04/06 20:06:48 markm Exp $
 #ifdef HAVE_ALLOCA_H
 # include <alloca.h>
 #endif
-#include "getopt.h"
+#include "getopt_r.h"
 #ifdef __HAIKU__
 # include "haikufakes.h"
 #endif
@@ -71,7 +72,6 @@ __FBSDID("$FreeBSD: src/bin/mkdir/mkdir.c,v 1.28 2004/04/06 20:06:48 markm Exp $
 #include "kmkbuiltin.h"
 
 
-static int vflag;
 static struct option long_options[] =
 {
     { "help",   					no_argument, 0, 261 },
@@ -83,33 +83,26 @@ static struct option long_options[] =
 extern void * bsd_setmode(const char *p);
 extern mode_t bsd_getmode(const void *bbox, mode_t omode);
 
-static int	build(char *, mode_t);
-static int	usage(FILE *);
+static int	build(PKMKBUILTINCTX pCtx, char *, mode_t, int);
+static int	usage(PKMKBUILTINCTX pCtx, int fIsErr);
 
 
 int
-kmk_builtin_mkdir(int argc, char *argv[], char **envp)
+kmk_builtin_mkdir(int argc, char **argv, char **envp, PKMKBUILTINCTX pCtx)
 {
-	int ch, exitval, success, pflag;
+	struct getopt_state_r gos;
+	int ch, exitval, success, pflag, vflag;
 	mode_t omode, *set = (mode_t *)NULL;
 	char *mode;
 
-	omode = pflag = 0;
+	omode = pflag = vflag = 0;
 	mode = NULL;
 
-	/* reinitialize globals */
-	vflag = 0;
-
-	/* kmk: reset getopt and set progname */
-	g_progname = argv[0];
-	opterr = 1;
-	optarg = NULL;
-	optopt = 0;
-	optind = 0; /* init */
-	while ((ch = getopt_long(argc, argv, "m:pv", long_options, NULL)) != -1)
+	getopt_initialize_r(&gos, argc, argv, "m:pv", long_options, envp, pCtx);
+	while ((ch = getopt_long_r(&gos, NULL)) != -1)
 		switch(ch) {
 		case 'm':
-			mode = optarg;
+			mode = gos.optarg;
 			break;
 		case 'p':
 			pflag = 1;
@@ -118,25 +111,25 @@ kmk_builtin_mkdir(int argc, char *argv[], char **envp)
 			vflag = 1;
 			break;
 		case 261:
-			usage(stdout);
+			usage(pCtx, 0);
 			return 0;
 		case 262:
 			return kbuild_version(argv[0]);
 		case '?':
-			default:
-			return usage(stderr);
+		default:
+			return usage(pCtx, 1);
 		}
 
-	argc -= optind;
-	argv += optind;
+	argc -= gos.optind;
+	argv += gos.optind;
 	if (argv[0] == NULL)
-		return usage(stderr);
+		return usage(pCtx, 1);
 
 	if (mode == NULL) {
 		omode = S_IRWXU | S_IRWXG | S_IRWXO;
 	} else {
 		if ((set = bsd_setmode(mode)) == NULL)
-                        return errx(1, "invalid file mode: %s", mode);
+                        return errx(pCtx, 1, "invalid file mode: %s", mode);
 		omode = bsd_getmode(set, S_IRWXU | S_IRWXG | S_IRWXO);
 		free(set);
 	}
@@ -144,16 +137,16 @@ kmk_builtin_mkdir(int argc, char *argv[], char **envp)
 	for (exitval = 0; *argv != NULL; ++argv) {
 		success = 1;
 		if (pflag) {
-			if (build(*argv, omode))
+			if (build(pCtx, *argv, omode, vflag))
 				success = 0;
 		} else if (mkdir(*argv, omode) < 0) {
 			if (errno == ENOTDIR || errno == ENOENT)
-				warn("mkdir: %s", dirname(*argv));
+				warn(pCtx, "mkdir: %s", dirname(*argv));
 			else
-                                warn("mkdir: %s", *argv);
+                                warn(pCtx, "mkdir: %s", *argv);
 			success = 0;
 		} else if (vflag)
-			(void)printf("%s\n", *argv);
+			kmk_builtin_ctx_printf(pCtx, 0, "%s\n", *argv);
 
 		if (!success)
 			exitval = 1;
@@ -165,15 +158,23 @@ kmk_builtin_mkdir(int argc, char *argv[], char **envp)
 		 * as chmod will (obviously) ignore the umask.
 		 */
 		if (success && mode != NULL && chmod(*argv, omode) == -1) {
-			warn("chmod: %s", *argv);
+			warn(pCtx, "chmod: %s", *argv);
 			exitval = 1;
 		}
 	}
 	return exitval;
 }
 
+#ifdef KMK_BUILTIN_STANDALONE
+int main(int argc, char **argv, char **envp)
+{
+    KMKBUILTINCTX Ctx = { "kmk_mkdir", NULL };
+    return kmk_builtin_mkdir(argc, argv, envp, &Ctx);
+}
+#endif
+
 static int
-build(char *path, mode_t omode)
+build(PKMKBUILTINCTX pCtx, char *path, mode_t omode, int vflag)
 {
 	struct stat sb;
 	mode_t numask, oumask;
@@ -250,7 +251,7 @@ build(char *path, mode_t omode)
 			    || errno == ENOSYS  /* (solaris crap) */
 			    || errno == EACCES /* (ditto) */) {
 				if (stat(path, &sb) < 0) {
-					warn("stat: %s", path);
+					warn(pCtx, "stat: %s", path);
 					retval = 1;
 					break;
 				} else if (!S_ISDIR(sb.st_mode)) {
@@ -258,17 +259,17 @@ build(char *path, mode_t omode)
 						errno = EEXIST;
 					else
 						errno = ENOTDIR;
-					warn("st_mode: %s", path);
+					warn(pCtx, "st_mode: %s", path);
 					retval = 1;
 					break;
 				}
 			} else {
-				warn("mkdir: %s", path);
+				warn(pCtx, "mkdir: %s", path);
 				retval = 1;
 				break;
 			}
 		} else if (vflag)
-			printf("%s\n", path);
+			kmk_builtin_ctx_printf(pCtx, 0, "%s\n", path);
 		if (!last)
 		    *p = '/';
 	}
@@ -278,11 +279,13 @@ build(char *path, mode_t omode)
 }
 
 static int
-usage(FILE *pf)
+usage(PKMKBUILTINCTX pCtx, int fIsErr)
 {
-	fprintf(pf, "usage: %s [-pv] [-m mode] directory ...\n"
-	            "   or: %s --help\n"
-	            "   or: %s --version\n",
-	        g_progname, g_progname, g_progname);
+	kmk_builtin_ctx_printf(pCtx, fIsErr,
+	                       "usage: %s [-pv] [-m mode] directory ...\n"
+	                       "   or: %s --help\n"
+	                       "   or: %s --version\n",
+	                       pCtx->pszProgName, pCtx->pszProgName, pCtx->pszProgName);
 	return EX_USAGE;
 }
+
