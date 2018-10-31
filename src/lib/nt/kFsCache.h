@@ -1,4 +1,4 @@
-/* $Id: kFsCache.h 2967 2016-09-26 18:14:13Z bird $ */
+/* $Id: kFsCache.h 3199 2018-03-28 18:56:21Z bird $ */
 /** @file
  * kFsCache.c - NT directory content cache.
  */
@@ -54,6 +54,8 @@
 #define KFSCACHE_CFG_MAX_ANSI_NAME          (256*3 + 16)
 /** The max UTF-16 name length. */
 #define KFSCACHE_CFG_MAX_UTF16_NAME         (256*2 + 16)
+/** Enables locking of the cache and thereby making it thread safe. */
+#define KFSCACHE_CFG_LOCKING                1
 
 
 
@@ -374,6 +376,19 @@ typedef struct KFSHASHW
 #endif
 
 
+/** @def KFSCACHE_LOCK
+ *  Locks the cache exclusively. */
+/** @def KFSCACHE_UNLOCK
+ *  Counterpart to KFSCACHE_LOCK. */
+#ifdef KFSCACHE_CFG_LOCKING
+# define KFSCACHE_LOCK(a_pCache)        EnterCriticalSection(&(a_pCache)->u.CritSect)
+# define KFSCACHE_UNLOCK(a_pCache)      LeaveCriticalSection(&(a_pCache)->u.CritSect)
+#else
+# define KFSCACHE_LOCK(a_pCache)        do { } while (0)
+# define KFSCACHE_UNLOCK(a_pCache)      do { } while (0)
+#endif
+
+
 /** @name KFSCACHE_F_XXX
  * @{ */
 /** Whether to cache missing directory entries (KFSOBJ_TYPE_MISSING). */
@@ -439,6 +454,17 @@ typedef struct KFSCACHE
     /** The root directory. */
     KFSDIR              RootDir;
 
+#ifdef KFSCACHE_CFG_LOCKING
+    /** Critical section protecting the cache. */
+    union
+    {
+# ifdef _WINBASE_
+        CRITICAL_SECTION    CritSect;
+# endif
+        KU64                abPadding[2 * 4 + 4 * sizeof(void *)];
+    } u;
+#endif
+
     /** File system hash table for ANSI filename strings. */
     PKFSHASHA           apAnsiPaths[KFSCACHE_CFG_PATH_HASH_TAB_SIZE];
     /** Number of paths in the apAnsiPaths hash table. */
@@ -467,7 +493,7 @@ typedef struct KFSCACHE
 /** @def KW_LOG
  * Generic logging.
  * @param a     Argument list for kFsCacheDbgPrintf  */
-#ifdef NDEBUG
+#if 1 /*def NDEBUG - enable when needed! */
 # define KFSCACHE_LOG(a) do { } while (0)
 #else
 # define KFSCACHE_LOG(a) kFsCacheDbgPrintf a

@@ -1,6 +1,5 @@
 /* Path conversion for Windows pathnames.
-Copyright (C) 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005, 2006,
-2007, 2008, 2009, 2010 Free Software Foundation, Inc.
+Copyright (C) 1996-2016 Free Software Foundation, Inc.
 This file is part of GNU Make.
 
 GNU Make is free software; you can redistribute it and/or modify it under the
@@ -15,13 +14,13 @@ A PARTICULAR PURPOSE.  See the GNU General Public License for more details.
 You should have received a copy of the GNU General Public License along with
 this program.  If not, see <http://www.gnu.org/licenses/>.  */
 
-#include <Windows.h> /* bird */
-#include "make.h"
+#include "makeint.h"
 #include <string.h>
 #include <stdlib.h>
 #include "pathstuff.h"
 #if 1 /* bird */
 # include "nt_fullpath.h"
+# include <assert.h>
 #endif
 
 /*
@@ -32,15 +31,15 @@ convert_vpath_to_windows32(char *Path, char to_delim)
 {
     char *etok;            /* token separator for old Path */
 
-	/*
-	 * Convert all spaces to delimiters. Note that pathnames which
-	 * contain blanks get trounced here. Use 8.3 format as a workaround.
-	 */
-	for (etok = Path; etok && *etok; etok++)
-		if (isblank ((unsigned char) *etok))
-			*etok = to_delim;
+        /*
+         * Convert all spaces to delimiters. Note that pathnames which
+         * contain blanks get trounced here. Use 8.3 format as a workaround.
+         */
+        for (etok = Path; etok && *etok; etok++)
+                if (ISBLANK ((unsigned char) *etok))
+                        *etok = to_delim;
 
-	return (convert_Path_to_windows32(Path, to_delim));
+        return (convert_Path_to_windows32(Path, to_delim));
 }
 
 /*
@@ -84,7 +83,7 @@ convert_Path_to_windows32(char *Path, char to_delim)
             if (etok) {
                 *etok = to_delim;
                 p = ++etok;
-	    } else
+            } else
                 p += strlen(p);
         } else {
             /* found another one, no drive letter */
@@ -96,51 +95,88 @@ convert_Path_to_windows32(char *Path, char to_delim)
 }
 
 /*
+ * Convert to forward slashes directly (w32ify(filename, 0)).
+ */
+char *unix_slashes(char *filename) /* bird */
+{
+    char *slash = filename ;
+    while ((slash = strchr(slash, '\\')) != NULL)
+        *slash++ = '/';
+    return filename;
+}
+
+/*
+ * Resolve and convert to forward slashes directly (w32ify(filename, 1)).
+ * Returns if out of buffer space.
+ */
+char *unix_slashes_resolved(const char *src, char *dst, unsigned len)
+{
+    assert(len >= FILENAME_MAX);
+    *dst = '\0'; /** @todo nt_fullpath_cached needs to return some indication of overflow. */
+#if 1
+    nt_fullpath_cached(src, dst, len);
+#else
+    _fullpath(dst, src, len);
+#endif
+
+    return unix_slashes(dst);
+}
+
+#if 0 /* bird: replaced by unix_slashes and unix_slahes_resolved. */
+/*
  * Convert to forward slashes. Resolve to full pathname optionally
  */
 char *
 w32ify(const char *filename, int resolve)
 {
     static char w32_path[FILENAME_MAX];
-    char *p;
-
 #if 1 /* bird */
+
     if (resolve) {
         nt_fullpath_cached(filename, w32_path, sizeof(w32_path));
     } else {
         w32_path[0] = '\0';
         strncat(w32_path, filename, sizeof(w32_path));
     }
+    return unix_slashes(w32_path);
+
 #else   /* !bird */
+    char *p;
+
     if (resolve) {
         _fullpath(w32_path, filename, sizeof (w32_path));
     } else
         strncpy(w32_path, filename, sizeof (w32_path));
-#endif  /* !bird */
 
     for (p = w32_path; p && *p; p++)
         if (*p == '\\')
             *p = '/';
 
     return w32_path;
+#endif  /* !bird */
 }
+#endif
 
 char *
 getcwd_fs(char* buf, int len)
 {
-	char *p = getcwd(buf, len);
+        char *p = getcwd(buf, len);
 
-	if (p) {
-		char *q = w32ify(buf, 0);
-#if 1  /* bird */
-		buf[0] = '\0';
-		strncat(buf, q, len);
+        if (p) {
+#if 1
+                p = unix_slashes(p);
+#else
+                char *q = w32ify(buf, 0);
+#if 1  /* bird - UPSTREAM? */
+                buf[0] = '\0';
+                strncat(buf, q, len);
 #else  /* !bird */
-		strncpy(buf, q, len);
-#endif /* !bird */
-	}
+                strncpy(buf, q, len);
+#endif
+#endif
+        }
 
-	return p;
+        return p;
 }
 
 #ifdef unused

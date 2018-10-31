@@ -1,4 +1,4 @@
-/* $Id: kWorker.c 3051 2017-07-24 10:59:59Z bird $ */
+/* $Id: kWorker.c 3200 2018-03-28 20:32:11Z bird $ */
 /** @file
  * kWorker - experimental process reuse worker for Windows.
  *
@@ -55,6 +55,7 @@
 #include "nt_fullpath.h"
 #include "quote_argv.h"
 #include "md5.h"
+#include "console.h"
 
 #include "../kmk/kmkbuiltin.h"
 
@@ -926,7 +927,15 @@ static int          g_cVerbose = 2;
 static KBOOL        g_fRestart = K_FALSE;
 
 /** Whether control-C/SIGINT or Control-Break/SIGBREAK have been seen. */
-static KBOOL volatile g_fCtrlC = K_FALSE;
+static int volatile g_rcCtrlC = 0;
+
+/** The communication pipe handle.  We break this when we see Ctrl-C such. */
+#ifdef KBUILD_OS_WINDOWS
+static HANDLE       g_hPipe = INVALID_HANDLE_VALUE;
+#else
+static int          g_hPipe = -1;
+#endif
+
 
 /* Further down. */
 extern KWREPLACEMENTFUNCTION const g_aSandboxReplacements[];
@@ -3190,7 +3199,7 @@ static PKWTOOL kwToolEntryCreate(PKFSOBJ pToolFsObj, const char *pszSearchPath)
 /**
  * Looks up the given tool, creating a new tool table entry if necessary.
  *
- * @returns Pointer to the tool entry.  NULL on failure.
+ * @returns Pointer to the tool entry.  NULL on failure (fully bitched).
  * @param   pszExe              The executable for the tool (not normalized).
  * @param   cEnvVars            Number of environment varibles.
  * @param   papszEnvVars        Environment variables.  For getting the PATH.
@@ -3233,10 +3242,23 @@ static PKWTOOL kwToolLookup(const char *pszExe, KU32 cEnvVars, const char **paps
                     pszSearchPath = &papszEnvVars[cEnvVars][5];
                     break;
                 }
-            return kwToolEntryCreate(pToolFsObj, pszSearchPath);
+
+            pTool = kwToolEntryCreate(pToolFsObj, pszSearchPath);
+            if (pTool)
+                return pTool;
+
+            kwErrPrintf("kwToolLookup(%s) -> NULL: kwToolEntryCreate failed\n", pszExe);
         }
-        kFsCacheObjRelease(g_pFsCache, pToolFsObj);
+        else
+        {
+            kFsCacheObjRelease(g_pFsCache, pToolFsObj);
+            kwErrPrintf("kwToolLookup(%s) -> NULL: not file (bObjType=%d fFlags=%#x uCacheGen=%u auGenerationsMissing=[%u,%u])\n",
+                        pszExe, pToolFsObj->bObjType, pToolFsObj->fFlags, pToolFsObj->uCacheGen,
+                        g_pFsCache->auGenerationsMissing[0], g_pFsCache->auGenerationsMissing[1]);
+        }
     }
+    else
+        kwErrPrintf("kwToolLookup(%s) -> NULL: enmError=%d\n", pszExe, enmError);
     return NULL;
 }
 
@@ -6642,7 +6664,7 @@ static BOOL WINAPI kwSandbox_Kernel32_WriteFile(HANDLE hFile, LPCVOID pvBuffer, 
     BOOL        fRet;
     KUPTR const idxHandle = KW_HANDLE_TO_INDEX(hFile);
     g_cWriteFileCalls++;
-    kHlpAssert(GetCurrentThreadId() == g_Sandbox.idMainThread || g_fCtrlC);
+    kHlpAssert(GetCurrentThreadId() == g_Sandbox.idMainThread || g_rcCtrlC != 0);
     if (idxHandle < g_Sandbox.cHandles)
     {
         PKWHANDLE pHandle = g_Sandbox.papHandles[idxHandle];
@@ -7353,7 +7375,7 @@ static BOOL WINAPI kwSandbox_Kernel32_CloseHandle(HANDLE hObject)
 {
     BOOL        fRet;
     KUPTR const idxHandle = KW_HANDLE_TO_INDEX(hObject);
-    kHlpAssert(GetCurrentThreadId() == g_Sandbox.idMainThread || g_fCtrlC);
+    kHlpAssert(GetCurrentThreadId() == g_Sandbox.idMainThread || g_rcCtrlC != 0);
     if (idxHandle < g_Sandbox.cHandles)
     {
         PKWHANDLE pHandle = g_Sandbox.papHandles[idxHandle];
@@ -9520,42 +9542,62 @@ KU32 const                  g_cSandboxGetProcReplacements = K_ELEMENTS(g_aSandbo
  */
 static BOOL WINAPI kwSandboxCtrlHandler(DWORD dwCtrlType)
 {
+    DWORD        cbIgn;
+    int volatile rc; /* volatile for debugging */
+    int volatile rcPrev;
+    const char  *pszMsg;
     switch (dwCtrlType)
     {
         case CTRL_C_EVENT:
-            fprintf(stderr, "kWorker: Ctrl-C\n");
-            g_fCtrlC = K_TRUE;
-            exit(9);
+            rc = 9;
+            pszMsg = "kWorker: Ctrl-C\r\n";
             break;
 
         case CTRL_BREAK_EVENT:
-            fprintf(stderr, "kWorker: Ctrl-Break\n");
-            g_fCtrlC = K_TRUE;
-            exit(10);
+            rc = 10;
+            pszMsg = "kWorker: Ctrl-Break\r\n";
             break;
 
         case CTRL_CLOSE_EVENT:
-            fprintf(stderr, "kWorker: console closed\n");
-            g_fCtrlC = K_TRUE;
-            exit(11);
+            rc = 11;
+            pszMsg = "kWorker: console closed\r\n";
             break;
 
         case CTRL_LOGOFF_EVENT:
-            fprintf(stderr, "kWorker: logoff event\n");
-            g_fCtrlC = K_TRUE;
-            exit(11);
+            rc = 11;
+            pszMsg = "kWorker: logoff event\r\n";
             break;
 
         case CTRL_SHUTDOWN_EVENT:
-            fprintf(stderr, "kWorker: shutdown event\n");
-            g_fCtrlC = K_TRUE;
-            exit(11);
+            rc = 11;
+            pszMsg = "kWorker: shutdown event\r\n";
             break;
 
         default:
             fprintf(stderr, "kwSandboxCtrlHandler: %#x\n", dwCtrlType);
-            break;
+            return TRUE;
     }
+
+    /*
+     * Terminate the process after 5 seconds.
+     * If we get here a second time we just terminate the process ourselves.
+     *
+     * Note! We do no try call exit() here as it turned out to deadlock a lot
+     *       flusing file descriptors (stderr back when we first wrote to it).
+     */
+    rcPrev = g_rcCtrlC;
+    g_rcCtrlC = rc;
+    WriteFile(GetStdHandle(STD_ERROR_HANDLE), pszMsg, (DWORD)strlen(pszMsg), &cbIgn, NULL);
+    if (rcPrev == 0)
+    {
+        int i;
+        for (i = 0; i < 10; i++)
+        {
+            CancelIoEx(g_hPipe, NULL); /* wake up idle main thread */
+            Sleep(500);
+        }
+    }
+    TerminateProcess(GetCurrentProcess(), rc);
     return TRUE;
 }
 
@@ -10275,7 +10317,10 @@ static int kSubmitHandleJobPostCmd(KU32 cPostCmdArgs, const char **papszPostCmdA
 
     /* Command switch. */
     if (kHlpStrComp(pszCmd, "kDepObj") == 0)
-        return kmk_builtin_kDepObj(cPostCmdArgs, (char **)papszPostCmdArgs, NULL);
+    {
+        KMKBUILTINCTX Ctx = { papszPostCmdArgs[0], NULL };
+        return kmk_builtin_kDepObj(cPostCmdArgs, (char **)papszPostCmdArgs, NULL, &Ctx);
+    }
 
     return kwErrPrintfRc(42 + 5 , "Unknown post command: '%s'\n", pszCmd);
 }
@@ -10387,10 +10432,7 @@ static int kSubmitHandleJobUnpacked(const char *pszExecutable, const char *pszCw
             rcExit = kSubmitHandleJobPostCmd(cPostCmdArgs, papszPostCmdArgs);
     }
     else
-    {
-        kwErrPrintf("kwToolLookup(%s) -> NULL\n", pszExecutable);
         rcExit = 42 + 1;
-    }
     return rcExit;
 }
 
@@ -10592,7 +10634,7 @@ static int kSubmitWriteIt(HANDLE hPipe, const void *pvBuf, KU32 cbToWrite)
 {
     KU8 const  *pbBuf  = (KU8 const *)pvBuf;
     KU32        cbLeft = cbToWrite;
-    for (;;)
+    while (g_rcCtrlC == 0)
     {
         DWORD cbActuallyWritten = 0;
         if (WriteFile(hPipe, pbBuf, cbLeft, &cbActuallyWritten, NULL /*pOverlapped*/))
@@ -10612,6 +10654,7 @@ static int kSubmitWriteIt(HANDLE hPipe, const void *pvBuf, KU32 cbToWrite)
             return -1;
         }
     }
+    return -1;
 }
 
 
@@ -10631,7 +10674,7 @@ static int kSubmitReadIt(HANDLE hPipe, void *pvBuf, KU32 cbToRead, KBOOL fMayShu
 {
     KU8 *pbBuf  = (KU8 *)pvBuf;
     KU32 cbLeft = cbToRead;
-    for (;;)
+    while (g_rcCtrlC == 0)
     {
         DWORD cbActuallyRead = 0;
         if (ReadFile(hPipe, pbBuf, cbLeft, &cbActuallyRead, NULL /*pOverlapped*/))
@@ -10656,6 +10699,7 @@ static int kSubmitReadIt(HANDLE hPipe, void *pvBuf, KU32 cbToRead, KBOOL fMayShu
             return -1;
         }
     }
+    return -1;
 }
 
 
@@ -10705,7 +10749,6 @@ static void kwPrintStats(void)
     char  sz2[64];
     char  sz3[64];
     char  sz4[64];
-    extern size_t maybe_con_fwrite(void const *pvBuf, size_t cbUnit, size_t cUnits, FILE *pFile);
 
     sprintf(szPrf, "%5d/%u:", getpid(), K_ARCH_BITS);
 
@@ -11154,13 +11197,44 @@ int main(int argc, char **argv)
             }
             else
                 return kwErrPrintfRc(2, "--priority takes an argument!\n");
-
+        }
+        else if (strcmp(argv[i], "--group") == 0)
+        {
+            i++;
+            if (i < argc)
+            {
+                char *pszEnd = NULL;
+                unsigned long uValue = strtoul(argv[i], &pszEnd, 16);
+                if (   *argv[i]
+                    && pszEnd != NULL
+                    && *pszEnd == '\0'
+                    && uValue == (WORD)uValue)
+                {
+                    typedef BOOL (WINAPI *PFNSETTHREADGROUPAFFINITY)(HANDLE, const GROUP_AFFINITY*, GROUP_AFFINITY *);
+                    PFNSETTHREADGROUPAFFINITY pfnSetThreadGroupAffinity;
+                    pfnSetThreadGroupAffinity = (PFNSETTHREADGROUPAFFINITY)GetProcAddress(GetModuleHandleW(L"KERNEL32.DLL"),
+                                                                                          "SetThreadGroupAffinity");
+                    if (pfnSetThreadGroupAffinity)
+                    {
+                        GROUP_AFFINITY NewAff = { ~(uintptr_t)0, (WORD)uValue, 0, 0, 0 };
+                        GROUP_AFFINITY OldAff = {             0,            0, 0, 0, 0 };
+                        if (!pfnSetThreadGroupAffinity(GetCurrentThread(), &NewAff, &OldAff))
+                            kwErrPrintf("Failed to set processor group to %lu: %u\n", uValue, GetLastError());
+                    }
+                    else
+                        kwErrPrintf("Cannot set processor group to %lu because SetThreadGroupAffinity was not found\n", uValue);
+                }
+                else
+                    return kwErrPrintfRc(2, "Invalid --priority argument: %s\n", argv[i]);
+            }
+            else
+                return kwErrPrintfRc(2, "--priority takes an argument!\n");
         }
         else if (   strcmp(argv[i], "--help") == 0
                  || strcmp(argv[i], "-h") == 0
                  || strcmp(argv[i], "-?") == 0)
         {
-            printf("usage: kWorker [--volatile dir] [--priority <1-5>] --pipe <pipe-handle>\n"
+            printf("usage: kWorker [--volatile dir] [--priority <1-5>] [--group <processor-grp>\n"
                    "usage: kWorker <--help|-h>\n"
                    "usage: kWorker <--version|-V>\n"
                    "usage: kWorker [--volatile dir] --test [<times> [--chdir <dir>] [--breakpoint] -- args\n"
@@ -11175,8 +11249,43 @@ int main(int argc, char **argv)
             return kwErrPrintfRc(2, "Unknown argument '%s'\n", argv[i]);
     }
 
+    /*
+     * If no --pipe argument, then assume its standard input.
+     * We need to carefully replace the CRT stdin with a handle to "nul".
+     */
     if (hPipe == INVALID_HANDLE_VALUE)
-        return kwErrPrintfRc(2, "Missing --pipe <pipe-handle> argument!\n");
+    {
+        hPipe = GetStdHandle(STD_INPUT_HANDLE);
+        if (GetFileType(hPipe) == FILE_TYPE_PIPE)
+        {
+            HANDLE hDuplicate = INVALID_HANDLE_VALUE;
+            if (DuplicateHandle(GetCurrentProcess(), hPipe, GetCurrentProcess(), &hDuplicate, 0, FALSE, DUPLICATE_SAME_ACCESS))
+            {
+                int fdNul = _wopen(L"nul", O_RDWR | O_BINARY);
+                if (fdNul >= 0)
+                {
+                    if (_dup2(fdNul, 0) >= 0)
+                    {
+                        close(fdNul);
+                        hPipe = hDuplicate;
+                    }
+                    else
+                        return kwErrPrintfRc(2, "DuplicateHandle pipe failed: %u\n", GetLastError());
+                }
+                else
+                    return kwErrPrintfRc(2, "DuplicateHandle pipe failed: %u\n", GetLastError());
+            }
+            else
+                return kwErrPrintfRc(2, "DuplicateHandle pipe failed: %u\n", GetLastError());
+        }
+        else
+            return kwErrPrintfRc(2, "No --pipe <pipe-handle> argument and standard input is not a valid pipe handle (%#x, %u)\n",
+                                 GetFileType(hPipe), GetLastError());
+    }
+    else if (GetFileType(hPipe) != FILE_TYPE_PIPE)
+        return kwErrPrintfRc(2, "The specified --pipe %p is not a pipe handle: type %#x (last err %u)!\n",
+                             GetFileType(hPipe), GetLastError());
+    g_hPipe = hPipe;
 
     /*
      * Serve the pipe.
@@ -11216,7 +11325,8 @@ int main(int argc, char **argv)
 
                     /* The first string after the header is the command. */
                     psz = (const char *)&pbMsgBuf[sizeof(cbMsg)];
-                    if (strcmp(psz, "JOB") == 0)
+                    if (   strcmp(psz, "JOB") == 0
+                        && g_rcCtrlC == 0)
                     {
                         struct
                         {
@@ -11234,7 +11344,8 @@ int main(int argc, char **argv)
                             && !g_fRestart)
                         {
                             kwSandboxCleanupLate(&g_Sandbox);
-                            continue;
+                            if (g_rcCtrlC == 0)
+                                continue;
                         }
                     }
                     else
@@ -11267,7 +11378,7 @@ int main(int argc, char **argv)
 #endif
         if (getenv("KWORKER_STATS") != NULL)
             kwPrintStats();
-        return rc > 0 ? 0 : 1;
+        return g_rcCtrlC != 0 ? g_rcCtrlC : rc > 0 ? 0 : 1;
     }
 }
 

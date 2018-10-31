@@ -1,4 +1,4 @@
-/* $Id: nthlp.h 3009 2016-11-07 02:21:59Z bird $ */
+/* $Id: nthlp.h 3223 2018-03-31 02:29:56Z bird $ */
 /** @file
  * MSC + NT helper functions.
  */
@@ -53,7 +53,6 @@ int         birdSetErrnoToNoMem(void);
 int         birdSetErrnoToInvalidArg(void);
 int         birdSetErrnoToBadFileNo(void);
 
-
 HANDLE      birdOpenFile(const char *pszPath, ACCESS_MASK fDesiredAccess, ULONG fFileAttribs,
                          ULONG fShareAccess, ULONG fCreateDisposition, ULONG fCreateOptions, ULONG fObjAttribs);
 HANDLE      birdOpenFileW(const wchar_t *pwszPath, ACCESS_MASK fDesiredAccess, ULONG fFileAttribs,
@@ -73,6 +72,8 @@ MY_NTSTATUS birdOpenFileUniStr(HANDLE hRoot, MY_UNICODE_STRING *pNtPath, ACCESS_
                                HANDLE *phFile);
 HANDLE      birdOpenCurrentDirectory(void);
 void        birdCloseFile(HANDLE hFile);
+
+int         birdIsPathDirSpec(const char *pszPath);
 int         birdDosToNtPath(const char *pszPath, MY_UNICODE_STRING *pNtPath);
 int         birdDosToNtPathW(const wchar_t *pwszPath, MY_UNICODE_STRING *pNtPath);
 int         birdDosToRelativeNtPath(const char *pszPath, MY_UNICODE_STRING *pNtPath);
@@ -85,6 +86,23 @@ static __inline void birdNtTimeToTimeSpec(__int64 iNtTime, BirdTimeSpec_T *pTime
     iNtTime -= BIRD_NT_EPOCH_OFFSET_UNIX_100NS;
     pTimeSpec->tv_sec  = iNtTime / 10000000;
     pTimeSpec->tv_nsec = (iNtTime % 10000000) * 100;
+}
+
+
+static __inline void birdNtTimeToTimeVal(__int64 iNtTime, BirdTimeVal_T *pTimeVal)
+{
+    iNtTime -= BIRD_NT_EPOCH_OFFSET_UNIX_100NS;
+    pTimeVal->tv_sec  = iNtTime / 10000000;
+    pTimeVal->tv_usec = (iNtTime % 10000000) / 10;
+}
+
+
+static __inline __int64 birdNtTimeFromTimeVal(BirdTimeVal_T const *pTimeVal)
+{
+    __int64 iNtTime = pTimeVal->tv_sec * 10000000;
+    iNtTime += pTimeVal->tv_usec * 10;
+    iNtTime += BIRD_NT_EPOCH_OFFSET_UNIX_100NS;
+    return iNtTime;
 }
 
 

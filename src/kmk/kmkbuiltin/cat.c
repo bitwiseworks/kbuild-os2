@@ -46,10 +46,13 @@ static char sccsid[] = "@(#)cat.c	8.2 (Berkeley) 4/27/95";
 #if 0
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD: src/bin/cat/cat.c,v 1.32 2005/01/10 08:39:20 imp Exp $");
-#else
-#define NO_UDOM_SUPPORT /* kmk */
 #endif
 
+/*********************************************************************************************************************************
+*   Header Files                                                                                                                 *
+*********************************************************************************************************************************/
+#define FAKES_NO_GETOPT_H /* bird */
+#define NO_UDOM_SUPPORT /* kmk */
 #include "config.h"
 #ifndef _MSC_VER
 # include <sys/param.h>
@@ -70,7 +73,7 @@ __FBSDID("$FreeBSD: src/bin/cat/cat.c,v 1.32 2005/01/10 08:39:20 imp Exp $");
 #include <string.h>
 #include <unistd.h>
 #include <stddef.h>
-#include "getopt.h"
+#include "getopt_r.h"
 #ifdef __sun__
 # include "solfakes.h"
 #endif
@@ -80,18 +83,24 @@ __FBSDID("$FreeBSD: src/bin/cat/cat.c,v 1.32 2005/01/10 08:39:20 imp Exp $");
 #include "kmkbuiltin.h"
 
 
-#ifdef KBUILD_OS_WINDOWS
-/* This is a trick to seriuosly speed up console output windows. */
-# undef write
-# define write maybe_con_write
-extern ssize_t maybe_con_write(int, void const *, size_t);
-#endif
+/*********************************************************************************************************************************
+*   Structures and Typedefs                                                                                                      *
+*********************************************************************************************************************************/
+typedef struct CATINSTANCE
+{
+    PKMKBUILTINCTX pCtx;
+    int bflag, eflag, nflag, sflag, tflag, vflag;
+    /*int rval;*/
+    const char *filename;
+    /* function level statics from raw_cat (needs freeing): */
+    size_t bsize;
+    char *buf;
+} CATINSTANCE;
 
 
-int bflag, eflag, nflag, sflag, tflag, vflag;
-/*int rval;*/
-const char *filename;
-
+/*********************************************************************************************************************************
+*   Global Variables                                                                                                             *
+*********************************************************************************************************************************/
 static struct option long_options[] =
 {
     { "help",   					no_argument, 0, 261 },
@@ -100,93 +109,103 @@ static struct option long_options[] =
 };
 
 
-static int usage(FILE *);
-static int scanfiles(char *argv[], int cooked);
-static int cook_cat(FILE *);
-static int raw_cat(int);
+static int usage(PKMKBUILTINCTX pCtx, int fIsErr);
+static int scanfiles(CATINSTANCE *pThis, char *argv[], int cooked);
+static int cook_cat(CATINSTANCE *pThis, FILE *);
+static int raw_cat(CATINSTANCE *pThis, int);
 
 #ifndef NO_UDOM_SUPPORT
-static int udom_open(const char *path, int flags);
+static int udom_open(PKMKBUILTINCTX pCtx, const char *path, int flags);
 #endif
 
 int
-kmk_builtin_cat(int argc, char *argv[], char **envp)
+kmk_builtin_cat(int argc, char **argv, char **envp, PKMKBUILTINCTX pCtx)
 {
+	struct getopt_state_r gos;
+	CATINSTANCE This;
 	int ch, rc;
 
 	/* kmk: reinitialize globals */
-	bflag = eflag = nflag = sflag = tflag = vflag = 0;
-	filename = NULL;
+	This.pCtx = pCtx;
+	This.bflag = This.eflag = This.nflag = This.sflag = This.tflag = This.vflag = 0;
+	This.filename = NULL;
+	This.bsize = 0;
+	This.buf = 0;
 
-	/* kmk: reset getopt and set progname */
-	g_progname = argv[0];
-	opterr = 1;
-	optarg = NULL;
-	optopt = 0;
-	optind = 0; /* init */
-
-#ifdef kmk_builtin_cat /* kmk did this already. */
-	setlocale(LC_CTYPE, "");
-#else
-	fflush(stdout);
-#endif
-
-	while ((ch = getopt_long(argc, argv, "benstuv", long_options, NULL)) != -1)
+	getopt_initialize_r(&gos, argc, argv, "benstuv", long_options, envp, pCtx);
+	while ((ch = getopt_long_r(&gos, NULL)) != -1)
 		switch (ch) {
 		case 'b':
-			bflag = nflag = 1;	/* -b implies -n */
+			This.bflag = This.nflag = 1;	/* -b implies -n */
 			break;
 		case 'e':
-			eflag = vflag = 1;	/* -e implies -v */
+			This.eflag = This.vflag = 1;	/* -e implies -v */
 			break;
 		case 'n':
-			nflag = 1;
+			This.nflag = 1;
 			break;
 		case 's':
-			sflag = 1;
+			This.sflag = 1;
 			break;
 		case 't':
-			tflag = vflag = 1;	/* -t implies -v */
+			This.tflag = This.vflag = 1;	/* -t implies -v */
 			break;
 		case 'u':
+#ifdef KMK_BUILTIN_STANDALONE /* don't allow messing with stdout */
 			setbuf(stdout, NULL);
+#endif
 			break;
 		case 'v':
-			vflag = 1;
+			This.vflag = 1;
 			break;
 		case 261:
-			usage(stdout);
+			usage(pCtx, 0);
 			return 0;
 		case 262:
 			return kbuild_version(argv[0]);
 		default:
-			return usage(stderr);
+			return usage(pCtx, 1);
 		}
-	argv += optind;
+	argv += gos.optind;
 
-	if (bflag || eflag || nflag || sflag || tflag || vflag)
-		rc = scanfiles(argv, 1);
+	if (This.bflag || This.eflag || This.nflag || This.sflag || This.tflag || This.vflag)
+		rc = scanfiles(&This, argv, 1);
 	else
-		rc = scanfiles(argv, 0);
-#ifdef kmk_builtin_cat /* only in the external program. */
+		rc = scanfiles(&This, argv, 0);
+	if (This.buf) {
+		free(This.buf);
+		This.buf = NULL;
+	}
+#ifdef KMK_BUILTIN_STANDALONE /* don't allow messing with stdout */
 	if (fclose(stdout))
-		return err(1, "stdout");
+		return err(pCtx, 1, "stdout");
 #endif
 	return rc;
 }
 
-static int
-usage(FILE *fp)
+#ifdef KMK_BUILTIN_STANDALONE
+int main(int argc, char **argv, char **envp)
 {
-	fprintf(fp, "usage: %s [-benstuv] [file ...]\n"
-	            "   or: %s --help\n"
-	            "   or: %s --version\n",
-	        g_progname, g_progname, g_progname);
+	KMKBUILTINCTX Ctx = { "kmk_cat", NULL };
+	setlocale(LC_CTYPE, "");
+	return kmk_builtin_cat(argc, argv, envp, &Ctx);
+}
+#endif
+
+static int
+usage(PKMKBUILTINCTX pCtx, int fIsErr)
+{
+	kmk_builtin_ctx_printf(pCtx, fIsErr,
+			       "usage: %s [-benstuv] [file ...]\n"
+			       "   or: %s --help\n"
+			       "   or: %s --version\n",
+			       pCtx->pszProgName, pCtx->pszProgName,
+			       pCtx->pszProgName);
 	return 1;
 }
 
 static int
-scanfiles(char *argv[], int cooked)
+scanfiles(CATINSTANCE *pThis, char *argv[], int cooked)
 {
 	int i = 0;
 	char *path;
@@ -198,29 +217,29 @@ scanfiles(char *argv[], int cooked)
 		int fd;
 
 		if (path == NULL || strcmp(path, "-") == 0) {
-			filename = "stdin";
+			pThis->filename = "stdin";
 			fd = STDIN_FILENO;
 		} else {
-			filename = path;
-			fd = open(path, O_RDONLY);
+			pThis->filename = path;
+			fd = open(path, O_RDONLY | KMK_OPEN_NO_INHERIT);
 #ifndef NO_UDOM_SUPPORT
 			if (fd < 0 && errno == EOPNOTSUPP)
-				fd = udom_open(path, O_RDONLY);
+				fd = udom_open(pThis, path, O_RDONLY);
 #endif
 		}
 		if (fd < 0) {
-			warn("%s", path);
+			warn(pThis->pCtx, "%s", path);
 			rc2 = 1; /* non fatal */
 		} else if (cooked) {
 			if (fd == STDIN_FILENO)
-				rc = cook_cat(stdin);
+				rc = cook_cat(pThis, stdin);
 			else {
 				fp = fdopen(fd, "r");
-				rc = cook_cat(fp);
+				rc = cook_cat(pThis, fp);
 				fclose(fp);
 			}
 		} else {
-			rc = raw_cat(fd);
+			rc = raw_cat(pThis, fd);
 			if (fd != STDIN_FILENO)
 				close(fd);
 		}
@@ -232,7 +251,19 @@ scanfiles(char *argv[], int cooked)
 }
 
 static int
-cook_cat(FILE *fp)
+cat_putchar(PKMKBUILTINCTX pCtx, char ch)
+{
+#ifndef KMK_BUILTIN_STANDALONE
+	if (pCtx->pOut) {
+		output_write_text(pCtx->pOut, 0, &ch, 1);
+		return 0;
+	}
+#endif
+	return putchar(ch);
+}
+
+static int
+cook_cat(CATINSTANCE *pThis, FILE *fp)
 {
 	int ch, gobble, line, prev;
 	int rc = 0;
@@ -244,7 +275,7 @@ cook_cat(FILE *fp)
 	line = gobble = 0;
 	for (prev = '\n'; (ch = getc(fp)) != EOF; prev = ch) {
 		if (prev == '\n') {
-			if (sflag) {
+			if (pThis->sflag) {
 				if (ch == '\n') {
 					if (gobble)
 						continue;
@@ -252,75 +283,80 @@ cook_cat(FILE *fp)
 				} else
 					gobble = 0;
 			}
-			if (nflag && (!bflag || ch != '\n')) {
-				(void)fprintf(stdout, "%6d\t", ++line);
+			if (pThis->nflag && (!pThis->bflag || ch != '\n')) {
+				kmk_builtin_ctx_printf(pThis->pCtx, 0, "%6d\t", ++line);
 				if (ferror(stdout))
 					break;
 			}
 		}
 		if (ch == '\n') {
-			if (eflag && putchar('$') == EOF)
+			if (pThis->eflag && cat_putchar(pThis->pCtx, '$') == EOF)
 				break;
 		} else if (ch == '\t') {
-			if (tflag) {
-				if (putchar('^') == EOF || putchar('I') == EOF)
+			if (pThis->tflag) {
+				if (cat_putchar(pThis->pCtx, '^') == EOF || cat_putchar(pThis->pCtx, 'I') == EOF)
 					break;
 				continue;
 			}
-		} else if (vflag) {
+		} else if (pThis->vflag) {
 			if (!isascii(ch) && !isprint(ch)) {
-				if (putchar('M') == EOF || putchar('-') == EOF)
+				if (cat_putchar(pThis->pCtx, 'M') == EOF || cat_putchar(pThis->pCtx, '-') == EOF)
 					break;
 				ch = toascii(ch);
 			}
 			if (iscntrl(ch)) {
-				if (putchar('^') == EOF ||
-				    putchar(ch == '\177' ? '?' :
+				if (cat_putchar(pThis->pCtx, '^') == EOF ||
+				    cat_putchar(pThis->pCtx, ch == '\177' ? '?' :
 				    ch | 0100) == EOF)
 					break;
 				continue;
 			}
 		}
-		if (putchar(ch) == EOF)
+		if (cat_putchar(pThis->pCtx, ch) == EOF)
 			break;
 	}
 	if (ferror(fp)) {
-		warn("%s", filename);
+		warn(pThis->pCtx, "%s", pThis->filename);
 		rc = 1;
 		clearerr(fp);
 	}
 	if (ferror(stdout))
-		return err(1, "stdout");
+		return err(pThis->pCtx, 1, "stdout");
 	return rc;
 }
 
 static int
-raw_cat(int rfd)
+raw_cat(CATINSTANCE *pThis, int rfd)
 {
 	int off, wfd = fileno(stdout);
 	ssize_t nr, nw;
-	static size_t bsize;
-	static char *buf = NULL;
-	struct stat sbuf;
 
 	wfd = fileno(stdout);
-	if (buf == NULL) {
+	if (pThis->buf == NULL) {
+		struct stat sbuf;
 		if (fstat(wfd, &sbuf))
-			return err(1, "%s", filename);
+			return err(pThis->pCtx, 1, "%s", pThis->filename);
 #ifdef KBUILD_OS_WINDOWS
-		bsize = 16384;
+		pThis->bsize = 16384;
 #else
-		bsize = MAX(sbuf.st_blksize, 1024);
+		pThis->bsize = MAX(sbuf.st_blksize, 1024);
 #endif
-		if ((buf = malloc(bsize)) == NULL)
-			return err(1, "buffer");
+		if ((pThis->buf = malloc(pThis->bsize)) == NULL)
+			return err(pThis->pCtx, 1, "buffer");
 	}
-	while ((nr = read(rfd, buf, bsize)) > 0)
-		for (off = 0; nr; nr -= nw, off += nw)
-			if ((nw = write(wfd, buf + off, (size_t)nr)) < 0)
-				return err(1, "stdout");
+	while ((nr = read(rfd, pThis->buf, pThis->bsize)) > 0)
+		for (off = 0; nr; nr -= nw, off += nw) {
+#ifndef KMK_BUILTIN_STANDALONE
+			if (pThis->pCtx->pOut)
+				nw = output_write_text(pThis->pCtx->pOut, 0, pThis->buf + off, nr);
+			else
+#endif
+				nw = write(wfd, pThis->buf + off, (size_t)nr);
+			if (nw < 0)
+				return err(pThis->pCtx, 1, "stdout");
+		}
 	if (nr < 0) {
-		warn("%s", filename);
+		warn(pThis->pCtx, "%s", pThis->filename);
 		return 1;
 	}
 	return 0;
@@ -329,7 +365,7 @@ raw_cat(int rfd)
 #ifndef NO_UDOM_SUPPORT
 
 static int
-udom_open(const char *path, int flags)
+udom_open(CATINSTANCE *pThis, const char *path, int flags)
 {
 	struct sockaddr_un sou;
 	int fd;
@@ -363,11 +399,11 @@ udom_open(const char *path, int flags)
 		switch(flags & O_ACCMODE) {
 		case O_RDONLY:
 			if (shutdown(fd, SHUT_WR) == -1)
-				warn(NULL);
+				warn(pThis->pCtx, NULL);
 			break;
 		case O_WRONLY:
 			if (shutdown(fd, SHUT_RD) == -1)
-				warn(NULL);
+				warn(pThis->pCtx, NULL);
 			break;
 		default:
 			break;
@@ -377,3 +413,4 @@ udom_open(const char *path, int flags)
 }
 
 #endif
+

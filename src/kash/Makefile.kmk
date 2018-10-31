@@ -1,4 +1,4 @@
-# $Id: Makefile.kmk 2652 2012-09-09 17:21:48Z bird $
+# $Id: Makefile.kmk 3110 2017-10-20 19:14:56Z bird $
 ## @file
 # Sub-makefile for kash.
 #
@@ -52,6 +52,9 @@ kash_DEFS.dragonfly = \
 	HAVE_SYS_SIGNAME HAVE_SYSCTL_H HAVE_SETPROGNAME
 kash_DEFS.freebsd = \
 	HAVE_SYS_SIGNAME HAVE_SYSCTL_H HAVE_SETPROGNAME
+kash_DEFS.gnukfbsd = HAVE_SYSCTL_H
+kash_DEFS.netbsd = \
+	HAVE_SYS_SIGNAME HAVE_SYSCTL_H HAVE_SETPROGNAME
 kash_DEFS.openbsd = \
 	HAVE_SYS_SIGNAME HAVE_SYSCTL_H HAVE_SETPROGNAME
 kash_INCS = $(kash_0_OUTDIR) . # (the last is because of error.h)
@@ -99,6 +102,15 @@ kash_SOURCES = \
 	shheap.c \
 	shthread.c \
 	shfile.c
+kash_SOURCES.gnuhurd = \
+	sys_signame.c \
+	strlcpy.c
+kash_SOURCES.gnukfbsd = \
+	sys_signame.c \
+	strlcpy.c
+kash_SOURCES.gnuknbsd = \
+	sys_signame.c \
+	strlcpy.c
 kash_SOURCES.haiku = \
 	sys_signame.c \
 	strlcpy.c
@@ -107,7 +119,7 @@ kash_SOURCES.linux = \
 	strlcpy.c
 kash_SOURCES.solaris = \
 	sys_signame.c \
-        strlcpy.c
+	strlcpy.c
 kash_SOURCES.win = \
 	sys_signame.c \
 	strlcpy.c \
@@ -135,6 +147,10 @@ kash_main.c_DEFS = KBUILD_SVN_REV=$(KBUILD_SVN_REV)
 
 
 if1of ($(KBUILD_TARGET), win os2)
+ KASH_USE_PREGENERATED_CODE = 1
+endif
+
+ifdef KASH_USE_PREGENERATED_CODE
 
 #
 # Use the pregenerated code.
@@ -154,7 +170,7 @@ endef
 $(foreach src, arith.h arith.c arith_lex.c builtins.h builtins.c nodes.h nodes.c token.h init.c,\
 $(eval $(def_copy_generated)))
 
-else
+else # !KASH_USE_PREGENERATED_CODE
 
 #
 # Generate the code on the fly.
@@ -208,7 +224,7 @@ $$(kash_0_OUTDIR)/init.c: \
 	$(BOOTSTRAP_SHELL) $+
 	$(MV) init.c $@
 
-endif
+endif # !KASH_USE_PREGENERATED_CODE
 
 #
 # For debugging file handle inheritance on Windows.

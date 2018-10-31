@@ -1,10 +1,10 @@
-/* $Id: kmkbuiltin.c 3040 2017-05-10 13:07:10Z bird $ */
+/* $Id: kmkbuiltin.c 3225 2018-05-29 08:56:36Z bird $ */
 /** @file
  * kMk Builtin command execution.
  */
 
 /*
- * Copyright (c) 2005-2010 knut st. osmundsen <bird-kBuild-spamx@anduin.net>
+ * Copyright (c) 2005-2018 knut st. osmundsen <bird-kBuild-spamx@anduin.net>
  *
  * This file is part of kBuild.
  *
@@ -23,9 +23,10 @@
  *
  */
 
-/*******************************************************************************
-*   Header Files                                                               *
-*******************************************************************************/
+
+/*********************************************************************************************************************************
+*   Header Files                                                                                                                 *
+*********************************************************************************************************************************/
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -35,12 +36,28 @@
 #ifdef _MSC_VER
 # include <io.h>
 #endif
+
+#include "makeint.h"
+#include "job.h"
+#include "variable.h"
+#if defined(KBUILD_OS_WINDOWS) && defined(CONFIG_NEW_WIN_CHILDREN)
+# include "w32/winchildren.h"
+#endif
 #include "kmkbuiltin/err.h"
 #include "kmkbuiltin.h"
 
 #ifndef _MSC_VER
 extern char **environ;
 #endif
+
+
+/*********************************************************************************************************************************
+*   Global Variables                                                                                                             *
+*********************************************************************************************************************************/
+#ifdef CONFIG_WITH_KMK_BUILTIN_STATS
+extern int print_stats_flag;
+#endif
+
 
 
 int kmk_builtin_command(const char *pszCmd, struct child *pChild, char ***ppapszArgvToSpawn, pid_t *pPidSpawned)
@@ -222,116 +239,255 @@ int kmk_builtin_command(const char *pszCmd, struct child *pChild, char ***ppapsz
 }
 
 
+/**
+ * kmk built command.
+ */
+static const KMKBUILTINENTRY g_aBuiltIns[] =
+{
+#define BUILTIN_ENTRY(a_fn, a_sz, a_uFnSignature, fMtSafe, fNeedEnv) \
+    {  { { sizeof(a_sz) - 1, a_sz, } }, \
+       (uintptr_t)a_fn,                                 a_uFnSignature,   fMtSafe, fNeedEnv }
+
+    /* More frequently used commands: */
+    BUILTIN_ENTRY(kmk_builtin_append,   "append",       FN_SIG_MAIN_SPAWNS,     0, 0),
+    BUILTIN_ENTRY(kmk_builtin_printf,   "printf",       FN_SIG_MAIN,            0, 0),
+    BUILTIN_ENTRY(kmk_builtin_echo,     "echo",         FN_SIG_MAIN,            0, 0),
+    BUILTIN_ENTRY(kmk_builtin_install,  "install",      FN_SIG_MAIN,            1, 0),
+    BUILTIN_ENTRY(kmk_builtin_kDepObj,  "kDepObj",      FN_SIG_MAIN,            1, 0),
+#ifdef KBUILD_OS_WINDOWS
+    BUILTIN_ENTRY(kmk_builtin_kSubmit,  "kSubmit",      FN_SIG_MAIN_SPAWNS,     0, 1),
+#endif
+    BUILTIN_ENTRY(kmk_builtin_mkdir,    "mkdir",        FN_SIG_MAIN,            0, 0),
+    BUILTIN_ENTRY(kmk_builtin_mv,       "mv",           FN_SIG_MAIN,            0, 0),
+    BUILTIN_ENTRY(kmk_builtin_redirect, "redirect",     FN_SIG_MAIN_SPAWNS,     1, 1),
+    BUILTIN_ENTRY(kmk_builtin_rm,       "rm",           FN_SIG_MAIN,            1, 1),
+    BUILTIN_ENTRY(kmk_builtin_rmdir,    "rmdir",        FN_SIG_MAIN,            0, 0),
+    BUILTIN_ENTRY(kmk_builtin_test,     "test",         FN_SIG_MAIN_TO_SPAWN,   0, 0),
+    /* Less frequently used commands: */
+    BUILTIN_ENTRY(kmk_builtin_kDepIDB,  "kDepIDB",      FN_SIG_MAIN,            0, 0),
+    BUILTIN_ENTRY(kmk_builtin_chmod,    "chmod",        FN_SIG_MAIN,            0, 0),
+    BUILTIN_ENTRY(kmk_builtin_cp,       "cp",           FN_SIG_MAIN,            1, 1),
+    BUILTIN_ENTRY(kmk_builtin_expr,     "expr",         FN_SIG_MAIN,            0, 0),
+    BUILTIN_ENTRY(kmk_builtin_ln,       "ln",           FN_SIG_MAIN,            0, 0),
+    BUILTIN_ENTRY(kmk_builtin_md5sum,   "md5sum",       FN_SIG_MAIN,            1, 0),
+    BUILTIN_ENTRY(kmk_builtin_cmp,      "cmp",          FN_SIG_MAIN,            0, 0),
+    BUILTIN_ENTRY(kmk_builtin_cat,      "cat",          FN_SIG_MAIN,            0, 0),
+    BUILTIN_ENTRY(kmk_builtin_touch,    "touch",        FN_SIG_MAIN,            0, 0),
+    BUILTIN_ENTRY(kmk_builtin_sleep,    "sleep",        FN_SIG_MAIN,            1, 0),
+    BUILTIN_ENTRY(kmk_builtin_dircache, "dircache",     FN_SIG_MAIN,            0, 0),
+};
+
+#ifdef CONFIG_WITH_KMK_BUILTIN_STATS
+/** Statistics running in parallel to g_aBuiltIns. */
+struct
+{
+    big_int         cNs;
+    unsigned        cTimes;
+    unsigned        cAsyncTimes;
+} g_aBuiltInStats[sizeof(g_aBuiltIns) / sizeof(g_aBuiltIns[0])];
+#endif
+
+
 int kmk_builtin_command_parsed(int argc, char **argv, struct child *pChild, char ***ppapszArgvToSpawn, pid_t *pPidSpawned)
 {
-    const char *pszCmd = argv[0];
-    int         iUmask;
-    int         rc;
-
     /*
      * Check and skip the prefix.
      */
-    if (strncmp(pszCmd, "kmk_builtin_", sizeof("kmk_builtin_") - 1))
+    static const char s_szPrefix[] = "kmk_builtin_";
+    const char *pszCmd = argv[0];
+    if (strncmp(pszCmd, s_szPrefix, sizeof(s_szPrefix) - 1) == 0)
     {
-        fprintf(stderr, "kmk_builtin: Invalid command prefix '%s'!\n", pszCmd);
-        return 1;
-    }
-    pszCmd += sizeof("kmk_builtin_") - 1;
+        struct KMKBUILTINENTRY const *pEntry;
+        size_t cchAndStart;
+        int    cLeft;
 
-    /*
-     * String switch on the command (frequent stuff at the top).
-     */
-    iUmask = umask(0);
-    umask(iUmask);
-    if (!strcmp(pszCmd, "append"))
-        rc = kmk_builtin_append(argc, argv, environ);
-    else if (!strcmp(pszCmd, "printf"))
-        rc = kmk_builtin_printf(argc, argv, environ);
-    else if (!strcmp(pszCmd, "echo"))
-        rc = kmk_builtin_echo(argc, argv, environ);
-    else if (!strcmp(pszCmd, "install"))
-        rc = kmk_builtin_install(argc, argv, environ);
-    else if (!strcmp(pszCmd, "kDepIDB"))
-        rc = kmk_builtin_kDepIDB(argc, argv, environ);
-#ifdef KBUILD_OS_WINDOWS
-    else if (!strcmp(pszCmd, "kSubmit"))
-        rc = kmk_builtin_kSubmit(argc, argv, environ, pChild, pPidSpawned);
+        pszCmd += sizeof(s_szPrefix) - 1;
+
+        /*
+         * Calc the length and start word to avoid calling memcmp/strcmp on each entry.
+         */
+#if K_ARCH_BITS != 64 && K_ARCH_BITS != 32
+# error "PORT ME!"
 #endif
-    else if (!strcmp(pszCmd, "mkdir"))
-        rc = kmk_builtin_mkdir(argc, argv, environ);
-    else if (!strcmp(pszCmd, "mv"))
-        rc = kmk_builtin_mv(argc, argv, environ);
-    else if (!strcmp(pszCmd, "redirect"))
-        rc = kmk_builtin_redirect(argc, argv, environ, pChild, pPidSpawned);
-    else if (!strcmp(pszCmd, "rm"))
-        rc = kmk_builtin_rm(argc, argv, environ);
-    else if (!strcmp(pszCmd, "rmdir"))
-        rc = kmk_builtin_rmdir(argc, argv, environ);
-    else if (!strcmp(pszCmd, "test"))
-        rc = kmk_builtin_test(argc, argv, environ, ppapszArgvToSpawn);
-    /* rarely used commands: */
-    else if (!strcmp(pszCmd, "kDepObj"))
-        rc = kmk_builtin_kDepObj(argc, argv, environ);
-    else if (!strcmp(pszCmd, "chmod"))
-        rc = kmk_builtin_chmod(argc, argv, environ);
-    else if (!strcmp(pszCmd, "cp"))
-        rc = kmk_builtin_cp(argc, argv, environ);
-    else if (!strcmp(pszCmd, "expr"))
-        rc = kmk_builtin_expr(argc, argv, environ);
-    else if (!strcmp(pszCmd, "ln"))
-        rc = kmk_builtin_ln(argc, argv, environ);
-    else if (!strcmp(pszCmd, "md5sum"))
-        rc = kmk_builtin_md5sum(argc, argv, environ);
-    else if (!strcmp(pszCmd, "cmp"))
-        rc = kmk_builtin_cmp(argc, argv, environ);
-    else if (!strcmp(pszCmd, "cat"))
-        rc = kmk_builtin_cat(argc, argv, environ);
-    else if (!strcmp(pszCmd, "sleep"))
-        rc = kmk_builtin_sleep(argc, argv, environ);
-    else if (!strcmp(pszCmd, "dircache"))
-#ifdef KBUILD_OS_WINDOWS
-        rc = kmk_builtin_dircache(argc, argv, environ);
+        cchAndStart = strlen(pszCmd);
+#if K_ENDIAN == K_ENDIAN_BIG
+        cchAndStart <<= K_ARCH_BITS - 8;
+        switch (cchAndStart)
+        {
+            default:                                   /* fall thru */
+# if K_ARCH_BITS >= 64
+            case 7: cchAndStart |= (size_t)pszCmd[6] << (K_ARCH_BITS - 56); /* fall thru */
+            case 6: cchAndStart |= (size_t)pszCmd[5] << (K_ARCH_BITS - 48); /* fall thru */
+            case 5: cchAndStart |= (size_t)pszCmd[4] << (K_ARCH_BITS - 40); /* fall thru */
+            case 4: cchAndStart |= (size_t)pszCmd[3] << (K_ARCH_BITS - 32); /* fall thru */
+# endif
+            case 3: cchAndStart |= (size_t)pszCmd[2] << (K_ARCH_BITS - 24); /* fall thru */
+            case 2: cchAndStart |= (size_t)pszCmd[1] << (K_ARCH_BITS - 16); /* fall thru */
+            case 1: cchAndStart |= (size_t)pszCmd[0] << (K_ARCH_BITS -  8); /* fall thru */
+            case 0: break;
+        }
 #else
-        rc = 0;
+        switch (cchAndStart)
+        {
+            default:                                   /* fall thru */
+# if K_ARCH_BITS >= 64
+            case 7: cchAndStart |= (size_t)pszCmd[6] << 56; /* fall thru */
+            case 6: cchAndStart |= (size_t)pszCmd[5] << 48; /* fall thru */
+            case 5: cchAndStart |= (size_t)pszCmd[4] << 40; /* fall thru */
+            case 4: cchAndStart |= (size_t)pszCmd[3] << 32; /* fall thru */
+# endif
+            case 3: cchAndStart |= (size_t)pszCmd[2] << 24; /* fall thru */
+            case 2: cchAndStart |= (size_t)pszCmd[1] << 16; /* fall thru */
+            case 1: cchAndStart |= (size_t)pszCmd[0] <<  8; /* fall thru */
+            case 0: break;
+        }
 #endif
+
+        /*
+         * Look up the builtin command in the table.
+         */
+        pEntry  = &g_aBuiltIns[0];
+        cLeft   = sizeof(g_aBuiltIns) / sizeof(g_aBuiltIns[0]);
+        while (cLeft-- > 0)
+            if (   pEntry->uName.cchAndStart != cchAndStart
+                || (   pEntry->uName.s.cch >= sizeof(cchAndStart)
+                    && memcmp(pEntry->uName.s.sz, pszCmd, pEntry->uName.s.cch) != 0) )
+                pEntry++;
+            else
+            {
+                /*
+                 * That's a match!
+                 *
+                 * First get the environment if it is actually needed.  This is
+                 * especially important when we run on a worker thread as it must
+                 * not under any circumstances do stuff like target_environment.
+                 */
+                int    rc;
+                char **papszEnvVars = NULL;
+                if (pEntry->fNeedEnv)
+                {
+                    papszEnvVars = pChild->environment;
+                    if (!papszEnvVars)
+                        pChild->environment = papszEnvVars = target_environment(pChild->file);
+                }
+
+#if defined(KBUILD_OS_WINDOWS) && defined(CONFIG_NEW_WIN_CHILDREN)
+                /*
+                 * If the built-in is multi thread safe, we will run it on a job slot thread.
+                 */
+                if (pEntry->fMtSafe)
+                {
+                    rc = MkWinChildCreateBuiltIn(pEntry, argc, argv, papszEnvVars, pChild, pPidSpawned);
+# ifdef CONFIG_WITH_KMK_BUILTIN_STATS
+                    g_aBuiltInStats[pEntry - &g_aBuiltIns[0]].cAsyncTimes++;
+# endif
+                }
+                else
+#endif
+                {
+                    /*
+                     * Call the worker function, making sure to preserve umask.
+                     */
+#ifdef CONFIG_WITH_KMK_BUILTIN_STATS
+                    big_int nsStart = print_stats_flag ? nano_timestamp() : 0;
+#endif
+                    KMKBUILTINCTX Ctx;
+                    int const iUmask = umask(0);        /* save umask */
+                    umask(iUmask);
+
+                    Ctx.pszProgName = pEntry->uName.s.sz;
+                    Ctx.pOut = pChild ? &pChild->output : NULL;
+
+                    if (pEntry->uFnSignature == FN_SIG_MAIN)
+                        rc = pEntry->u.pfnMain(argc, argv, papszEnvVars, &Ctx);
+                    else if (pEntry->uFnSignature == FN_SIG_MAIN_SPAWNS)
+                        rc = pEntry->u.pfnMainSpawns(argc, argv, papszEnvVars, &Ctx, pChild, pPidSpawned);
+                    else if (pEntry->uFnSignature == FN_SIG_MAIN_TO_SPAWN)
+                    {
+                        /*
+                         * When we got something to execute, check if the child is a kmk_builtin thing.
+                         * We recurse here, both because I'm lazy and because it's easier to debug a
+                         * problem then (the call stack shows what's been going on).
+                         */
+                        rc = pEntry->u.pfnMainToSpawn(argc, argv, papszEnvVars, &Ctx, ppapszArgvToSpawn);
+                        if (   !rc
+                            && *ppapszArgvToSpawn
+                            && !strncmp(**ppapszArgvToSpawn, s_szPrefix, sizeof(s_szPrefix) - 1))
+                        {
+                            char **argv_new = *ppapszArgvToSpawn;
+                            int argc_new = 1;
+                            while (argv_new[argc_new])
+                              argc_new++;
+
+                            assert(argv_new[0] != argv[0]);
+                            assert(!*pPidSpawned);
+
+                            *ppapszArgvToSpawn = NULL;
+                            rc = kmk_builtin_command_parsed(argc_new, argv_new, pChild, ppapszArgvToSpawn, pPidSpawned);
+
+                            free(argv_new[0]);
+                            free(argv_new);
+                        }
+                    }
+                    else
+                        rc = 99;
+
+                    umask(iUmask);                      /* restore it */
+
+#ifdef CONFIG_WITH_KMK_BUILTIN_STATS
+                    if (print_stats_flag)
+                    {
+                        uintptr_t iEntry = pEntry - &g_aBuiltIns[0];
+                        g_aBuiltInStats[iEntry].cTimes++;
+                        g_aBuiltInStats[iEntry].cNs += nano_timestamp() - nsStart;
+                    }
+#endif
+                }
+                return rc;
+            }
+
+        /*
+         * No match! :-(
+         */
+        fprintf(stderr, "kmk_builtin: Unknown command '%s%s'!\n", s_szPrefix, pszCmd);
+    }
     else
-    {
-        fprintf(stderr, "kmk_builtin: Unknown command '%s'!\n", pszCmd);
-        return 1;
-    }
-
-    /*
-     * Cleanup.
-     */
-    g_progname = "kmk";                 /* paranoia, make sure it's not pointing at a freed argv[0]. */
-    umask(iUmask);
-
-
-    /*
-     * If we've executed a conditional test or something that wishes to execute
-     * some child process, check if the child is a kmk_builtin thing. We recurse
-     * here, both because I'm lazy and because it's easier to debug a problem then
-     * (the call stack shows what's been going on).
-     */
-    if (    !rc
-        &&  *ppapszArgvToSpawn
-        &&  !strncmp(**ppapszArgvToSpawn, "kmk_builtin_", sizeof("kmk_builtin_") - 1))
-    {
-        char **argv_new = *ppapszArgvToSpawn;
-        int argc_new = 1;
-        while (argv_new[argc_new])
-          argc_new++;
-
-        assert(argv_new[0] != argv[0]);
-        assert(!*pPidSpawned);
-
-        *ppapszArgvToSpawn = NULL;
-        rc = kmk_builtin_command_parsed(argc_new, argv_new, pChild, ppapszArgvToSpawn, pPidSpawned);
-
-        free(argv_new[0]);
-        free(argv_new);
-    }
-
-    return rc;
+        fprintf(stderr, "kmk_builtin: Invalid command prefix '%s'!\n", pszCmd);
+    return 1;
 }
+
+#ifndef KBUILD_OS_WINDOWS
+/** Dummy. */
+int kmk_builtin_dircache(int argc, char **argv, char **envp, PKMKBUILTINCTX pCtx)
+{
+    (void)argc; (void)argv; (void)envp; (void)pCtx;
+    return 0;
+}
+#endif
+
+#ifdef CONFIG_WITH_KMK_BUILTIN_STATS
+/**
+ * Prints the statistiscs to the given output stream.
+ */
+extern void kmk_builtin_print_stats(FILE *pOutput, const char *pszPrefix)
+{
+    const unsigned cEntries = sizeof(g_aBuiltInStats) / sizeof(g_aBuiltInStats[0]);
+    unsigned i;
+    assert(print_stats_flag);
+    fprintf(pOutput, "\n%skmk built-in command statistics:\n", pszPrefix);
+    for (i = 0; i < cEntries; i++)
+        if (g_aBuiltInStats[i].cTimes > 0)
+        {
+            char szTotal[64];
+            char szAvg[64];
+            format_elapsed_nano(szTotal, sizeof(szTotal), g_aBuiltInStats[i].cNs);
+            format_elapsed_nano(szAvg, sizeof(szAvg), g_aBuiltInStats[i].cNs / g_aBuiltInStats[i].cTimes);
+            fprintf(pOutput, "%s kmk_builtin_%-9s: %4lu times, %9s total, %9s/call\n",
+                    pszPrefix, g_aBuiltIns[i].uName.s.sz, g_aBuiltInStats[i].cTimes, szTotal, szAvg);
+        }
+        else if (g_aBuiltInStats[i].cAsyncTimes > 0)
+            fprintf(pOutput, "%s kmk_builtin_%-9s: %4lu times in worker thread\n",
+                    pszPrefix, g_aBuiltIns[i].uName.s.sz, g_aBuiltInStats[i].cAsyncTimes);
+}
+#endif
 

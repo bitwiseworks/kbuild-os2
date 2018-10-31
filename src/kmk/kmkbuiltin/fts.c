@@ -60,6 +60,7 @@ __RCSID("$NetBSD: __fts13.c,v 1.44 2005/01/19 00:59:48 mycroft Exp $");
 #ifdef HAVE_ALLOCA_H
 # include <alloca.h>
 #endif
+#include "kmkbuiltin.h" /* MAXPATHLEN for GNU/hurd */
 
 #ifdef __sun__
 # include "solfakes.h"
@@ -273,7 +274,7 @@ fts_open(argv, options, compar)
 	 */
 	if (!ISSET(FTS_NOCHDIR)) {
 #ifdef HAVE_FCHDIR
-		if ((sp->fts_rfd = open(".", O_RDONLY, 0)) == -1)
+		if ((sp->fts_rfd = open(".", O_RDONLY | KMK_OPEN_NO_INHERIT, 0)) == -1)
 			SET(FTS_NOCHDIR);
 		else if (fcntl(sp->fts_rfd, F_SETFD, FD_CLOEXEC) == -1) {
 			close(sp->fts_rfd);
@@ -452,7 +453,7 @@ fts_read(sp)
 		p->fts_info = fts_stat(sp, p, 1);
 		if (p->fts_info == FTS_D && !ISSET(FTS_NOCHDIR)) {
 #ifdef HAVE_FCHDIR
-			if ((p->fts_symfd = open(".", O_RDONLY, 0)) == -1) {
+			if ((p->fts_symfd = open(".", O_RDONLY | KMK_OPEN_NO_INHERIT, 0)) == -1) {
 				p->fts_errno = errno;
 				p->fts_info = FTS_ERR;
 			} else if (fcntl(p->fts_symfd, F_SETFD, FD_CLOEXEC) == -1) {
@@ -554,7 +555,7 @@ next:	tmp = p;
 			if (p->fts_info == FTS_D && !ISSET(FTS_NOCHDIR)) {
 #ifdef HAVE_FCHDIR
 				if ((p->fts_symfd =
-				    open(".", O_RDONLY, 0)) == -1) {
+				    open(".", O_RDONLY | KMK_OPEN_NO_INHERIT, 0)) == -1) {
 					p->fts_errno = errno;
 					p->fts_info = FTS_ERR;
 				} else if (fcntl(p->fts_symfd, F_SETFD, FD_CLOEXEC) == -1) {
@@ -720,7 +721,7 @@ fts_children(sp, instr)
 		return (sp->fts_child = fts_build(sp, instr));
 
 #ifdef HAVE_FCHDIR
-	if ((fd = open(".", O_RDONLY, 0)) == -1)
+	if ((fd = open(".", O_RDONLY | KMK_OPEN_NO_INHERIT, 0)) == -1)
 #else
 	if ((pszRoot = getcwd(NULL, 0)) == NULL)
 #endif
@@ -1422,8 +1423,13 @@ fts_safe_changedir(sp, p, fd, path)
 		return 0;
 
 #ifdef HAVE_FCHDIR
-	if (oldfd < 0 && (fd = open(path, O_RDONLY)) == -1)
-		return -1;
+	if (oldfd < 0) {
+		if (!path) /* shuts up gcc nonull checks*/
+			return -1;
+		fd = open(path, O_RDONLY | KMK_OPEN_NO_INHERIT);
+		if (fd == -1)
+			return -1;
+	}
 
 	if (fstat(fd, &sb) == -1)
 		goto bail;

@@ -1,4 +1,4 @@
-# $Id: Makefile.kmk 3042 2017-05-11 10:23:12Z bird $
+# $Id: Makefile.kmk 3192 2018-03-26 20:25:56Z bird $
 ## @file
 # Sub-makefile for kWorker.
 #
@@ -35,7 +35,8 @@ kWorker_DEFS.debug = K_STRICT
 kWorker_DEFS.release = NASSERT
 kWorker_SOURCES = \
 	kWorker.c \
-       ../kmk/kmkbuiltin/kDepObj.c
+       ../kmk/kmkbuiltin/kDepObj.c \
+       ../kmk/kmkbuiltin/err.c
 kWorker_INCS = \
 	../kmk/ \
 	../kmk/kmkbuiltin
@@ -77,6 +78,7 @@ kWorkerLib_SOURCES.win = \
        nt/ntunlink.c \
        nt/kFsCache.c \
        quote_argv.c \
+	is_console.c \
 	maybe_con_write.c \
 	maybe_con_fwrite.c \
 	msc_buffered_printf.c

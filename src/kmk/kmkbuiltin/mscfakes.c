@@ -1,4 +1,4 @@
-/* $Id: mscfakes.c 2901 2016-09-09 15:10:24Z bird $ */
+/* $Id: mscfakes.c 3219 2018-03-30 22:30:15Z bird $ */
 /** @file
  * Fake Unix stuff for MSC.
  */
@@ -36,12 +36,17 @@
 #include <io.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/timeb.h>
 #include "err.h"
 #include "mscfakes.h"
 
-#define timeval windows_timeval
-#include <Windows.h>
-#undef timeval
+#include "nt/ntutimes.h"
+#undef utimes
+#undef lutimes
+
+#include "console.h"
+
+
 
 /*******************************************************************************
 *   Internal Functions                                                         *
@@ -360,7 +365,7 @@ int mkstemp(char *temp)
         int fd;
         if (doname(pszX, pszEnd))
             return -1;
-        fd = open(temp, _O_EXCL | _O_CREAT | _O_BINARY | _O_RDWR, 0777);
+        fd = open(temp, _O_EXCL | _O_CREAT | _O_BINARY | _O_RDWR | KMK_OPEN_NO_INHERIT, 0777);
         if (fd >= 0)
             return fd;
     }
@@ -440,8 +445,8 @@ int symlink(const char *pszDst, const char *pszLink)
         return -1;
     }
 
+    fprintf(stderr, "warning: symlink() is available on this version of Windows!\n");
     errno = ENOSYS;
-    err(1, "symlink() is not implemented on windows!");
     return -1;
 }
 
@@ -459,13 +464,6 @@ int snprintf(char *buf, size_t size, const char *fmt, ...)
 #endif
 
 
-int utimes(const char *pszPath, const struct timeval *paTimes)
-{
-    /** @todo implement me! */
-    return 0;
-}
-
-
 /* We override the libc write function (in our modules only, unfortunately) so
    we can kludge our way around a ENOSPC problem observed on build servers
    capturing STDOUT and STDERR via pipes.  Apparently this may happen when the
@@ -474,9 +472,14 @@ int utimes(const char *pszPath, const struct timeval *paTimes)
    XXX: Probably need to hook into fwrite as well. */
 ssize_t msc_write(int fd, const void *pvSrc, size_t cbSrc)
 {
+#define MSC_WRITE_MAX_CHUNK (UINT_MAX / 32)
     ssize_t cbRet;
-    if (cbSrc < UINT_MAX / 4)
+    if (cbSrc <= MSC_WRITE_MAX_CHUNK)
     {
+        /* Console output optimization: */
+        if (cbSrc > 0 && is_console(fd))
+            return maybe_con_write(fd, pvSrc, cbSrc);
+
 #ifndef MSC_WRITE_TEST
         cbRet = _write(fd, pvSrc, (unsigned int)cbSrc);
 #else
@@ -485,7 +488,7 @@ ssize_t msc_write(int fd, const void *pvSrc, size_t cbSrc)
         if (cbRet < 0)
         {
             /* ENOSPC on pipe kludge. */
-            int cbLimit;
+            unsigned int cbLimit;
             int cSinceLastSuccess;
 
             if (cbSrc == 0)
@@ -502,7 +505,7 @@ ssize_t msc_write(int fd, const void *pvSrc, size_t cbSrc)
 
             /* Likely a full pipe buffer, try write smaller amounts and do some
                sleeping inbetween each unsuccessful one. */
-            cbLimit = cbSrc / 4;
+            cbLimit = (unsigned)(cbSrc / 4);
             if (cbLimit < 4)
                 cbLimit = 4;
             else if (cbLimit > 512)
@@ -513,13 +516,18 @@ ssize_t msc_write(int fd, const void *pvSrc, size_t cbSrc)
             cbLimit = 4;
 #endif
 
-            while (cbSrc > 0)
+            while ((ssize_t)cbSrc > 0)
             {
-                unsigned int cbAttempt = cbSrc > cbLimit ? (int)cbLimit : (int)cbSrc;
+                unsigned int cbAttempt = cbSrc > cbLimit ? cbLimit : (unsigned int)cbSrc;
                 ssize_t cbActual = _write(fd, pvSrc, cbAttempt);
                 if (cbActual > 0)
                 {
-                    assert(cbActual <= (ssize_t)cbAttempt);
+                    /* For some reason, it seems like we cannot trust _write to return
+                       a number that's less or equal to the number of bytes we passed
+                       in to the call.  (Also reason for signed check in loop.) */
+                    if (cbActual > cbAttempt)
+                        cbActual = cbAttempt;
+
                     pvSrc  = (char *)pvSrc + cbActual;
                     cbSrc -= cbActual;
                     cbRet += cbActual;
@@ -559,7 +567,7 @@ ssize_t msc_write(int fd, const void *pvSrc, size_t cbSrc)
         cbRet = 0;
         while (cbSrc > 0)
         {
-            size_t  cbToWrite = cbSrc > UINT_MAX / 4 ? UINT_MAX / 4 : cbSrc;
+            size_t  cbToWrite = cbSrc > MSC_WRITE_MAX_CHUNK ? MSC_WRITE_MAX_CHUNK : cbSrc;
             ssize_t cbWritten = msc_write(fd, pvSrc, cbToWrite);
             if (cbWritten > 0)
             {
@@ -578,14 +586,47 @@ ssize_t msc_write(int fd, const void *pvSrc, size_t cbSrc)
 
 ssize_t writev(int fd, const struct iovec *vector, int count)
 {
-    int size = 0;
-    int i;
-    for (i = 0; i < count; i++)
+    ssize_t size = 0;
+    if (count > 0)
     {
-        int cb = msc_write(fd, vector[i].iov_base, (int)vector[i].iov_len);
-        if (cb < 0)
-            return cb;
-        size += cb;
+        int i;
+
+        /* To get consistent console output, we must try combine the segments
+           when outputing to the console. */
+        if (count > 1 && is_console(fd))
+        {
+            char   *pbTmp;
+            ssize_t cbTotal;
+            if (count == 1)
+                return maybe_con_write(fd, vector[0].iov_base, (int)vector[0].iov_len);
+
+            cbTotal = 0;
+            for (i = 0; i < count; i++)
+                cbTotal += vector[i].iov_len;
+            pbTmp = malloc(cbTotal);
+            if (pbTmp)
+            {
+                char *pbCur = pbTmp;
+                for (i = 0; i < count; i++)
+                {
+                    memcpy(pbCur, vector[i].iov_base, vector[i].iov_len);
+                    pbCur += vector[i].iov_len;
+                }
+                size = maybe_con_write(fd, pbTmp, cbTotal);
+                free(pbTmp);
+                return size;
+            }
+
+            /* fall back on segment by segment output. */
+        }
+
+        for (i = 0; i < count; i++)
+        {
+            int cb = msc_write(fd, vector[i].iov_base, (int)vector[i].iov_len);
+            if (cb < 0)
+                return cb;
+            size += cb;
+        }
     }
     return size;
 }
@@ -647,6 +688,67 @@ int vasprintf(char **strp, const char *fmt, va_list va)
 
     *strp = psz;
     return rc;
+}
+
+
+int utimes(const char *pszPath, const struct msc_timeval *paTimes)
+{
+    if (paTimes)
+    {
+        BirdTimeVal_T aTimes[2];
+        aTimes[0].tv_sec  = paTimes[0].tv_sec;
+        aTimes[0].tv_usec = paTimes[0].tv_usec;
+        aTimes[1].tv_sec  = paTimes[1].tv_sec;
+        aTimes[1].tv_usec = paTimes[1].tv_usec;
+        return birdUtimes(pszPath, aTimes);
+    }
+    return birdUtimes(pszPath, NULL);
+}
+
+
+int lutimes(const char *pszPath, const struct msc_timeval *paTimes)
+{
+    if (paTimes)
+    {
+        BirdTimeVal_T aTimes[2];
+        aTimes[0].tv_sec  = paTimes[0].tv_sec;
+        aTimes[0].tv_usec = paTimes[0].tv_usec;
+        aTimes[1].tv_sec  = paTimes[1].tv_sec;
+        aTimes[1].tv_usec = paTimes[1].tv_usec;
+        return birdUtimes(pszPath, aTimes);
+    }
+    return birdUtimes(pszPath, NULL);
+}
+
+
+int gettimeofday(struct msc_timeval *pNow, void *pvIgnored)
+{
+    struct __timeb64 Now;
+    int rc = _ftime64_s(&Now);
+    if (rc == 0)
+    {
+        pNow->tv_sec  = Now.time;
+        pNow->tv_usec = Now.millitm * 1000;
+        return 0;
+    }
+    errno = rc;
+    return -1;
+}
+
+
+struct tm *localtime_r(const __time64_t *pNow, struct tm *pResult)
+{
+    int rc = _localtime64_s(pResult, pNow);
+    if (rc == 0)
+        return pResult;
+    errno = rc;
+    return NULL;
+}
+
+
+__time64_t timegm(struct tm *pNow)
+{
+    return _mkgmtime64(pNow);
 }
 
 

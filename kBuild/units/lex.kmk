@@ -1,10 +1,10 @@
-# $Id: lex.kmk 2726 2014-02-26 23:23:54Z bird $
+# $Id: lex.kmk 3160 2018-03-19 22:39:19Z bird $
 ## @file
 # lex unit.
 #
 
 #
-# Copyright (c) 2008-2014 knut st. osmundsen <bird-kBuild-spam-xiv@anduin.net>
+# Copyright (c) 2008-2017 knut st. osmundsen <bird-kBuild-spam-xviiv@anduin.net>
 #
 # This file is part of kBuild.
 #
@@ -71,10 +71,17 @@ $(out) + $(output_extra) +| $(output_maybe) : \
 $(cmds)
 
 ifndef NO_COMPILE_CMDS_DEPS
+ifdef KBUILD_HAVE_OPTIMIZED_APPEND
+	%$$(QUIET2)$$(APPEND) -ni '$(dep)' \
+		'define $(target)_$(subst :,_,$(source))_LEX_CMDS_PREV_' \
+		'--insert-command=$(out)' \
+		'endef'
+else
 	%$$(QUIET2)$$(APPEND) '$(dep)'
 	%$$(QUIET2)$$(APPEND) '$(dep)' 'define $(target)_$(subst :,_,$(source))_LEX_CMDS_PREV_'
 	%$$(QUIET2)$$(APPEND) -c '$(dep)' '$(out)'
 	%$$(QUIET2)$$(APPEND) '$(dep)' 'endef'
+endif
 endif
 
 # update globals

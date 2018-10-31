@@ -1,4 +1,4 @@
-/* $Id: dir-nt-bird.c 3024 2017-01-07 17:46:13Z bird $ */
+/* $Id: dir-nt-bird.c 3203 2018-03-28 22:23:23Z bird $ */
 /** @file
  * Reimplementation of dir.c for NT using kFsCache.
  *
@@ -30,14 +30,17 @@
 /*********************************************************************************************************************************
 *   Header Files                                                                                                                 *
 *********************************************************************************************************************************/
+#include <Windows.h> /* locking */
 #include "nt/kFsCache.h"
-#include "make.h"
+#include "makeint.h"
 #if defined(KMK) && !defined(__OS2__)
 # include "glob/glob.h"
 #else
 # include <glob.h>
 #endif
-
+#include <assert.h>
+#include "kmkbuiltin.h"
+#include "kmkbuiltin/err.h"
 
 #include "nt_fullpath.h" /* for the time being - will be implemented here later on. */
 
@@ -73,16 +76,19 @@ typedef struct KMKNTOPENDIR
 /** The cache.*/
 PKFSCACHE   g_pFsCache = NULL;
 /** Number of times dir_cache_invalid_missing was called. */
-static KU32 g_cInvalidates = 0;
+static KU32 volatile g_cInvalidates = 0;
 /** Set by dir_cache_volatile_dir to indicate that the user has marked the
  * volatile parts of the file system with custom revisioning and we only need to
  * flush these.  This is very handy when using a separate output directory
  * from the sources.  */
 static KBOOL g_fFsCacheIsUsingCustomRevision = K_FALSE;
+/** The ID of the main thread.  We currently only let it access the cache. */
+static DWORD g_idMainThread = 0;
 
 
 void hash_init_directories(void)
 {
+    g_idMainThread = GetCurrentThreadId();
     g_pFsCache = kFsCacheCreate(0);
     if (g_pFsCache)
         return;
@@ -109,8 +115,10 @@ int dir_file_exists_p(const char *pszDir, const char *pszName)
     int             fRc     = 0;
     KFSLOOKUPERROR  enmError;
     PKFSOBJ         pDirObj = kFsCacheLookupA(g_pFsCache, pszDir, &enmError);
+    assert(GetCurrentThreadId() == g_idMainThread);
     if (pDirObj)
     {
+
         if (pDirObj->bObjType == KFSOBJ_TYPE_DIR)
         {
             if (pszName != 0)
@@ -141,6 +149,7 @@ int dir_file_exists_p(const char *pszDir, const char *pszName)
  *
  * @returns 1 if it does exist, 0 if it doesn't.
  * @param   pszPath     The path to check out.
+ * @note    Multi-thread safe.
  */
 int file_exists_p(const char *pszPath)
 {
@@ -159,6 +168,29 @@ int file_exists_p(const char *pszPath)
 
 
 /**
+ * Checks if a file exists and is a regular file, given a UTF-16 string.
+ *
+ * @returns 1 if it regular file, 0 if doesn't exist or isn't a file
+ * @param   pwszPath    The UTF-16 path to check out.
+ * @note    Multi-thread safe.
+ */
+int utf16_regular_file_p(const wchar_t *pwszPath)
+{
+    int             fRc;
+    KFSLOOKUPERROR  enmError;
+    PKFSOBJ         pPathObj = kFsCacheLookupW(g_pFsCache, pwszPath, &enmError);
+    if (pPathObj)
+    {
+        fRc = pPathObj->bObjType == KFSOBJ_TYPE_FILE;
+        kFsCacheObjRelease(g_pFsCache, pPathObj);
+    }
+    else
+        fRc = 0;
+    return fRc;
+}
+
+
+/**
  * Just a way for vpath.c to get a correctly cased path, I think.
  *
  * @returns Directory path in string cache.
@@ -167,6 +199,7 @@ int file_exists_p(const char *pszPath)
 const char *dir_name(const char *pszDir)
 {
     char szTmp[MAX_PATH];
+    assert(GetCurrentThreadId() == g_idMainThread);
     nt_fullpath(pszDir, szTmp, sizeof(szTmp));
     return strcache_add(szTmp);
 }
@@ -179,6 +212,7 @@ void file_impossible(const char *pszPath)
 {
     KFSLOOKUPERROR  enmError;
     PKFSOBJ         pPathObj = kFsCacheLookupA(g_pFsCache, pszPath, &enmError);
+    assert(GetCurrentThreadId() == g_idMainThread);
     if (pPathObj)
     {
         kFsCacheObjAddUserData(g_pFsCache, pPathObj, KMK_DIR_NT_IMPOSSIBLE_KEY, sizeof(KFSUSERDATA));
@@ -194,6 +228,7 @@ int file_impossible_p(const char *pszPath)
     int             fRc;
     KFSLOOKUPERROR  enmError;
     PKFSOBJ         pPathObj = kFsCacheLookupA(g_pFsCache, pszPath, &enmError);
+    assert(GetCurrentThreadId() == g_idMainThread);
     if (pPathObj)
     {
         fRc = kFsCacheObjGetUserData(g_pFsCache, pPathObj, KMK_DIR_NT_IMPOSSIBLE_KEY) != NULL;
@@ -215,6 +250,7 @@ static __ptr_t dir_glob_opendir(const char *pszDir)
 {
     KFSLOOKUPERROR  enmError;
     PKFSOBJ         pDirObj = kFsCacheLookupA(g_pFsCache, pszDir, &enmError);
+    assert(GetCurrentThreadId() == g_idMainThread);
     if (pDirObj)
     {
         if (pDirObj->bObjType == KFSOBJ_TYPE_DIR)
@@ -243,6 +279,7 @@ static struct dirent *dir_glob_readdir(__ptr_t pvDir)
 {
     KMKNTOPENDIR *pDir = (KMKNTOPENDIR *)pvDir;
     KU32 const    cChildren = pDir->pDir->cChildren;
+    assert(GetCurrentThreadId() == g_idMainThread);
     while (pDir->idxNext < cChildren)
     {
         PKFSOBJ pEntry = pDir->pDir->papChildren[pDir->idxNext++];
@@ -306,6 +343,7 @@ static struct dirent *dir_glob_readdir(__ptr_t pvDir)
 static void dir_glob_closedir(__ptr_t pvDir)
 {
     KMKNTOPENDIR *pDir = (KMKNTOPENDIR *)pvDir;
+    assert(GetCurrentThreadId() == g_idMainThread);
     kFsCacheObjRelease(g_pFsCache, &pDir->pDir->Obj);
     pDir->pDir = NULL;
     free(pDir);
@@ -323,6 +361,7 @@ static int dir_glob_stat(const char *pszPath, struct stat *pStat)
 {
     KFSLOOKUPERROR  enmError;
     PKFSOBJ         pPathObj = kFsCacheLookupA(g_pFsCache, pszPath, &enmError);
+    assert(GetCurrentThreadId() == g_idMainThread);
 /** @todo follow symlinks vs. on symlink!   */
     if (pPathObj)
     {
@@ -351,6 +390,7 @@ static int dir_glob_lstat(const char *pszPath, struct stat *pStat)
 {
     KFSLOOKUPERROR  enmError;
     PKFSOBJ         pPathObj = kFsCacheLookupA(g_pFsCache, pszPath, &enmError);
+    assert(GetCurrentThreadId() == g_idMainThread);
     if (pPathObj)
     {
         if (pPathObj->bObjType != KFSOBJ_TYPE_MISSING)
@@ -383,6 +423,7 @@ static int dir_globl_dir_exists_p(const char *pszDir)
     int             fRc;
     KFSLOOKUPERROR  enmError;
     PKFSOBJ         pDirObj = kFsCacheLookupA(g_pFsCache, pszDir, &enmError);
+    assert(GetCurrentThreadId() == g_idMainThread);
     if (pDirObj)
     {
         fRc = pDirObj->bObjType == KFSOBJ_TYPE_DIR;
@@ -402,6 +443,7 @@ static int dir_globl_dir_exists_p(const char *pszDir)
  */
 void dir_setup_glob(glob_t *pGlob)
 {
+    assert(GetCurrentThreadId() == g_idMainThread);
     pGlob->gl_opendir   = dir_glob_opendir;
     pGlob->gl_readdir   = dir_glob_readdir;
     pGlob->gl_closedir  = dir_glob_closedir;
@@ -463,7 +505,11 @@ void print_dir_data_base(void)
 void nt_fullpath_cached(const char *pszPath, char *pszFull, size_t cbFull)
 {
     KFSLOOKUPERROR  enmError;
-    PKFSOBJ         pPathObj = kFsCacheLookupA(g_pFsCache, pszPath, &enmError);
+    PKFSOBJ         pPathObj;
+
+    KFSCACHE_LOCK(g_pFsCache); /* let's start out being careful. */
+
+    pPathObj = kFsCacheLookupA(g_pFsCache, pszPath, &enmError);
     if (pPathObj)
     {
         KSIZE off = pPathObj->cchParent;
@@ -517,6 +563,7 @@ void nt_fullpath_cached(const char *pszPath, char *pszFull, size_t cbFull)
 #endif
                 }
                 kFsCacheObjRelease(g_pFsCache, pPathObj);
+                KFSCACHE_UNLOCK(g_pFsCache);
                 return;
             }
         }
@@ -530,6 +577,7 @@ void nt_fullpath_cached(const char *pszPath, char *pszFull, size_t cbFull)
                 pszFull[pPathObj->cchName + 1] = '\0';
 
                 kFsCacheObjRelease(g_pFsCache, pPathObj);
+                KFSCACHE_UNLOCK(g_pFsCache);
                 return;
             }
         }
@@ -541,6 +589,7 @@ l_fallback:
         kHlpAssertFailed();
         kFsCacheObjRelease(g_pFsCache, pPathObj);
     }
+    KFSCACHE_UNLOCK(g_pFsCache);
 
     nt_fullpath(pszPath, pszFull, cbFull);
 }
@@ -557,6 +606,7 @@ int stat_only_mtime(const char *pszPath, struct stat *pStat)
 {
     /* Currently a little expensive, so just hit the file system once the
        jobs starts comming in. */
+    assert(GetCurrentThreadId() == g_idMainThread);
     if (g_cInvalidates == 0)
     {
         KFSLOOKUPERROR  enmError;
@@ -588,6 +638,7 @@ int stat_only_mtime(const char *pszPath, struct stat *pStat)
  */
 void dir_cache_invalid_after_job(void)
 {
+    assert(GetCurrentThreadId() == g_idMainThread);
     g_cInvalidates++;
     if (g_fFsCacheIsUsingCustomRevision)
         kFsCacheInvalidateCustomBoth(g_pFsCache);
@@ -599,6 +650,7 @@ void dir_cache_invalid_after_job(void)
  * Invalidate the whole directory cache
  *
  * Used by $(dircache-ctl invalidate)
+ * @note    Multi-thread safe.
  */
 void dir_cache_invalid_all(void)
 {
@@ -610,6 +662,7 @@ void dir_cache_invalid_all(void)
  * Invalidate missing bits of the directory cache.
  *
  * Used by $(dircache-ctl invalidate-missing)
+ * @note    Multi-thread safe.
  */
 void dir_cache_invalid_missing(void)
 {
@@ -621,6 +674,7 @@ void dir_cache_invalid_missing(void)
  * Invalidate the volatile bits of the directory cache.
  *
  * Used by $(dircache-ctl invalidate-missing)
+ * @note    Multi-thread safe.
  */
 void dir_cache_invalid_volatile(void)
 {
@@ -643,6 +697,7 @@ int dir_cache_volatile_dir(const char *pszDir)
 {
     KFSLOOKUPERROR enmError;
     PKFSOBJ pObj = kFsCacheLookupA(g_pFsCache, pszDir, &enmError);
+    assert(GetCurrentThreadId() == g_idMainThread);
     if (pObj)
     {
         KBOOL fRc = kFsCacheSetupCustomRevisionForTree(g_pFsCache, pObj);
@@ -652,10 +707,10 @@ int dir_cache_volatile_dir(const char *pszDir)
             g_fFsCacheIsUsingCustomRevision = K_TRUE;
             return 0;
         }
-        error(reading_file, "failed to mark '%s' as volatile", pszDir);
+        OS(error, reading_file, "failed to mark '%s' as volatile", pszDir);
     }
     else
-        error(reading_file, "failed to mark '%s' as volatile (not found)", pszDir);
+        OS(error, reading_file, "failed to mark '%s' as volatile (not found)", pszDir);
     return -1;
 }
 
@@ -669,14 +724,16 @@ int dir_cache_volatile_dir(const char *pszDir)
  */
 int dir_cache_deleted_directory(const char *pszDir)
 {
+    assert(GetCurrentThreadId() == g_idMainThread);
     if (kFsCacheInvalidateDeletedDirectoryA(g_pFsCache, pszDir))
         return 0;
     return -1;
 }
 
 
-int kmk_builtin_dircache(int argc, char **argv, char **envp)
+int kmk_builtin_dircache(int argc, char **argv, char **envp, PKMKBUILTINCTX pCtx)
 {
+    assert(GetCurrentThreadId() == g_idMainThread);
     if (argc >= 2)
     {
         const char *pszCmd = argv[1];
@@ -687,7 +744,7 @@ int kmk_builtin_dircache(int argc, char **argv, char **envp)
                 dir_cache_invalid_all();
                 return 0;
             }
-            fprintf(stderr, "kmk_builtin_dircache: the 'invalidate' command takes no arguments!\n");
+            errx(pCtx, 2, "the 'invalidate' command takes no arguments!\n");
         }
         else if (strcmp(pszCmd, "invalidate-missing") == 0)
         {
@@ -696,7 +753,7 @@ int kmk_builtin_dircache(int argc, char **argv, char **envp)
                 dir_cache_invalid_missing ();
                 return 0;
             }
-            fprintf(stderr, "kmk_builtin_dircache: the 'invalidate-missing' command takes no arguments!\n");
+            errx(pCtx, 2, "the 'invalidate-missing' command takes no arguments!\n");
         }
         else if (strcmp(pszCmd, "volatile") == 0)
         {
@@ -713,10 +770,10 @@ int kmk_builtin_dircache(int argc, char **argv, char **envp)
             return 0;
         }
         else
-            fprintf(stderr, "kmk_builtin_dircache: Invalid command '%s'!\n", pszCmd);
+            errx(pCtx, 2, "Invalid command '%s'!\n", pszCmd);
     }
     else
-        fprintf(stderr, "kmk_builtin_dircache: No command given!\n");
+        errx(pCtx, 2, "No command given!\n");
 
     K_NOREF(envp);
     return 2;
