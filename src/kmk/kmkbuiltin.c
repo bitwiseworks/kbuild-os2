@@ -1,4 +1,4 @@
-/* $Id: kmkbuiltin.c 3225 2018-05-29 08:56:36Z bird $ */
+/* $Id: kmkbuiltin.c 3293 2019-01-08 21:13:50Z bird $ */
 /** @file
  * kMk Builtin command execution.
  */
@@ -245,8 +245,7 @@ int kmk_builtin_command(const char *pszCmd, struct child *pChild, char ***ppapsz
 static const KMKBUILTINENTRY g_aBuiltIns[] =
 {
 #define BUILTIN_ENTRY(a_fn, a_sz, a_uFnSignature, fMtSafe, fNeedEnv) \
-    {  { { sizeof(a_sz) - 1, a_sz, } }, \
-       (uintptr_t)a_fn,                                 a_uFnSignature,   fMtSafe, fNeedEnv }
+    {  { { sizeof(a_sz) - 1, a_sz, } }, { (uintptr_t)a_fn }, a_uFnSignature,   fMtSafe, fNeedEnv }
 
     /* More frequently used commands: */
     BUILTIN_ENTRY(kmk_builtin_append,   "append",       FN_SIG_MAIN_SPAWNS,     0, 0),
@@ -299,6 +298,9 @@ int kmk_builtin_command_parsed(int argc, char **argv, struct child *pChild, char
     {
         struct KMKBUILTINENTRY const *pEntry;
         size_t cchAndStart;
+#if K_ENDIAN == K_ENDIAN_BIG
+        size_t cch;
+#endif
         int    cLeft;
 
         pszCmd += sizeof(s_szPrefix) - 1;
@@ -311,31 +313,34 @@ int kmk_builtin_command_parsed(int argc, char **argv, struct child *pChild, char
 #endif
         cchAndStart = strlen(pszCmd);
 #if K_ENDIAN == K_ENDIAN_BIG
+        cch = cchAndStart;
         cchAndStart <<= K_ARCH_BITS - 8;
-        switch (cchAndStart)
+        switch (cch)
         {
             default:                                   /* fall thru */
 # if K_ARCH_BITS >= 64
-            case 7: cchAndStart |= (size_t)pszCmd[6] << (K_ARCH_BITS - 56); /* fall thru */
-            case 6: cchAndStart |= (size_t)pszCmd[5] << (K_ARCH_BITS - 48); /* fall thru */
-            case 5: cchAndStart |= (size_t)pszCmd[4] << (K_ARCH_BITS - 40); /* fall thru */
-            case 4: cchAndStart |= (size_t)pszCmd[3] << (K_ARCH_BITS - 32); /* fall thru */
+            case 7: cchAndStart |= (size_t)pszCmd[6];                       /* fall thru */
+            case 6: cchAndStart |= (size_t)pszCmd[5] << (K_ARCH_BITS - 56); /* fall thru */
+            case 5: cchAndStart |= (size_t)pszCmd[4] << (K_ARCH_BITS - 48); /* fall thru */
+            case 4: cchAndStart |= (size_t)pszCmd[3] << (K_ARCH_BITS - 40); /* fall thru */
 # endif
-            case 3: cchAndStart |= (size_t)pszCmd[2] << (K_ARCH_BITS - 24); /* fall thru */
-            case 2: cchAndStart |= (size_t)pszCmd[1] << (K_ARCH_BITS - 16); /* fall thru */
-            case 1: cchAndStart |= (size_t)pszCmd[0] << (K_ARCH_BITS -  8); /* fall thru */
+            /* fall thru - gcc 8.2.0 is confused by # endif */
+            case 3: cchAndStart |= (size_t)pszCmd[2] << (K_ARCH_BITS - 32); /* fall thru */
+            case 2: cchAndStart |= (size_t)pszCmd[1] << (K_ARCH_BITS - 24); /* fall thru */
+            case 1: cchAndStart |= (size_t)pszCmd[0] << (K_ARCH_BITS - 16); /* fall thru */
             case 0: break;
         }
 #else
         switch (cchAndStart)
         {
-            default:                                   /* fall thru */
+            default:                                        /* fall thru */
 # if K_ARCH_BITS >= 64
             case 7: cchAndStart |= (size_t)pszCmd[6] << 56; /* fall thru */
             case 6: cchAndStart |= (size_t)pszCmd[5] << 48; /* fall thru */
             case 5: cchAndStart |= (size_t)pszCmd[4] << 40; /* fall thru */
             case 4: cchAndStart |= (size_t)pszCmd[3] << 32; /* fall thru */
 # endif
+            /* fall thru - gcc 8.2.0 is confused by # endif */
             case 3: cchAndStart |= (size_t)pszCmd[2] << 24; /* fall thru */
             case 2: cchAndStart |= (size_t)pszCmd[1] << 16; /* fall thru */
             case 1: cchAndStart |= (size_t)pszCmd[0] <<  8; /* fall thru */
@@ -482,11 +487,11 @@ extern void kmk_builtin_print_stats(FILE *pOutput, const char *pszPrefix)
             char szAvg[64];
             format_elapsed_nano(szTotal, sizeof(szTotal), g_aBuiltInStats[i].cNs);
             format_elapsed_nano(szAvg, sizeof(szAvg), g_aBuiltInStats[i].cNs / g_aBuiltInStats[i].cTimes);
-            fprintf(pOutput, "%s kmk_builtin_%-9s: %4lu times, %9s total, %9s/call\n",
+            fprintf(pOutput, "%s kmk_builtin_%-9s: %4u times, %9s total, %9s/call\n",
                     pszPrefix, g_aBuiltIns[i].uName.s.sz, g_aBuiltInStats[i].cTimes, szTotal, szAvg);
         }
         else if (g_aBuiltInStats[i].cAsyncTimes > 0)
-            fprintf(pOutput, "%s kmk_builtin_%-9s: %4lu times in worker thread\n",
+            fprintf(pOutput, "%s kmk_builtin_%-9s: %4u times in worker thread\n",
                     pszPrefix, g_aBuiltIns[i].uName.s.sz, g_aBuiltInStats[i].cAsyncTimes);
 }
 #endif

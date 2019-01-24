@@ -142,6 +142,9 @@
 /* Define to 1 if you have the `pipe' function. */
 #define HAVE_PIPE 1
 
+/* Define to 1 if you have the `pselect' function. */
+#define HAVE_PSELECT 1
+
 /* Define to 1 if you have the `pstat_getdynamic' function. */
 /* #undef HAVE_PSTAT_GETDYNAMIC */
 
@@ -367,7 +370,8 @@
 #define STDC_HEADERS 1
 
 /* Define if struct stat contains a nanoseconds field */
-#define ST_MTIM_NSEC tv_nsec
+#define ST_MTIM_NSEC st_mtim.tv_nsec
+#define ST_ATIM_NSEC st_atim.tv_nsec
 
 /* Define to 1 on System V Release 4. */
 /* #undef SVR4 */

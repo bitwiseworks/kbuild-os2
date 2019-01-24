@@ -511,7 +511,7 @@ output_write_text (struct output *out, int is_err, const char *src, size_t len)
       while (1)
         {
           EINTRLOOP (r, write (fd, src, len));
-          if (r == len || r <= 0)
+          if ((size_t)r == len || r <= 0)
             break;
           len -= r;
           src += r;
@@ -732,7 +732,7 @@ pump_from_tmp (int from, FILE *to)
 
   /* "from" is opened by open_tmpfd, which does it in binary mode, so
      we need the mode of "to" to match that.  */
-  prev_mode = _setmode (fileno (to), _O_BINARY);
+  prev_mode = _setmode (fileno (to), O_BINARY);
 #endif
 
   if (lseek (from, 0, SEEK_SET) == -1)
@@ -774,6 +774,9 @@ acquire_semaphore (void)
   fl.l_len = 1;
   if (fcntl (sync_handle, F_SETLKW, &fl) != -1)
     return &fl;
+#ifdef KBUILD_OS_DARWIN /* F_SETLKW isn't supported on pipes */
+  if (errno != EBADF)
+#endif  
   perror ("fcntl()");
   return NULL;
 }
@@ -799,12 +802,24 @@ output_tmpfd (void)
   FILE *tfile = tmpfile ();
 
   if (! tfile)
-    pfatal_with_name ("tmpfile");
+    {
+#ifdef KMK
+      if (output_context && output_context->syncout)
+        output_context->syncout = 0; /* Avoid inifinit recursion. */
+#endif
+      pfatal_with_name ("tmpfile");
+    }
 
   /* Create a duplicate so we can close the stream.  */
   fd = dup (fileno (tfile));
   if (fd < 0)
-    pfatal_with_name ("dup");
+    {
+#ifdef KMK
+      if (output_context && output_context->syncout)
+        output_context->syncout = 0; /* Avoid inifinit recursion. */
+#endif
+      pfatal_with_name ("dup");
+    }
 
   fclose (tfile);
 
@@ -824,7 +839,12 @@ setup_tmpfile (struct output *out)
   static int combined_output = -1;
 
   if (combined_output < 0)
-    combined_output = sync_init ();
+    {
+#ifdef KMK /* prevent infinite recursion if sync_init() calls perror_with_name. */
+      combined_output = 0;
+#endif
+      combined_output = sync_init ();
+    }
 
   if (STREAM_OK (stdout))
     {
@@ -882,17 +902,21 @@ output_dump (struct output *out)
          We want to keep this lock for as little time as possible.  */
       void *sem = acquire_semaphore ();
 
+# ifndef KMK /* this drives me bananas. */
       /* Log the working directory for this dump.  */
       if (print_directory_flag && output_sync != OUTPUT_SYNC_RECURSE)
         traced = log_working_directory (1);
+# endif
 
       if (outfd_not_empty)
         pump_from_tmp (out->out, stdout);
       if (errfd_not_empty && out->err != out->out)
         pump_from_tmp (out->err, stderr);
 
+# ifndef KMK /* this drives me bananas. */
       if (traced)
         log_working_directory (0);
+# endif
 
       /* Exit the critical section.  */
       if (sem)
