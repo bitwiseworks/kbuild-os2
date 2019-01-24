@@ -1,4 +1,4 @@
-/* $Id: kDep.c 2955 2016-09-21 19:05:53Z bird $ */
+/* $Id: kDep.c 3114 2017-10-29 18:02:04Z bird $ */
 /** @file
  * kDep - Common Dependency Managemnt Code.
  */
@@ -60,6 +60,15 @@
 
 #ifdef KWORKER
 extern int kwFsPathExists(const char *pszPath);
+#endif
+
+
+/*********************************************************************************************************************************
+*   Defined Constants And Macros                                                                                                 *
+*********************************************************************************************************************************/
+/* For the GNU/hurd weirdo. */
+#if !defined(PATH_MAX) && !defined(_MAX_PATH)
+# define PATH_MAX 4096
 #endif
 
 
@@ -129,7 +138,7 @@ static void fixcase(char *pszFilename)
          * Find the next slash (or end of string) and terminate the string there.
          */
         while (*psz != '/' && *psz)
-            *psz++;
+            psz++;
         chSlash = *psz;
         *psz = '\0';
 

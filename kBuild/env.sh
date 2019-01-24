@@ -1,5 +1,5 @@
 #!/bin/sh
-# $Id: env.sh 2546 2011-10-01 19:49:54Z bird $
+# $Id: env.sh 3127 2017-11-22 20:15:12Z bird $
 ## @file
 # Environment setup script.
 #
@@ -264,6 +264,18 @@ if test -z "$KBUILD_HOST"; then
             KBUILD_HOST=freebsd
             ;;
 
+        GNU)
+            KBUILD_HOST=gnuhurd
+            ;;
+
+        GNU/kFreeBSD)
+            KBUILD_HOST=gnukfbsd
+            ;;
+
+        GNU/kNetBSD|GNU/NetBSD)
+            KBUILD_HOST=gnuknbsd
+            ;;
+
         Haiku)
             KBUILD_HOST=haiku
             ;;
@@ -325,36 +337,36 @@ if test -z "$KBUILD_HOST_ARCH"; then
     case "$KBUILD_HOST_ARCH" in
         x86_64|AMD64|amd64|k8|k8l|k9|k10)
             KBUILD_HOST_ARCH='amd64'
+            # Try detect debian x32.
+            if test "$KBUILD_HOST" = "linux"; then 
+                if test -z "${DEB_HOST_ARCH}"; then
+                    DEB_HOST_ARCH=`dpkg-architecture -qDEB_HOST_ARCH 2> /dev/null`;
+                    if test -z "${DEB_HOST_ARCH}"; then
+                        DEB_HOST_ARCH=`dpkg --print-architecture 2> /dev/null`;
+                    fi
+                fi
+                case "${DEB_HOST_ARCH}" in
+                    "x32")
+                        KBUILD_HOST_ARCH=x32
+                        ;;
+                    "") case "`uname -v`" in
+                            *Debian*+x32+*) KBUILD_HOST_ARCH=x32 ;;
+                        esac
+                        ;;
+                esac
+            fi
             ;;
-        x86|i86pc|ia32|i[3456789]86|BePC)
+        x86|i86pc|ia32|i[3456789]86|BePC|i[3456789]86-AT[3456789]86)
             KBUILD_HOST_ARCH='x86'
             ;;
-        sparc32|sparc|sparcv8|sparcv7|sparcv8e)
-            KBUILD_HOST_ARCH='sparc32'
+        alpha)
+            KBUILD_HOST_ARCH='alpha'
             ;;
-        sparc64|sparcv9)
-            KBUILD_HOST_ARCH='sparc64'
+        aarch32|arm|arm1|arm2|arm3|arm6|armv1|armv2|armv3*|armv4*|armv5*|armv6*|armv7*)
+            KBUILD_HOST_ARCH='arm32'
             ;;
-        s390)
-            KBUILD_HOST_ARCH='s390'
-            ;;
-        s390x)
-            KBUILD_HOST_ARCH='s390x'
-            ;;
-        ppc32|ppc|powerpc)
-            KBUILD_HOST_ARCH='ppc32'
-            ;;
-        ppc64|powerpc64)
-            KBUILD_HOST_ARCH='ppc64'
-            ;;
-        mips32|mips)
-            KBUILD_HOST_ARCH='mips32'
-            ;;
-        mips64)
-            KBUILD_HOST_ARCH='mips64'
-            ;;
-        ia64)
-            KBUILD_HOST_ARCH='ia64'
+        aarch64*)
+            KBUILD_HOST_ARCH='arm64'
             ;;
         hppa32|parisc32|parisc)
             KBUILD_HOST_ARCH='hppa32'
@@ -362,11 +374,41 @@ if test -z "$KBUILD_HOST_ARCH"; then
         hppa64|parisc64)
             KBUILD_HOST_ARCH='hppa64'
             ;;
-        arm|armv4l|armv5tel|armv5tejl)
-            KBUILD_HOST_ARCH='arm'
+        ia64)
+            KBUILD_HOST_ARCH='ia64'
             ;;
-        alpha)
-            KBUILD_HOST_ARCH='alpha'
+        ppc32|ppc|powerpc)
+            KBUILD_HOST_ARCH='ppc32'
+            ;;
+        ppc64|ppc64le|powerpc64|powerpc64le)
+            KBUILD_HOST_ARCH='ppc64'
+            ;;
+        m68k)
+            KBUILD_HOST_ARCH='m68k'
+            ;;
+        mips32|mips)
+            KBUILD_HOST_ARCH='mips32'
+            ;;
+        mips64)
+            KBUILD_HOST_ARCH='mips64'
+            ;;
+        s390)
+            KBUILD_HOST_ARCH='s390'
+            ;;
+        s390x)
+            KBUILD_HOST_ARCH='s390x'
+            ;;
+	sh|sh2|sh2a|sh3|sh3|sh4|sh4a|sh4al|sh4al-dsp|shmedia)
+	    KBUILD_HOST_ARCH='sh32'
+	    ;;
+        sh64)
+	    KBUILD_HOST_ARCH='sh64'
+	    ;;
+        sparc32|sparc|sparcv8|sparcv7|sparcv8e)
+            KBUILD_HOST_ARCH='sparc32'
+            ;;
+        sparc64|sparcv9)
+            KBUILD_HOST_ARCH='sparc64'
             ;;
 
         *)  echo "$0: unknown cpu/arch - $KBUILD_HOST_ARCH" 1>&${ERR_REDIR}
