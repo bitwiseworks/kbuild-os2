@@ -1,10 +1,10 @@
-# $Id: footer-pass2-compiling-targets.kmk 3160 2018-03-19 22:39:19Z bird $
+# $Id: footer-pass2-compiling-targets.kmk 3285 2019-01-05 03:24:58Z bird $
 ## @file
 # kBuild - Footer - Target lists - Pass 2 - Compiling Targets.
 #
 
 #
-# Copyright (c) 2004-2017 knut st. osmundsen <bird-kBuild-spam-xviiv@anduin.net>
+# Copyright (c) 2004-2019 knut st. osmundsen <bird-kBuild-spam-xviiv@anduin.net>
 #
 # This file is part of kBuild.
 #
@@ -36,7 +36,79 @@
 # Object processing.
 #
 
-## wrapper the compile command dependency check.
+ifndef NO_COMPILE_CMDS_DEPS
+ ## Generates the rules for building a specific object and the aliases.
+ # for building a source file.
+ # @param    $(obj)    The object file.
+ define def_target_source_rule_v3plus
+$$(obj): .MUST_MAKE = $$(comp-cmds-ex $$($(target)_$(subst :,_,$(source))_CMDS_PREV_),$$(commands $$@),FORCE)
+$$(obj) + $$(kbsrc_output) +| $$(kbsrc_output_maybe) : $$(kbsrc_depend) | $$(kbsrc_depord) $(target_intermediate_vars)
+	%$$(call MSG_COMPILE,$(target),$(source),$$@,$(type))
+  ifndef TOOL_$(tool)_COMPILE_$(type)_DONT_PURGE_OUTPUT
+	$$(QUIET)$$(RM) -f -- $(dep) $(obj) $(kbsrc_output) $(kbsrc_output_maybe)
+  endif
+
+$(kbsrc_cmds)
+
+	%$$(QUIET2)$$(APPEND) -in '$(dep)' '' 'define $(target)_$(subst :,_,$(source))_CMDS_PREV_' '--insert-command=$(obj)' 'endef'
+$$(basename $$(notdir $$(obj))).o: $$(obj)
+ endef # def_target_source_rule_v3plus
+
+ ## Generates the rules for building a specific object and the aliases, kObjCache variant.
+ # for building a source file.
+ # @param    $(obj)    The object file.
+ define def_target_source_rule_v3plus_objcache
+$$(obj): .MUST_MAKE = $$(comp-cmds-ex $$($(target)_$(subst :,_,$(source))_CMDS_PREV_),$$(commands $$@),FORCE)
+_OUT_FILES += $(outbase).koc
+$$(outbase).koc +| $$(obj) $$(kbsrc_output) $$(kbsrc_output_maybe) : $$(kbsrc_depend) | $$(kbsrc_depord) $(target_intermediate_vars)
+	%$$(call MSG_COMPILE,$(target),$(source),$$@,$(type))
+
+$(kbsrc_cmds)
+
+	%$$(QUIET2)$$(APPEND) -in '$(dep)' '' 'define $(target)_$(subst :,_,$(source))_CMDS_PREV_' '--insert-command=$(obj)' 'endef'
+$$(basename $$(notdir $$(obj))).o: $$(obj)
+ endef # def_target_source_rule_v3plus_objcache
+
+else # NO_COMPILE_CMDS_DEPS
+
+ ## Generates the rules for building a specific object and the aliases.
+ # for building a source file.
+ # @param    $(obj)    The object file.
+ define def_target_source_rule_v3plus
+$$(obj) + $$(kbsrc_output) +| $$(kbsrc_output_maybe) : $$(kbsrc_depend) | $$(kbsrc_depord) $(target_intermediate_vars)
+	%$$(call MSG_COMPILE,$(target),$(source),$$@,$(type))
+  ifndef TOOL_$(tool)_COMPILE_$(type)_DONT_PURGE_OUTPUT
+	$$(QUIET)$$(RM) -f -- $(dep) $(obj) $(kbsrc_output) $(kbsrc_output_maybe)
+  endif
+
+$(kbsrc_cmds)
+
+$$(basename $$(notdir $$(obj))).o: $$(obj)
+ endef # def_target_source_rule_v3plus
+
+ ## Generates the rules for building a specific object and the aliases, kObjCache variant.
+ # for building a source file.
+ # @param    $(obj)    The object file.
+ define def_target_source_rule_v3plus_objcache
+_OUT_FILES += $(outbase).koc
+$$(outbase).koc +| $$(obj) $$(kbsrc_output) $$(kbsrc_output_maybe) : $$(kbsrc_depend) | $$(kbsrc_depord) $(target_intermediate_vars)
+	%$$(call MSG_COMPILE,$(target),$(source),$$@,$(type))
+
+$(kbsrc_cmds)
+
+$$(basename $$(notdir $$(obj))).o: $$(obj)
+ endef # def_target_source_rule_v3plus_objcache
+
+endif # NO_COMPILE_CMDS_DEPS
+$(eval-opt-var def_target_source_rule_v3plus)
+$(eval-opt-var def_target_source_rule_v3plus_objcache)
+
+
+##
+## Legacy legacy legacy - start
+##
+
+## Wrapper
 ifndef NO_COMPILE_CMDS_DEPS
  if1of ($(KMK_FEATURES),dot-must-make)
   _DEP_COMPILE_CMDS =
@@ -48,40 +120,23 @@ else
  _DEP_COMPILE_CMDS =
 endif
 
-
-## Generates the rules for building a specific object, and the aliases
+## Generates the rules for building a specific object, and the aliases - legacy version.
 # for building a source file.
 # @param    $(obj)    The object file.
 define def_target_source_rule
 ifndef NO_COMPILE_CMDS_DEPS
 $(obj): .MUST_MAKE = $$(comp-cmds-ex $$($(target)_$(subst :,_,$(source))_CMDS_PREV_),$$(commands $$@),FORCE)
 endif
-ifdef TOOL_$(tool)_COMPILE_$(type)_USES_KOBJCACHE
+ifneq ($(TOOL_$(tool)_COMPILE_$(type)_USES_KOBJCACHE),)
 _OUT_FILES += $(outbase).koc
 $(outbase).koc +| $(obj) $($(target)_$(source)_OUTPUT_) $($(target)_$(source)_OUTPUT_MAYBE_) : \
-		$($(target)_$(source)_DEPEND_) \
-		$(value _DEP_COMPILE_CMDS) \
-		| \
-		$($(target)_$(source)_DEPORD_) \
-		$$$$($(target)_INTERMEDIATES) \
-		$$$$($(target)_INTERMEDIATES.$(bld_trg)) \
-		$$$$($(target)_INTERMEDIATES.$(bld_trg).$(bld_trg_arch)) \
-		$$$$($(target)_INTERMEDIATES.$(bld_trg_arch)) \
-		$$$$($(target)_INTERMEDIATES.$(bld_trg_cpu)) \
-		$$$$($(target)_INTERMEDIATES.$(bld_type))
+		$($(target)_$(source)_DEPEND_) $(value _DEP_COMPILE_CMDS) \
+		| $($(target)_$(source)_DEPORD_) $(target_intermediate_vars)
 	%$$(call MSG_COMPILE,$(target),$(source),$$@,$(type))
 else
 $(obj) + $($(target)_$(source)_OUTPUT_) +| $($(target)_$(source)_OUTPUT_MAYBE_) : \
-		$($(target)_$(source)_DEPEND_) \
-		$(value _DEP_COMPILE_CMDS) \
-		| \
-		$($(target)_$(source)_DEPORD_) \
-		$$$$($(target)_INTERMEDIATES) \
-		$$$$($(target)_INTERMEDIATES.$(bld_trg)) \
-		$$$$($(target)_INTERMEDIATES.$(bld_trg).$(bld_trg_arch)) \
-		$$$$($(target)_INTERMEDIATES.$(bld_trg_arch)) \
-		$$$$($(target)_INTERMEDIATES.$(bld_trg_cpu)) \
-		$$$$($(target)_INTERMEDIATES.$(bld_type))
+		$($(target)_$(source)_DEPEND_) $(value _DEP_COMPILE_CMDS) \
+		| $($(target)_$(source)_DEPORD_) $(target_intermediate_vars)
 	%$$(call MSG_COMPILE,$(target),$(source),$$@,$(type))
 ifndef TOOL_$(tool)_COMPILE_$(type)_DONT_PURGE_OUTPUT
 	$$(QUIET)$$(RM) -f -- $(dep) $(obj) $($(target)_$(source)_OUTPUT_) $($(target)_OUTPUT_MAYBE_)
@@ -105,7 +160,6 @@ ifndef NO_COMPILE_CMDS_DEPS
 endif
 
 $(basename $(notdir $(obj))).o: $(obj)
-$(basename $(notdir $(obj))).obj: $(obj)
 
 ## @todo make this 'local cmds,output,output_maybe,depend and depord' in 0.2.x or when a new kb-src-one is added.
 $(target)_$(source)_CMDS_ :=
@@ -115,6 +169,9 @@ $(target)_$(source)_DEPEND_ :=
 $(target)_$(source)_DEPORD_ :=
 endef # def_target_source_rule
 $(eval-opt-var def_target_source_rule)
+##
+## Legacy legacy legacy - end
+
 
 
 ## wrapper the link command dependency check.
@@ -212,32 +269,32 @@ endef
 # @{
 define def_src_handler_c
 local type := C
- $(kb-src-one 2)
+ $(kb-src-one 3)
 endef
 
 define def_src_handler_cxx
 local type := CXX
- $(kb-src-one 2)
+ $(kb-src-one 3)
 endef
 
 define def_src_handler_objc
 local type := OBJC
- $(kb-src-one 2)
+ $(kb-src-one 3)
 endef
 
 define def_src_handler_objcxx
 local type := OBJCXX
- $(kb-src-one 2)
+ $(kb-src-one 3)
 endef
 
 define def_src_handler_asm
 local type := AS
- $(kb-src-one 2)
+ $(kb-src-one 3)
 endef
 
 define def_src_handler_rc
 local type := RC
- $(kb-src-one 2)
+ $(kb-src-one 3)
 endef
 
 define def_src_handler_obj
@@ -488,6 +545,27 @@ $(call KB_FN_ASSIGN_DEPRECATED,TARGET_$(target),$($(target)_1_TARGET), $(target)
 # no local here - must be writable across some foreachs.
 othersrc          :=
 $(target)_2_OBJS  :=
+$(target)_2_INTERMEDIATES =
+
+# kObjCache.
+ifdef KBUILD_USE_KOBJCACHE
+ ifneq ($($(target)_KOBJCACHE),)
+local use_objcache := 1
+ else
+local use_objcache :=
+ endif
+local use_objcache :=
+endif
+
+# Target level intermediates (before units!).
+local target_intermediate_vars := $$$$($(target)_2_INTERMEDIATES) $(foreach var, \
+	$(target)_INTERMEDIATES \
+	$(target)_INTERMEDIATES.$(bld_trg) \
+	$(target)_INTERMEDIATES.$(bld_trg).$(bld_trg_arch) \
+	$(target)_INTERMEDIATES.$(bld_trg_arch) \
+	$(target)_INTERMEDIATES.$(bld_trg_cpu) \
+	$(target)_INTERMEDIATES.$(bld_type) \
+	,$(if-expr defined($(var)),$$$$($(var)),))
 
 # Do units pre source callouts.
 local units       := \
@@ -693,6 +771,27 @@ endif
 # no local here - must be writable across some foreachs.
 othersrc          :=
 $(target)_2_OBJS  :=
+$(target)_2_INTERMEDIATES =
+
+# kObjCache.
+ifdef KBUILD_USE_KOBJCACHE
+ ifneq ($($(target)_KOBJCACHE),)
+local use_objcache := 1
+ else
+local use_objcache :=
+ endif
+local use_objcache :=
+endif
+
+# Target level intermediates (before units!).
+local target_intermediate_vars := $$$$($(target)_2_INTERMEDIATES) $(foreach var, \
+	$(target)_INTERMEDIATES \
+	$(target)_INTERMEDIATES.$(bld_trg) \
+	$(target)_INTERMEDIATES.$(bld_trg).$(bld_trg_arch) \
+	$(target)_INTERMEDIATES.$(bld_trg_arch) \
+	$(target)_INTERMEDIATES.$(bld_trg_cpu) \
+	$(target)_INTERMEDIATES.$(bld_type) \
+	,$(if-expr defined($(var)),$$$$($(var)),))
 
 # Do units pre source callouts.
 local units       := \

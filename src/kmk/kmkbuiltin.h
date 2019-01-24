@@ -1,4 +1,4 @@
-/* $Id: kmkbuiltin.h 3224 2018-04-08 15:49:07Z bird $ */
+/* $Id: kmkbuiltin.h 3273 2019-01-04 00:48:51Z bird $ */
 /** @file
  * kMk Builtin command handling.
  */
@@ -34,6 +34,9 @@
 # include <sys/types.h>
 #endif
 #include <fcntl.h>
+#ifdef HAVE_STDINT_H
+# include <stdint.h>
+#endif
 
 /* For the GNU/hurd weirdo. */
 #ifndef PATH_MAX
@@ -70,7 +73,7 @@
 
 
 #include "kbuild_version.h"
-#ifndef KMK_BUILTIN_STANDALONE
+#if !defined(KMK_BUILTIN_STANDALONE) && !defined(KWORKER)
 # include "output.h"
 #endif
 
@@ -105,10 +108,10 @@ typedef struct KMKBUILTINENTRY
     {
         struct
         {
-            char    cch;
-            char    sz[15];
+            unsigned char   cch;
+            char            sz[15];
         } s;
-        size_t      cchAndStart;
+        size_t              cchAndStart;
     } uName;
     union
     {

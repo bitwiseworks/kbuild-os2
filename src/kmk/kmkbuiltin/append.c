@@ -1,4 +1,4 @@
-/* $Id: append.c 3192 2018-03-26 20:25:56Z bird $ */
+/* $Id: append.c 3246 2018-12-25 21:02:04Z bird $ */
 /** @file
  * kMk Builtin command - append text to file.
  */
@@ -35,6 +35,7 @@
 #endif
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <fcntl.h>
 #ifdef HAVE_UNISTD_H
 # include <unistd.h>
@@ -44,9 +45,6 @@
 #endif
 #ifdef HAVE_ALLOCA_H
 # include <alloca.h>
-#endif
-#ifdef KBUILD_OS_OS2
-# include <stdlib.h> /* malloc/free */
 #endif
 #if !defined(KMK_BUILTIN_STANDALONE) && defined(KBUILD_OS_WINDOWS) && defined(CONFIG_NEW_WIN_CHILDREN)
 # include "../w32/winchildren.h"

@@ -1,4 +1,4 @@
-/* $Id: err.c 3192 2018-03-26 20:25:56Z bird $ */
+/* $Id: err.c 3237 2018-12-25 04:11:26Z bird $ */
 /** @file
  * Override err.h so we get the program name right.
  */
@@ -28,6 +28,12 @@
 *******************************************************************************/
 #ifdef HAVE_CONFIG_H
 # include "config.h"
+# ifdef HAVE_STDLIB_H
+#  include <stdlib.h>
+# endif
+# ifdef HAVE_STDINT_H
+#  include <stdint.h>
+# endif
 #else
 # include <stdlib.h>
 # define snprintf _snprintf
@@ -46,10 +52,6 @@
 # include "console.h"
 # undef fwrite
 # define fwrite maybe_con_fwrite
-#endif
-
-#ifdef KBUILD_OS_OS2
-# include <stdlib.h> /* malloc/free */
 #endif
 
 int err(PKMKBUILTINCTX pCtx, int eval, const char *fmt, ...)
