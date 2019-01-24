@@ -1,4 +1,4 @@
-/* $Id: kObjCache.c 2955 2016-09-21 19:05:53Z bird $ */
+/* $Id: kObjCache.c 3110 2017-10-20 19:14:56Z bird $ */
 /** @file
  * kObjCache - Object Cache.
  */
@@ -42,7 +42,11 @@
 #include <limits.h>
 #include <ctype.h>
 #ifndef PATH_MAX
-# define PATH_MAX _MAX_PATH /* windows */
+# ifdef _MAX_PATH
+#  define PATH_MAX _MAX_PATH /* windows */
+# else
+#  define PATH_MAX 4096 /* gnu hurd */
+# endif
 #endif
 #if defined(__OS2__) || defined(__WIN__)
 # include <process.h>
@@ -68,6 +72,9 @@
 # include <sys/time.h>
 # ifndef O_BINARY
 #  define O_BINARY 0
+# endif
+# ifndef __sun__
+#  include <sys/file.h> /* flock */
 # endif
 #endif
 #if defined(__WIN__)
@@ -1070,6 +1077,10 @@ kOCDepConsumer(PKOCDEP pDepState, const char *pszInput, size_t cchInput)
                     off++;
                 }
             }
+
+            case kOCDepState_Invalid:
+                assert(0);
+                break;
         }
 
         /* next newline */
@@ -2354,10 +2365,10 @@ static void kOCEntryRead(PKOCENTRY pEntry)
                 else if (!strncmp(g_szLine, "cc-argv-#", sizeof("cc-argv-#") - 1))
                 {
                     char *pszNext;
-                    unsigned i = strtoul(&g_szLine[sizeof("cc-argv-#") - 1], &pszNext, 0);
-                    if ((fBad = i >= pEntry->Old.cArgvCompile || pEntry->Old.papszArgvCompile[i] || (pszNext && *pszNext)))
+                    unsigned iArg = strtoul(&g_szLine[sizeof("cc-argv-#") - 1], &pszNext, 0);
+                    if ((fBad = iArg >= pEntry->Old.cArgvCompile || pEntry->Old.papszArgvCompile[iArg] || (pszNext && *pszNext)))
                         break;
-                    pEntry->Old.papszArgvCompile[i] = xstrdup(pszVal);
+                    pEntry->Old.papszArgvCompile[iArg] = xstrdup(pszVal);
                 }
                 else if (!strcmp(g_szLine, "cc-argv-sum"))
                 {
@@ -2490,13 +2501,13 @@ static void kOCEntryWrite(PKOCENTRY pEntry)
         do { int cch = expr; if (cch >= KOBJCACHE_MAX_LINE_LEN) FatalDie("Line too long: %d (max %d)\nexpr: %s\n", cch, KOBJCACHE_MAX_LINE_LEN, #expr); } while (0)
 
     fprintf(pFile, "magic=kObjCacheEntry-v0.1.1\n");
-    CHECK_LEN(fprintf(pFile, "target=%s\n", pEntry->New.pszTarget ? pEntry->New.pszTarget : pEntry->Old.pszTarget));
-    CHECK_LEN(fprintf(pFile, "key=%lu\n", (unsigned long)pEntry->uKey));
+    CHECK_LEN(fprintf(pFile, "target=%s\n",     pEntry->New.pszTarget ? pEntry->New.pszTarget : pEntry->Old.pszTarget));
+    CHECK_LEN(fprintf(pFile, "key=%lu\n",       (unsigned long)pEntry->uKey));
     CHECK_LEN(fprintf(pFile, "obj=%s\n",        pEntry->New.pszObjName ? pEntry->New.pszObjName : pEntry->Old.pszObjName));
     CHECK_LEN(fprintf(pFile, "cpp=%s\n",        pEntry->New.pszCppName ? pEntry->New.pszCppName : pEntry->Old.pszCppName));
-    CHECK_LEN(fprintf(pFile, "cpp-size=%lu\n",  pEntry->New.pszCppName ? pEntry->New.cbCpp      : pEntry->Old.cbCpp));
-    CHECK_LEN(fprintf(pFile, "cpp-ms=%lu\n",    pEntry->New.pszCppName ? pEntry->New.cMsCpp     : pEntry->Old.cMsCpp));
-    CHECK_LEN(fprintf(pFile, "cc-ms=%lu\n",     pEntry->New.pszCppName ? pEntry->New.cMsCompile : pEntry->Old.cMsCompile));
+    CHECK_LEN(fprintf(pFile, "cpp-size=%lu\n",  (unsigned long)(pEntry->New.pszCppName ? pEntry->New.cbCpp      : pEntry->Old.cbCpp)));
+    CHECK_LEN(fprintf(pFile, "cpp-ms=%lu\n",    (unsigned long)(pEntry->New.pszCppName ? pEntry->New.cMsCpp     : pEntry->Old.cMsCpp)));
+    CHECK_LEN(fprintf(pFile, "cc-ms=%lu\n",     (unsigned long)(pEntry->New.pszCppName ? pEntry->New.cMsCompile : pEntry->Old.cMsCompile)));
 
     if (!kOCSumIsEmpty(&pEntry->New.SumCompArgv))
     {
@@ -5087,7 +5098,7 @@ int main(int argc, char **argv)
         }
         else if (!strcmp(argv[i], "-V") || !strcmp(argv[i], "--version"))
         {
-            printf("kObjCache - kBuild version %d.%d.%d ($Revision: 2955 $)\n"
+            printf("kObjCache - kBuild version %d.%d.%d ($Revision: 3110 $)\n"
                    "Copyright (c) 2007-2012 knut st. osmundsen\n",
                    KBUILD_VERSION_MAJOR, KBUILD_VERSION_MINOR, KBUILD_VERSION_PATCH);
             return 0;

@@ -1,10 +1,10 @@
-# $Id: footer-pass2-compiling-targets.kmk 2952 2016-09-21 18:52:08Z bird $
+# $Id: footer-pass2-compiling-targets.kmk 3135 2018-03-01 18:45:26Z bird $
 ## @file
 # kBuild - Footer - Target lists - Pass 2 - Compiling Targets.
 #
 
 #
-# Copyright (c) 2004-2014 knut st. osmundsen <bird-kBuild-spam-xiv@anduin.net>
+# Copyright (c) 2004-2017 knut st. osmundsen <bird-kBuild-spam-xviiv@anduin.net>
 #
 # This file is part of kBuild.
 #
@@ -46,6 +46,12 @@ ifndef NO_COMPILE_CMDS_DEPS
  endif
 else
  _DEP_COMPILE_CMDS =
+endif
+
+
+## Temporary for the compile rule below.
+if "$(KBUILD_KMK_REVISION)" >= 3134
+ KBUILD_HAVE_OPTIMIZED_APPEND := 1
 endif
 
 
@@ -91,10 +97,17 @@ endif
 $($(target)_$(source)_CMDS_)
 
 ifndef NO_COMPILE_CMDS_DEPS
-	%$$(QUIET2)$$(APPEND) '$(dep)'
-	%$$(QUIET2)$$(APPEND) '$(dep)' 'define $(target)_$(subst :,_,$(source))_CMDS_PREV_'
+ ifdef KBUILD_HAVE_OPTIMIZED_APPEND
+	%$$(QUIET2)$$(APPEND) -in '$(dep)' \
+		'' \
+		'define $(target)_$(subst :,_,$(source))_CMDS_PREV_' \
+		'--insert-command=$(obj)' \
+		'endef'
+ else
+	%$$(QUIET2)$$(APPEND) -n '$(dep)' '' 'define $(target)_$(subst :,_,$(source))_CMDS_PREV_'
 	%$$(QUIET2)$$(APPEND) -c '$(dep)' '$(obj)'
 	%$$(QUIET2)$$(APPEND) '$(dep)' 'endef'
+ endif
 endif
 
 $(basename $(notdir $(obj))).o: $(obj)
@@ -563,8 +576,8 @@ endif
 
 
 # Custom pre-link actions.
-local pre_cmds  := $(evalcall def_fn_prop_get_first_defined,PRE_CMDS)
-local post_cmds := $(evalcall def_fn_prop_get_first_defined,POST_CMDS)
+local pre_cmds  := $(evalcall def_fn_prop_get_all_prefixed_priority_last,PRE_CMDS,$(NLTAB))
+local post_cmds := $(evalcall def_fn_prop_get_all_prefixed_priority_last,POST_CMDS,$(NLTAB))
 
 # eliminate this guy?
 local objs = $($(target)_2_OBJS)
@@ -887,8 +900,8 @@ local debug_stage   := $(evalcall def_fn_prop_get_first_defined,DEBUG_STAGE)
 local debug_nostage := $(evalcall def_fn_prop_get_first_word,DEBUG_NOSTAGE)
 
 # Custom pre/post-link actions.
-local pre_cmds      := $(evalcall def_fn_prop_get_first_defined,PRE_CMDS)
-local post_cmds     := $(evalcall def_fn_prop_get_first_defined,POST_CMDS)
+local pre_cmds      := $(evalcall def_fn_prop_get_all_prefixed_priority_last,PRE_CMDS,$(NLTAB))
+local post_cmds     := $(evalcall def_fn_prop_get_all_prefixed_priority_last,POST_CMDS,$(NLTAB))
 
 # eliminate this guy?
 local objs = $($(target)_2_OBJS)

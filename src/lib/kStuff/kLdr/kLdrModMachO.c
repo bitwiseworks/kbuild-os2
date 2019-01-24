@@ -1,4 +1,4 @@
-/* $Id: kLdrModMachO.c 91 2016-09-07 14:29:58Z bird $ */
+/* $Id: kLdrModMachO.c 112 2018-07-04 09:37:39Z bird $ */
 /** @file
  * kLdr - The Module Interpreter for the MACH-O format.
  */
@@ -420,12 +420,18 @@ static int kldrModMachODoCreate(PKRDR pRdr, KLDRFOFF offImage, KU32 fOpenFlags, 
             pMod->enmEndian = KLDRENDIAN_LITTLE;
             switch (s.Hdr32.cpusubtype)
             {
-                case CPU_SUBTYPE_I386_ALL:          pMod->enmCpu = KCPU_X86_32_BLEND; break;
-                /*case CPU_SUBTYPE_386: ^^           pMod->enmCpu = KCPU_I386; break;*/
-                case CPU_SUBTYPE_486:               pMod->enmCpu = KCPU_I486; break;
-                case CPU_SUBTYPE_486SX:             pMod->enmCpu = KCPU_I486SX; break;
-                /*case CPU_SUBTYPE_586: vv */
-                case CPU_SUBTYPE_PENT:              pMod->enmCpu = KCPU_I586; break;
+                case CPU_SUBTYPE_I386_ALL: /* == CPU_SUBTYPE_386 */
+                    pMod->enmCpu = KCPU_X86_32_BLEND;
+                    break;
+                case CPU_SUBTYPE_486:
+                    pMod->enmCpu = KCPU_I486;
+                    break;
+                case CPU_SUBTYPE_486SX:
+                    pMod->enmCpu = KCPU_I486SX;
+                    break;
+                case CPU_SUBTYPE_PENT: /* == CPU_SUBTYPE_586 */
+                    pMod->enmCpu = KCPU_I586;
+                    break;
                 case CPU_SUBTYPE_PENTPRO:
                 case CPU_SUBTYPE_PENTII_M3:
                 case CPU_SUBTYPE_PENTII_M5:
@@ -433,12 +439,15 @@ static int kldrModMachODoCreate(PKRDR pRdr, KLDRFOFF offImage, KU32 fOpenFlags, 
                 case CPU_SUBTYPE_CELERON_MOBILE:
                 case CPU_SUBTYPE_PENTIUM_3:
                 case CPU_SUBTYPE_PENTIUM_3_M:
-                case CPU_SUBTYPE_PENTIUM_3_XEON:    pMod->enmCpu = KCPU_I686; break;
+                case CPU_SUBTYPE_PENTIUM_3_XEON:
+                    pMod->enmCpu = KCPU_I686;
+                    break;
                 case CPU_SUBTYPE_PENTIUM_M:
                 case CPU_SUBTYPE_PENTIUM_4:
                 case CPU_SUBTYPE_PENTIUM_4_M:
                 case CPU_SUBTYPE_XEON:
-                case CPU_SUBTYPE_XEON_MP:           pMod->enmCpu = KCPU_P4; break;
+                case CPU_SUBTYPE_XEON_MP:
+                    pMod->enmCpu = KCPU_P4;
                     break;
 
                 default:
@@ -749,6 +758,7 @@ static int  kldrModMachOPreParseLoadCommands(KU8 *pbLoadCommands, const mach_hea
                                 /** @todo this requires a query API or flag... (e.g. C++ constructors) */ \
                                 KLDRMODMACHO_CHECK_RETURN(fOpenFlags & KLDRMOD_OPEN_FLAGS_FOR_INFO, \
                                                           KLDR_ERR_MACHO_UNSUPPORTED_INIT_SECTION); \
+                                /* Falls through. */ \
                             case S_MOD_TERM_FUNC_POINTERS: \
                                 /** @todo this requires a query API or flag... (e.g. C++ destructors) */ \
                                 KLDRMODMACHO_CHECK_RETURN(fOpenFlags & KLDRMOD_OPEN_FLAGS_FOR_INFO, \
@@ -852,7 +862,7 @@ static int  kldrModMachOPreParseLoadCommands(KU8 *pbLoadCommands, const mach_hea
                                     if (cSegments == 1) /* The link address is set by the first segment. */  \
                                         *pLinkAddress = pSect->addr; \
                                 } \
-                                /* fall thru */ \
+                                /* Falls through. */ \
                             case MH_EXECUTE: \
                             case MH_DYLIB: \
                             case MH_BUNDLE: \
@@ -1854,7 +1864,7 @@ static int kldrModMachODoQuerySymbol32Bit(PKLDRMODMACHO pModMachO, const macho_n
         case MACHO_N_INDR:
             /** @todo implement indirect and prebound symbols. */
         default:
-            KLDRMODMACHO_CHECK_RETURN(0, KLDR_ERR_TODO);
+            KLDRMODMACHO_FAILED_RETURN(KLDR_ERR_TODO);
     }
 
     return 0;
@@ -1982,7 +1992,7 @@ static int kldrModMachODoQuerySymbol64Bit(PKLDRMODMACHO pModMachO, const macho_n
         case MACHO_N_INDR:
             /** @todo implement indirect and prebound symbols. */
         default:
-            KLDRMODMACHO_CHECK_RETURN(0, KLDR_ERR_TODO);
+            KLDRMODMACHO_FAILED_RETURN(KLDR_ERR_TODO);
     }
 
     return 0;
@@ -2029,7 +2039,7 @@ static int kldrModMachOEnumSymbols(PKLDRMOD pMod, const void *pvBits, KLDRADDR B
         }
     }
     else
-        KLDRMODMACHO_CHECK_RETURN(0, KLDR_ERR_TODO);
+        KLDRMODMACHO_FAILED_RETURN(KLDR_ERR_TODO);
 
     return rc;
 }
@@ -2133,7 +2143,7 @@ static int kldrModMachODoEnumSymbols32Bit(PKLDRMODMACHO pModMachO, const macho_n
             case MACHO_N_INDR:
                 /** @todo implement indirect and prebound symbols. */
             default:
-                KLDRMODMACHO_CHECK_RETURN(0, KLDR_ERR_TODO);
+                KLDRMODMACHO_FAILED_RETURN(KLDR_ERR_TODO);
         }
 
         /*
@@ -2245,7 +2255,7 @@ static int kldrModMachODoEnumSymbols64Bit(PKLDRMODMACHO pModMachO, const macho_n
             case MACHO_N_INDR:
                 /** @todo implement indirect and prebound symbols. */
             default:
-                KLDRMODMACHO_CHECK_RETURN(0, KLDR_ERR_TODO);
+                KLDRMODMACHO_FAILED_RETURN(KLDR_ERR_TODO);
         }
 
         /*
@@ -2774,7 +2784,7 @@ static int  kldrModMachOObjDoFixups(PKLDRMODMACHO pModMachO, void *pvMapping, KL
                                                    (macho_nlist_64_t *)pModMachO->pvaSymbols,
                                                    pModMachO->cSymbols, NewBaseAddress);
             else
-                KLDRMODMACHO_CHECK_RETURN(0, KLDR_ERR_TODO);
+                KLDRMODMACHO_FAILED_RETURN(KLDR_ERR_TODO);
             if (rc)
                 break;
         }
@@ -2887,9 +2897,9 @@ static int  kldrModMachOFixupSectionGeneric32Bit(PKLDRMODMACHO pModMachO, KU8 *p
 
                     case MACHO_N_INDR:
                     case MACHO_N_PBUD:
-                        KLDRMODMACHO_CHECK_RETURN(0, KLDR_ERR_TODO);
+                        KLDRMODMACHO_FAILED_RETURN(KLDR_ERR_TODO);
                     default:
-                        KLDRMODMACHO_CHECK_RETURN(0, KLDR_ERR_MACHO_BAD_SYMBOL);
+                        KLDRMODMACHO_FAILED_RETURN(KLDR_ERR_MACHO_BAD_SYMBOL);
                 }
             }
             else if (Fixup.r.r_symbolnum != R_ABS)
@@ -3053,7 +3063,7 @@ static int  kldrModMachOFixupSectionAMD64(PKLDRMODMACHO pModMachO, KU8 *pbSectBi
             case 2: SymAddr = *uFixVirgin.pi32; break;
             case 3: SymAddr = *uFixVirgin.pi64; break;
             default:
-                KLDRMODMACHO_CHECK_RETURN(0, KLDR_ERR_BAD_FIXUP);
+                KLDRMODMACHO_FAILED_RETURN(KLDR_ERR_BAD_FIXUP);
         }
 
         /* Add symbol / section address. */
@@ -3079,9 +3089,9 @@ static int  kldrModMachOFixupSectionAMD64(PKLDRMODMACHO pModMachO, KU8 *pbSectBi
                             break;
                         case MACHO_N_INDR:
                         case MACHO_N_PBUD:
-                            KLDRMODMACHO_CHECK_RETURN(0, KLDR_ERR_TODO);
+                            KLDRMODMACHO_FAILED_RETURN(KLDR_ERR_TODO);
                         default:
-                            KLDRMODMACHO_CHECK_RETURN(0, KLDR_ERR_MACHO_BAD_SYMBOL);
+                            KLDRMODMACHO_FAILED_RETURN(KLDR_ERR_MACHO_BAD_SYMBOL);
                     }
                     SymAddr = sizeof(KU64) * Fixup.r.r_symbolnum + pModMachO->GotRVA + NewBaseAddress;
                     KLDRMODMACHO_CHECK_RETURN(Fixup.r.r_length == 2, KLDR_ERR_BAD_FIXUP);
@@ -3095,6 +3105,7 @@ static int  kldrModMachOFixupSectionAMD64(PKLDRMODMACHO pModMachO, KU8 *pbSectBi
                 case X86_64_RELOC_SIGNED_2:
                 case X86_64_RELOC_SIGNED_4:
                     KLDRMODMACHO_CHECK_RETURN(Fixup.r.r_pcrel, KLDR_ERR_BAD_FIXUP);
+                    /* Falls through. */
                 default:
                 {
                     /* Adjust with fixup specific addend and vierfy unsigned/r_pcrel. */
@@ -3114,7 +3125,7 @@ static int  kldrModMachOFixupSectionAMD64(PKLDRMODMACHO pModMachO, KU8 *pbSectBi
                             SymAddr -= 4;
                             break;
                         default:
-                            KLDRMODMACHO_CHECK_RETURN(0, KLDR_ERR_BAD_FIXUP);
+                            KLDRMODMACHO_FAILED_RETURN(KLDR_ERR_BAD_FIXUP);
                     }
 
                     switch (pSym->n_type & MACHO_N_TYPE)
@@ -3146,9 +3157,9 @@ static int  kldrModMachOFixupSectionAMD64(PKLDRMODMACHO pModMachO, KU8 *pbSectBi
 
                         case MACHO_N_INDR:
                         case MACHO_N_PBUD:
-                            KLDRMODMACHO_CHECK_RETURN(0, KLDR_ERR_TODO);
+                            KLDRMODMACHO_FAILED_RETURN(KLDR_ERR_TODO);
                         default:
-                            KLDRMODMACHO_CHECK_RETURN(0, KLDR_ERR_MACHO_BAD_SYMBOL);
+                            KLDRMODMACHO_FAILED_RETURN(KLDR_ERR_MACHO_BAD_SYMBOL);
                     }
                     break;
                 }
@@ -3179,9 +3190,9 @@ static int  kldrModMachOFixupSectionAMD64(PKLDRMODMACHO pModMachO, KU8 *pbSectBi
 
                         case MACHO_N_INDR:
                         case MACHO_N_PBUD:
-                            KLDRMODMACHO_CHECK_RETURN(0,KLDR_ERR_TODO);
+                            KLDRMODMACHO_FAILED_RETURN(KLDR_ERR_TODO);
                         default:
-                            KLDRMODMACHO_CHECK_RETURN(0, KLDR_ERR_MACHO_BAD_SYMBOL);
+                            KLDRMODMACHO_FAILED_RETURN(KLDR_ERR_MACHO_BAD_SYMBOL);
                     }
 
                     /* Load the 2nd fixup, check sanity. */
@@ -3220,9 +3231,9 @@ static int  kldrModMachOFixupSectionAMD64(PKLDRMODMACHO pModMachO, KU8 *pbSectBi
 
                             case MACHO_N_INDR:
                             case MACHO_N_PBUD:
-                                KLDRMODMACHO_CHECK_RETURN(0, KLDR_ERR_TODO);
+                                KLDRMODMACHO_FAILED_RETURN(KLDR_ERR_TODO);
                             default:
-                                KLDRMODMACHO_CHECK_RETURN(0, KLDR_ERR_MACHO_BAD_SYMBOL);
+                                KLDRMODMACHO_FAILED_RETURN(KLDR_ERR_MACHO_BAD_SYMBOL);
                         }
                     }
                     else if (Fixup2.r_symbolnum != R_ABS)
@@ -3233,7 +3244,7 @@ static int  kldrModMachOFixupSectionAMD64(PKLDRMODMACHO pModMachO, KU8 *pbSectBi
                         SymAddr += pSymSect->RVA + NewBaseAddress;
                     }
                     else
-                        KLDRMODMACHO_CHECK_RETURN(0, KLDR_ERR_BAD_FIXUP);
+                        KLDRMODMACHO_FAILED_RETURN(KLDR_ERR_BAD_FIXUP);
                 }
                 break;
             }
@@ -3260,7 +3271,7 @@ static int  kldrModMachOFixupSectionAMD64(PKLDRMODMACHO pModMachO, KU8 *pbSectBi
                 /*case X86_64_RELOC_GOT: */
                 /*case X86_64_RELOC_SUBTRACTOR: - must be r_extern=1 says as. */
                 default:
-                    KLDRMODMACHO_CHECK_RETURN(0, KLDR_ERR_BAD_FIXUP);
+                    KLDRMODMACHO_FAILED_RETURN(KLDR_ERR_BAD_FIXUP);
             }
             if (Fixup.r.r_symbolnum != R_ABS)
             {
@@ -3293,7 +3304,7 @@ static int  kldrModMachOFixupSectionAMD64(PKLDRMODMACHO pModMachO, KU8 *pbSectBi
                 *uFix.pu32 = (KU32)SymAddr;
                 break;
             default:
-                KLDRMODMACHO_CHECK_RETURN(0, KLDR_ERR_BAD_FIXUP);
+                KLDRMODMACHO_FAILED_RETURN(KLDR_ERR_BAD_FIXUP);
         }
     }
 
@@ -3671,7 +3682,7 @@ static int kldrModMachOMakeGOT(PKLDRMODMACHO pModMachO, void *pvBits, KLDRADDR N
                 }
 
                 default:
-                    KLDRMODMACHO_CHECK_RETURN(0, KLDR_ERR_TODO);
+                    KLDRMODMACHO_FAILED_RETURN(KLDR_ERR_TODO);
             }
         }
     }

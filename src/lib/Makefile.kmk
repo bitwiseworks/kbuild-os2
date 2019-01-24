@@ -1,4 +1,4 @@
-# $Id: Makefile.kmk 2994 2016-11-01 22:41:41Z bird $
+# $Id: Makefile.kmk 3114 2017-10-29 18:02:04Z bird $
 ## @file
 # Sub-makefile for various libraries and stuff.
 #
@@ -40,6 +40,7 @@ kUtil_SOURCES = \
 	md5.c \
 	maybe_con_write.c \
 	maybe_con_fwrite.c \
+       dos2unix.c \
 	kbuild_version.c
 kUtil_SOURCES.win = \
 	msc_buffered_printf.c \
@@ -52,6 +53,7 @@ kUtil_SOURCES.win = \
        nt/ntdir.c \
        nt/ntstat.c \
        nt/ntunlink.c \
+       nt/ntutimes.c \
        nt/fts-nt.c \
        nt/kFsCache.c \
        kStuff/kHlp/CRT/kHlpCRTString.cpp \

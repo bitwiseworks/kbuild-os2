@@ -1,4 +1,4 @@
-/* $Id: kHlpInt2Ascii.c 29 2009-07-01 20:30:29Z bird $ */
+/* $Id: kHlpInt2Ascii.c 113 2018-07-12 11:34:27Z bird $ */
 /** @file
  * kHlpString - kHlpInt2Ascii.
  */
@@ -48,36 +48,36 @@ KHLP_DECL(char *) kHlpInt2Ascii(char *psz, KSIZE cch, long lVal, unsigned iBase)
     static const char s_szDigits[] = "0123456789abcdefghijklmnopqrstuvwxyz";
     char *pszRet = psz;
 
-    if (cch >= (lVal < 0 ? 3U : 2U) && psz)
+    if (psz != NULL)
     {
-        /* prefix */
-        if (lVal < 0)
+        if (cch >= (lVal < 0 ? 3U : 2U))
         {
-            *psz++ = '-';
-            cch--;
-            lVal = -lVal;
+            /* prefix */
+            if (lVal < 0)
+            {
+                *psz++ = '-';
+                cch--;
+                lVal = -lVal;
+            }
+
+            /* the digits */
+            do
+            {
+                *psz++ = s_szDigits[lVal % iBase];
+                cch--;
+                lVal /= iBase;
+            } while (lVal && cch > 1);
+
+            /* overflow indicator */
+            if (lVal)
+                psz[-1] = '+';
         }
-
-        /* the digits */
-        do
-        {
-            *psz++ = s_szDigits[lVal % iBase];
-            cch--;
-            lVal /= iBase;
-        } while (lVal && cch > 1);
-
-        /* overflow indicator */
-        if (lVal)
-            psz[-1] = '+';
+        else if (cch > 1)
+            *psz++ = '+';
+        else if (cch < 1)
+            return pszRet;
+        *psz = '\0';
     }
-    else if (!pszRet)
-        return pszRet;
-    else if (cch < 1 || !pszRet)
-        return pszRet;
-    else
-        *psz++ = '+';
-    *psz = '\0';
-
     return pszRet;
 }
 

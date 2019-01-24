@@ -1,4 +1,4 @@
-/* $Id: redirect.c 3039 2017-05-10 10:55:51Z bird $ */
+/* $Id: redirect.c 3110 2017-10-20 19:14:56Z bird $ */
 /** @file
  * kmk_redirect - Do simple program <-> file redirection (++).
  */
@@ -44,14 +44,29 @@
 # include <io.h>
 # include "quote_argv.h"
 #else
+# ifdef __ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__
+#  if __ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__ >= 1050
+#   define USE_POSIX_SPAWN
+#  endif
+# elif !defined(KBUILD_OS_WINDOWS) && !defined(KBUILD_OS_OS2)
+#  define USE_POSIX_SPAWN
+# endif
 # include <unistd.h>
-# include <spawn.h>
+# ifdef USE_POSIX_SPAWN
+#  include <spawn.h>
+# endif
+# include <sys/wait.h>
 #endif
 
 #include <k/kDefs.h>
 #include <k/kTypes.h>
 #include "err.h"
 #include "kbuild_version.h"
+#if defined(__gnu_hurd__) && !defined(kmk_builtin_redirect) /* need constant */
+# undef GET_PATH_MAX
+# undef PATH_MAX
+# define GET_PATH_MAX PATH_MAX
+#endif
 #include "kmkbuiltin.h"
 #ifdef KMK
 # ifdef KBUILD_OS_WINDOWS
@@ -68,10 +83,6 @@
 # ifndef LIBPATHSTRICT
 #  define LIBPATHSTRICT 3
 # endif
-#endif
-
-#if !defined(KBUILD_OS_WINDOWS) && !defined(KBUILD_OS_OS2)
-# define USE_POSIX_SPAWN
 #endif
 
 
@@ -383,7 +394,8 @@ static int kRedirectOpenWithoutConflict(const char *pszFilename, int fOpen, mode
 #elif defined(O_CLOEXEC)
     int const   fNoInherit = O_CLOEXEC;
 #else
-# error "port me"
+    int const   fNoInherit = 0;
+# define USE_FD_CLOEXEC
 #endif
     int         aFdTries[32];
     unsigned    cTries;
@@ -405,7 +417,9 @@ static int kRedirectOpenWithoutConflict(const char *pszFilename, int fOpen, mode
         if (fdOpened != fdTarget)
             return fdOpened;
 #ifndef _MSC_VER /* Stupid, stupid MSVCRT!  No friggin way of making a handle inheritable (or not). */
-        if (fcntl(fdOpened, F_SETFD, FD_CLOEXEC) != -1)
+# ifndef USE_FD_CLOEXEC
+        if (fcntl(fdOpened, F_SETFD, 0) != -1)
+# endif
             return fdOpened;
 #endif
     }
@@ -427,8 +441,13 @@ static int kRedirectOpenWithoutConflict(const char *pszFilename, int fOpen, mode
                 )
             {
 #ifndef _MSC_VER
-                if (   fdOpened != fdTarget
+# ifdef USE_FD_CLOEXEC
+                if (   fdOpened == fdTarget
                     || fcntl(fdOpened, F_SETFD, FD_CLOEXEC) != -1)
+# else
+                if (   fdOpened != fdTarget
+                    || fcntl(fdOpened, F_SETFD, 0) != -1)
+# endif
 #endif
                 {
                     while (cTries-- > 0)
@@ -931,7 +950,11 @@ static int kRedirectDoSpawn(const char *pszExecutable, int cArgs, char **papszAr
                  */
 # if defined(KBUILD_OS_WINDOWS) || defined(KBUILD_OS_OS2)
                 errno  = 0;
+#  if defined(KBUILD_OS_WINDOWS)
+                rcExit = (int)_spawnvpe(_P_WAIT, pszExecutable, papszArgs, papszEnvVars);
+#  else
                 rcExit = (int)_spawnvpe(P_WAIT, pszExecutable, papszArgs, papszEnvVars);
+#  endif
                 kRedirectRestoreFdOrders(cOrders, paOrders, &pWorkingStdErr);
                 if (rcExit != -1 || errno == 0)
                 {
@@ -1116,11 +1139,16 @@ int main(int argc, char **argv, char **envp)
             pszArg++;
             if (chOpt == '-')
             {
-                /* '--' indicates where the bits to execute start. */
+                /* '--' indicates where the bits to execute start.  Check if we're
+                   relaunching ourselves here and just continue parsing if we are. */
                 if (*pszArg == '\0')
                 {
                     iArg++;
-                    break;
+                    if (    iArg >= argc
+                        || (   strcmp(argv[iArg], "kmk_builtin_redirect") != 0
+                            && strcmp(argv[iArg], argv[0]) != 0))
+                        break;
+                    continue;
                 }
 
                 if (   strcmp(pszArg, "wcc-brain-damage") == 0
@@ -1222,7 +1250,7 @@ int main(int argc, char **argv, char **envp)
                     if (apszSavedLibPaths[ulVar] == NULL)
                     {
                         /* The max length is supposed to be 1024 bytes. */
-                        apszSavedLibPaths[ulVar] = calloc(2, 1024);
+                        apszSavedLibPaths[ulVar] = calloc(1024, 2);
                         if (apszSavedLibPaths[ulVar])
                         {
                             rc = DosQueryExtLIBPATH(apszSavedLibPaths[ulVar], ulVar);

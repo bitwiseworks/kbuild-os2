@@ -1,4 +1,4 @@
-/* $Id: kmkbuiltin.h 3039 2017-05-10 10:55:51Z bird $ */
+/* $Id: kmkbuiltin.h 3108 2017-10-20 17:01:40Z bird $ */
 /** @file
  * kMk Builtin command handling.
  */
@@ -34,6 +34,19 @@
 # include <sys/types.h>
 #endif
 
+/* For the GNU/hurd weirdo. */
+#ifndef PATH_MAX
+# ifdef MAXPATHLEN
+#  define PATH_MAX  MAXPATHLEN
+# else
+#  define PATH_MAX  4096
+# endif
+#endif
+#ifndef MAXPATHLEN
+# define MAXPATHLEN PATH_MAX
+#endif
+
+
 #include "kbuild_version.h"
 
 struct child;
@@ -63,6 +76,7 @@ extern int kmk_builtin_test(int argc, char **argv, char **envp
                             , char ***ppapszArgvSpawn
 #endif
                             );
+extern int kmk_builtin_touch(int argc, char **argv, char **envp);
 #ifdef KBUILD_OS_WINDOWS
 extern int kmk_builtin_kSubmit(int argc, char **argv, char **envp, struct child *pChild, pid_t *pPidSpawned);
 extern int kSubmitSubProcGetResult(intptr_t pvUser, int *prcExit, int *piSigNo);

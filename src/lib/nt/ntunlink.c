@@ -1,10 +1,10 @@
-/* $Id: ntunlink.c 3009 2016-11-07 02:21:59Z bird $ */
+/* $Id: ntunlink.c 3126 2017-11-16 16:05:25Z bird $ */
 /** @file
  * MSC + NT unlink and variations.
  */
 
 /*
- * Copyright (c) 2005-2013 knut st. osmundsen <bird-kBuild-spamx@anduin.net>
+ * Copyright (c) 2005-2017 knut st. osmundsen <bird-kBuild-spamx@anduin.net>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -32,9 +32,7 @@
 /*******************************************************************************
 *   Header Files                                                               *
 *******************************************************************************/
-#include <stdio.h>
-#include <errno.h>
-#include <malloc.h>
+#include "ntunlink.h"
 
 #include "ntstuff.h"
 #include "nthlp.h"
@@ -129,7 +127,7 @@ static int birdUnlinkInternal(HANDLE hRoot, const char *pszFile, const wchar_t *
             {
                 rcNt = birdOpenFileUniStr(hRoot,
                                           &NtPath,
-                                          DELETE,
+                                          DELETE | SYNCHRONIZE,
                                           FILE_ATTRIBUTE_NORMAL,
                                           FILE_SHARE_DELETE | FILE_SHARE_READ | FILE_SHARE_WRITE,
                                           FILE_OPEN,
