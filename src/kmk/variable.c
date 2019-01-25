@@ -1598,8 +1598,18 @@ define_automatic_variables (void)
   define_variable_cname ("KBUILD_VERSION_PATCH", buf, o_default, 0);
   sprintf (buf, "%d", KBUILD_SVN_REV);
   define_variable_cname ("KBUILD_KMK_REVISION", buf, o_default, 0);
+#ifdef KBUILD_SVN_GIT
+  sprintf (buf, "%x", KBUILD_SVN_REV);
+  define_variable_cname ("KBUILD_KMK_REVISION_GIT", buf, o_default, 0);
+#endif
 
-  sprintf (buf, "%d.%d.%d-r%d", KBUILD_VERSION_MAJOR, KBUILD_VERSION_MINOR,
+  sprintf (buf,
+#ifdef KBUILD_SVN_GIT
+           "%d.%d.%d-%x-git",
+#else
+           "%d.%d.%d-r%d",
+#endif
+           KBUILD_VERSION_MAJOR, KBUILD_VERSION_MINOR,
            KBUILD_VERSION_PATCH, KBUILD_SVN_REV);
   define_variable_cname ("KBUILD_VERSION", buf, o_default, 0);
 

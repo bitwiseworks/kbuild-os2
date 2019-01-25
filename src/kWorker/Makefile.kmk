@@ -81,6 +81,9 @@ kWorkerLib_SOURCES.win = \
 	maybe_con_fwrite.c \
 	msc_buffered_printf.c
 kbuild_version.c_DEFS = KBUILD_SVN_REV=$(KBUILD_SVN_REV)
+ifdef KBUILD_SVN_GIT
+kbuild_version.c_DEFS += KBUILD_SVN_GIT=$(KBUILD_SVN_GIT)
+endif
 
 #
 # kStuff library.

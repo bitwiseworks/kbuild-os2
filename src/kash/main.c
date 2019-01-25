@@ -476,7 +476,11 @@ version(const char *argv0)
 	strip_argv0(argv0, &len);
 
 	fprintf(stdout,
+#ifdef KBUILD_SVN_GIT
+			"%.*s - kBuild version %d.%d.%d (%x-git)\n",
+#else
 			"%.*s - kBuild version %d.%d.%d (r%u)\n",
+#endif
 		    len, argv0,
 		    KBUILD_VERSION_MAJOR, KBUILD_VERSION_MINOR, KBUILD_VERSION_PATCH, KBUILD_SVN_REV);
 	return 0;

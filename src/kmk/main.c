@@ -3764,8 +3764,13 @@ print_version (void)
     return;
 
 #ifdef KMK
+#ifdef KBUILD_SVN_GIT
+  printf ("%skmk - kBuild version %d.%d.%d (%x-git)\n\
+\n",
+#else
   printf ("%skmk - kBuild version %d.%d.%d (r%u)\n\
 \n",
+#endif
           precede, KBUILD_VERSION_MAJOR, KBUILD_VERSION_MINOR,
           KBUILD_VERSION_PATCH, KBUILD_SVN_REV);
 

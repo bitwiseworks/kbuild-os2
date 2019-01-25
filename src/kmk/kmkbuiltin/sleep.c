@@ -103,7 +103,11 @@ int kmk_builtin_sleep(int argc, char **argv, char **envp)
     if (   !strcmp(argv[1], "-V")
         || !strcmp(argv[1], "--version"))
     {
+#ifdef KBUILD_SVN_GIT
+        printf("kmk_sleep - kBuild version %d.%d.%d (%x-git)\n"
+#else
         printf("kmk_sleep - kBuild version %d.%d.%d (r%u)\n"
+#endif
                "Copyright (c) 2008-2009 knut st. osmundsen\n",
                KBUILD_VERSION_MAJOR, KBUILD_VERSION_MINOR, KBUILD_VERSION_PATCH,
                KBUILD_SVN_REV);
