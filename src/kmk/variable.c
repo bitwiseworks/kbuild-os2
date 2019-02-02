@@ -1599,13 +1599,13 @@ define_automatic_variables (void)
   sprintf (buf, "%d", KBUILD_SVN_REV);
   define_variable_cname ("KBUILD_KMK_REVISION", buf, o_default, 0);
 #ifdef KBUILD_SVN_GIT
-  sprintf (buf, "%x", KBUILD_SVN_REV);
+  sprintf (buf, "%07x", KBUILD_SVN_REV);
   define_variable_cname ("KBUILD_KMK_REVISION_GIT", buf, o_default, 0);
 #endif
 
   sprintf (buf,
 #ifdef KBUILD_SVN_GIT
-           "%d.%d.%d-%x-git",
+           "%d.%d.%d-%07x-git",
 #else
            "%d.%d.%d-r%d",
 #endif

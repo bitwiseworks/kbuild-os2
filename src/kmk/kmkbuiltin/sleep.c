@@ -104,7 +104,7 @@ int kmk_builtin_sleep(int argc, char **argv, char **envp)
         || !strcmp(argv[1], "--version"))
     {
 #ifdef KBUILD_SVN_GIT
-        printf("kmk_sleep - kBuild version %d.%d.%d (%x-git)\n"
+        printf("kmk_sleep - kBuild version %d.%d.%d (%07x-git)\n"
 #else
         printf("kmk_sleep - kBuild version %d.%d.%d (r%u)\n"
 #endif

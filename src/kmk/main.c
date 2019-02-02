@@ -3765,7 +3765,7 @@ print_version (void)
 
 #ifdef KMK
 #ifdef KBUILD_SVN_GIT
-  printf ("%skmk - kBuild version %d.%d.%d (%x-git)\n\
+  printf ("%skmk - kBuild version %d.%d.%d (%07x-git)\n\
 \n",
 #else
   printf ("%skmk - kBuild version %d.%d.%d (r%u)\n\

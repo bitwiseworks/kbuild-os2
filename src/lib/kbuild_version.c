@@ -56,7 +56,7 @@ int kbuild_version(const char *argv0)
         tmp = strchr(argv0, '\0');
 
 #ifdef KBUILD_SVN_GIT
-    printf("%.*s - kBuild version %d.%d.%d (%x-git)\n",
+    printf("%.*s - kBuild version %d.%d.%d (%07x-git)\n",
 #else
     printf("%.*s - kBuild version %d.%d.%d (r%u)\n",
 #endif

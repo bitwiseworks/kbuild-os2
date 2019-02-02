@@ -242,7 +242,7 @@ int main(int argc, char **argv)
 
             case 'V':
 #ifdef KBUILD_SVN_GIT
-                printf("kmk_time - kBuild version %d.%d.%d (%x-git)\n"
+                printf("kmk_time - kBuild version %d.%d.%d (%07x-git)\n"
 #else
                 printf("kmk_time - kBuild version %d.%d.%d (r%u)\n"
 #endif

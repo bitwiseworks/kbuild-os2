@@ -477,7 +477,7 @@ version(const char *argv0)
 
 	fprintf(stdout,
 #ifdef KBUILD_SVN_GIT
-			"%.*s - kBuild version %d.%d.%d (%x-git)\n",
+			"%.*s - kBuild version %d.%d.%d (%07x-git)\n",
 #else
 			"%.*s - kBuild version %d.%d.%d (r%u)\n",
 #endif
