@@ -2692,7 +2692,11 @@ construct_command_argv_internal (char *line, char **restp, char *shell,
   char** sh_cmds = sh_cmds_sh;                                                  /* kmk: +_sh */
 #endif
 #ifdef KMK
+#ifdef KBUILD_OS_OS2
+  static char sh_chars_kash[] = "#;*?[]&|<>(){}$`^~'";                          /* note: no \" - good idea? */
+#else
   static char sh_chars_kash[] = "#;*?[]&|<>(){}$`^~!";                          /* note: no \" - good idea? */
+#endif
   static char *sh_cmds_kash[] = {
       ".", ":", "break", "case", "cd", "continue",
       "echo", "eval", "exec", "exit", "export", "for", "if",
