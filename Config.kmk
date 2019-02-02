@@ -250,6 +250,7 @@ ifeq ($(KBUILD_TARGET),os2)
  TEMPLATE_BIN_CFLAGS.profile    = -pg
  TEMPLATE_BIN_CFLAGS.release    = -O3
  TEMPLATE_BIN_LDFLAGS           = -Zhigh-mem -Zstack 1024 -g
+ TEMPLATE_BIN_LIBS              = cx # for EXCEPTQ
 
 else if1of ($(KBUILD_TARGET), win nt)
  TEMPLATE_BIN_TOOL              = VCC100
