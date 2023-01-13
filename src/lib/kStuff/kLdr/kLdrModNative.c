@@ -1,4 +1,4 @@
-/* $Id: kLdrModNative.c 82 2016-08-22 21:01:51Z bird $ */
+/* $Id: kLdrModNative.c 117 2020-03-15 15:23:36Z bird $ */
 /** @file
  * kLdr - The Module Interpreter for the Native Loaders.
  */
@@ -164,7 +164,7 @@ extern KLDRMODOPS g_kLdrModNativeOps;
 static int kldrModNativeCreate(PCKLDRMODOPS pOps, PKRDR pRdr, KU32 fFlags, KCPUARCH enmCpuArch,
                                KLDRFOFF offNewHdr, PPKLDRMOD ppMod)
 {
-    int rc = kLdrModOpenNative(kRdrName(pRdr), ppMod);
+    int rc = kLdrModOpenNative(kRdrName(pRdr), fFlags, ppMod);
     if (rc)
         return rc;
     rc = kRdrClose(pRdr);
@@ -179,9 +179,10 @@ static int kldrModNativeCreate(PCKLDRMODOPS pOps, PKRDR pRdr, KU32 fFlags, KCPUA
  * @returns 0 on success.
  * @returns non-zero native or kLdr status code on failure.
  * @param   pszFilename         The filename or module name to be loaded.
+ * @param   fFlags              Module open flags, KLDRMOD_OPEN_FLAGS_XXX.
  * @param   ppMod               Where to store the module interpreter instance pointer.
  */
-int kLdrModOpenNative(const char *pszFilename, PPKLDRMOD ppMod)
+int kLdrModOpenNative(const char *pszFilename, KU32 fFlags, PPKLDRMOD ppMod)
 {
     int rc;
 
@@ -190,31 +191,34 @@ int kLdrModOpenNative(const char *pszFilename, PPKLDRMOD ppMod)
      */
 #if K_OS == K_OS_OS2
     HMODULE hmod;
+    kHlpAssertReturn(!(fFlags & ~KLDRMOD_OPEN_FLAGS_VALID_MASK), KERR_INVALID_PARAMETER);
 
     rc = DosLoadModule(NULL, 0, (PCSZ)pszFilename, &hmod);
     if (rc)
         return rc;
-    rc = kLdrModOpenNativeByHandle((KUPTR)hmod, ppMod);
+    rc = kLdrModOpenNativeByHandle((KUPTR)hmod, fFlags, ppMod);
     if (rc)
         DosFreeModule(hmod);
 
 #elif K_OS == K_OS_WINDOWS
     HMODULE hmod;
+    kHlpAssertReturn(!(fFlags & ~KLDRMOD_OPEN_FLAGS_VALID_MASK), KERR_INVALID_PARAMETER);
 
     hmod = LoadLibrary(pszFilename);
     if (!hmod)
         return GetLastError();
-    rc = kLdrModOpenNativeByHandle((KUPTR)hmod, ppMod);
+    rc = kLdrModOpenNativeByHandle((KUPTR)hmod, fFlags, ppMod);
     if (rc)
         FreeLibrary(hmod);
 
 #elif K_OS == K_OS_DARWIN
     void *pvMod;
+    kHlpAssertReturn(!(fFlags & ~KLDRMOD_OPEN_FLAGS_VALID_MASK), KERR_INVALID_PARAMETER);
 
     pvMod = dlopen(pszFilename, 0);
     if (!pvMod)
         return ENOENT;
-    rc = kLdrModOpenNativeByHandle((KUPTR)pvMod, ppMod);
+    rc = kLdrModOpenNativeByHandle((KUPTR)pvMod, fFlags, ppMod);
     if (rc)
         dlclose(pvMod);
 
@@ -232,10 +236,11 @@ int kLdrModOpenNative(const char *pszFilename, PPKLDRMOD ppMod)
  * @returns 0 on success.
  * @returns non-zero native or kLdr status code on failure.
  * @param   pszFilename         The filename or module name to be loaded.
+ * @param   fFlags              Module open flags, KLDRMOD_OPEN_FLAGS_XXX.
  * @param   ppMod               Where to store the module interpreter instance pointer.
  * @remark  This will not make the native loader increment the load count.
  */
-int kLdrModOpenNativeByHandle(KUPTR uHandle, PPKLDRMOD ppMod)
+int kLdrModOpenNativeByHandle(KUPTR uHandle, KU32 fFlags, PPKLDRMOD ppMod)
 {
     KSIZE cb;
     KU32 cchFilename;
@@ -305,6 +310,8 @@ int kLdrModOpenNativeByHandle(KUPTR uHandle, PPKLDRMOD ppMod)
 # error "Port me"
 #endif
 
+    kHlpAssertReturn(!(fFlags & ~KLDRMOD_OPEN_FLAGS_VALID_MASK), KERR_INVALID_PARAMETER);
+
     /*
      * Calc the instance size, allocate and initialize it.
      */
@@ -327,7 +334,7 @@ int kLdrModOpenNativeByHandle(KUPTR uHandle, PPKLDRMOD ppMod)
     kHlpMemCopy((char *)pMod->pszFilename, szFilename, cchFilename + 1);
     pMod->pszName = kHlpGetFilename(pMod->pszFilename); /** @todo get soname */
     pMod->cchName = cchFilename - (KU32)(pMod->pszName - pMod->pszFilename);
-    pMod->fFlags = 0;
+    pMod->fFlags = fFlags;
 #if defined(__i386__) || defined(__X86__) || defined(_M_IX86)
     pMod->enmCpu = KCPU_I386;
     pMod->enmArch = KCPUARCH_X86_32;
@@ -1049,9 +1056,37 @@ static int kldrModNativeFixupMapping(PKLDRMOD pMod, PFNKLDRMODGETIMPORT pfnGetIm
 }
 
 
+#if K_OS == K_OS_OS2 || K_OS == K_OS_WINDOWS || defined(__NT__)
+/** Common worker on platforms where there is one entrypoint which does both. */
+static int kLdrModNativeCallInitTerm(PKLDRMODNATIVE pModNative, KUPTR uHandle, KBOOL fInit)
+{
+# if K_OS == K_OS_WINDOWS || defined(__NT__)
+    /* No TLS init/term for now. */
+    KU32 const uRvaEntrypoint = pModNative->pNtHdrs->OptionalHeader.AddressOfEntryPoint;
+    if (   uRvaEntrypoint != 0
+        && uRvaEntrypoint < pModNative->pNtHdrs->OptionalHeader.SizeOfCode
+        && (pModNative->pNtHdrs->FileHeader.Characteristics & IMAGE_FILE_DLL))
+    {
+        KI32 rc = kldrModPEDoCall(uRvaEntrypoint + (KUPTR)pModNative->hmod, uHandle,
+                                  fInit ? DLL_PROCESS_ATTACH : DLL_PROCESS_DETACH, NULL /*pvReserved*/);
+        if (rc)
+            return 0;
+        return fInit ? KLDR_ERR_MODULE_INIT_FAILED : KLDR_ERR_THREAD_ATTACH_FAILED;
+    }
+# elif K_OS == K_OS_OS2
+    //KI32 kldrModLXDoCall(KUPTR uEntrypoint, KUPTR uHandle, KU32 uOp, void *pvReserved)
+# endif
+    return 0;
+}
+#endif
+
 /** @copydoc kLdrModCallInit */
 static int kldrModNativeCallInit(PKLDRMOD pMod, void *pvMapping, KUPTR uHandle)
 {
+#if K_OS == K_OS_OS2 || K_OS == K_OS_WINDOWS || defined(__NT__)
+    if (pMod->fFlags & KLDRMOD_OPEN_FLAGS_NATIVE_ALLOW_INIT_TERM)
+        return kLdrModNativeCallInitTerm((PKLDRMODNATIVE)pMod->pvData, uHandle, K_TRUE /*fInit*/);
+#endif
     return 0;
 }
 
@@ -1059,6 +1094,10 @@ static int kldrModNativeCallInit(PKLDRMOD pMod, void *pvMapping, KUPTR uHandle)
 /** @copydoc kLdrModCallTerm */
 static int kldrModNativeCallTerm(PKLDRMOD pMod, void *pvMapping, KUPTR uHandle)
 {
+#if K_OS == K_OS_OS2 || K_OS == K_OS_WINDOWS || defined(__NT__)
+    if (pMod->fFlags & KLDRMOD_OPEN_FLAGS_NATIVE_ALLOW_INIT_TERM)
+        return kLdrModNativeCallInitTerm((PKLDRMODNATIVE)pMod->pvData, uHandle, K_FALSE /*fInit*/);
+#endif
     return 0;
 }
 

@@ -1,4 +1,4 @@
-# $Id: GCC3OMF.kmk 3121 2017-10-31 10:58:59Z bird $
+# $Id: GCC3OMF.kmk 3567 2022-06-26 20:00:02Z bird $
 ## @file
 # kBuild Tool Config - GCC v3 targeting OS/2 OMF.
 #
@@ -34,27 +34,29 @@
 TOOL_GCC3OMF := GCC v3 targeting OS/2 OMF.
 
 # Tool Specific Properties
-TOOL_GCC3OMF_CC  ?= gcc$(HOSTSUFF_EXE)
-TOOL_GCC3OMF_CXX ?= g++$(HOSTSUFF_EXE)
-TOOL_GCC3OMF_AS  ?= gcc$(HOSTSUFF_EXE)
-TOOL_GCC3OMF_AR  ?= emxomfar$(HOSTSUFF_EXE)
-TOOL_GCC3OMF_AR_IMP ?= emximp$(HOSTSUFF_EXE)
-TOOL_GCC3OMF_LD ?= gcc$(HOSTSUFF_EXE)
-TOOL_GCC3OMF_LD_SYSMOD ?= gcc$(HOSTSUFF_EXE)
-ifndef TOOL_GCC3OMF_LDFLAGS.$(KBUILD_TARGET)
-TOOL_GCC3OMF_LDFLAGS.dll ?= -shared -Zdll
-else
-TOOL_GCC3OMF_LDFLAGS.dll ?= $(TOOL_GCC3OMF_LDFLAGS.$(KBUILD_TARGET))
+ifndef TOOL_GCC3OMF_PREFIX
+ TOOL_GCC3OMF_PREFIX :=
 endif
+ifndef TOOL_GCC3OMF_SUFFIX
+ TOOL_GCC3OMF_SUFFIX := $(HOSTSUFF_EXE)
+endif
+TOOL_GCC3OMF_PREFIX2   ?=
+TOOL_GCC3OMF_SUFFIX2   ?= $(HOSTSUFF_EXE)
+TOOL_GCC3OMF_PREFIX3   ?=
+TOOL_GCC3OMF_SUFFIX3   ?= $(HOSTSUFF_EXE)
+TOOL_GCC3OMF_CC        ?= $(TOOL_GCC3OMF_PREFIX)gcc$(TOOL_GCC3OMF_SUFFIX)
+TOOL_GCC3OMF_CXX       ?= $(TOOL_GCC3OMF_PREFIX)g++$(TOOL_GCC3OMF_SUFFIX)
+TOOL_GCC3OMF_AS        ?= $(TOOL_GCC3OMF_PREFIX)gcc$(TOOL_GCC3OMF_SUFFIX)
+TOOL_GCC3OMF_AR        ?= $(TOOL_GCC3OMF_PREFIX2)emxomfar$(TOOL_GCC3OMF_SUFFIX2)
+TOOL_GCC3OMF_AR_IMP    ?= $(TOOL_GCC3OMF_PREFIX2)emximp$(TOOL_GCC3OMF_SUFFIX2)
+TOOL_GCC3OMF_LD        ?= $(TOOL_GCC3OMF_PREFIX)gcc$(TOOL_GCC3OMF_SUFFIX)
+TOOL_GCC3OMF_LD_SYSMOD ?= $(TOOL_GCC3OMF_PREFIX)gcc$(TOOL_GCC3OMF_SUFFIX)
+TOOL_GCC3OMF_LDFLAGS.dll ?= -shared -Zdll
 TOOL_GCC3OMF_LDFLAGS.sysmod ?= -nostdlib
 TOOL_GCC3OMF_LD_MAP ?= -Zmap=$(1)
 TOOL_GCC3OMF_LD_SYSMOD_MAP ?= -Zmap=$(1)
-TOOL_GCC3OMF_RC = rc$(HOSTSUFF_EXE)
 
-ifdef SLKRUNS
-TOOL_GCC3OMF_CC  += -fmessage-length=0
-TOOL_GCC3OMF_CXX += -fmessage-length=0
-endif
+TOOL_GCC3OMF_RC = $(TOOL_GCC3OMF_PREFIX3)rc$(TOOL_GCC3OMF_SUFFIX3)
 
 # General Properties used by kBuild
 TOOL_GCC3OMF_COBJSUFF         ?= .o
@@ -114,7 +116,7 @@ define TOOL_GCC3OMF_COMPILE_C_CMDS
 	$(QUIET)$(KOBJCACHE) -f $(outbase).koc -d $(PATH_OBJCACHE) -t $(bld_trg).$(bld_trg_arch) -p\
 		--kObjCache-cpp $(outbase).i\
 		$(TOOL_GCC3OMF_CC) -E -o -\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		$(abspath $(source))\
 		--kObjCache-cc $(obj)\
@@ -128,7 +130,7 @@ else # !KBUILD_USE_KOBJCACHE
 TOOL_GCC3OMF_COMPILE_C_OUTPUT =
 define TOOL_GCC3OMF_COMPILE_C_CMDS
 	$(QUIET)$(TOOL_GCC3OMF_CC) -c\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP \
 		-o $(obj)\
 		$(abspath $(source))
@@ -159,7 +161,7 @@ define TOOL_GCC3OMF_COMPILE_CXX_CMDS
 	$(QUIET)$(KOBJCACHE) -f $(outbase).koc -d $(PATH_OBJCACHE) -t $(bld_trg).$(bld_trg_arch) -p\
 		--kObjCache-cpp $(outbase).ii\
 		$(TOOL_GCC3OMF_CXX) -E -o -\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		$(abspath $(source))\
 		--kObjCache-cc $(obj)\
@@ -173,7 +175,7 @@ else # !KBUILD_USE_KOBJCACHE
 TOOL_GCC3OMF_COMPILE_CXX_OUTPUT =
 define TOOL_GCC3OMF_COMPILE_CXX_CMDS
 	$(QUIET)$(TOOL_GCC3OMF_CXX) -c\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP \
 		-o $(obj)\
 		$(abspath $(source))
@@ -200,7 +202,7 @@ TOOL_GCC3OMF_COMPILE_AS_DEPEND =
 TOOL_GCC3OMF_COMPILE_AS_DEPORD =
 define TOOL_GCC3OMF_COMPILE_AS_CMDS
 	$(QUIET)$(TOOL_GCC3OMF_AS) -c\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		-o $(obj)\
 		$(abspath $(source))

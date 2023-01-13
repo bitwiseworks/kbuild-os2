@@ -51,10 +51,6 @@ __RCSID("$NetBSD: kill.c,v 1.23 2003/08/07 09:05:13 agc Exp $");
 #include "error.h"
 #include "shinstance.h"
 
-#ifndef HAVE_SYS_SIGNAME
-extern void init_sys_signame(void);
-extern char sys_signame[NSIG][16];
-#endif
 
 static int nosig(shinstance *, char *);
 static void printsignals(shinstance *, struct output *);
@@ -64,16 +60,13 @@ static int usage(shinstance *psh);
 int
 killcmd(shinstance *psh, int argc, char *argv[])
 {
-	int errors, numsig, pid;
+	int errors, numsig;
 	char *ep;
 
 	if (argc < 2)
 		return usage(psh);
 
 	numsig = SIGTERM;
-#ifndef HAVE_SYS_SIGNAME
-	init_sys_signame();
-#endif
 
 	argc--, argv++;
 	if (strcmp(*argv, "-l") == 0) {
@@ -137,23 +130,31 @@ killcmd(shinstance *psh, int argc, char *argv[])
 		return usage(psh);
 
 	for (errors = 0; argc; argc--, argv++) {
-		if (*argv[0] == '%') {
-			pid = getjobpgrp(psh, *argv);
+		const char * const strpid = argv[0];
+		shpid pid;
+		if (*strpid == '%') {
+			pid = getjobpgrp(psh, strpid);
 			if (pid == 0) {
-				sh_warnx(psh, "illegal job id: %s", *argv);
+				sh_warnx(psh, "illegal job id: %s", strpid);
 				errors = 1;
 				continue;
 			}
 		} else {
-			pid = strtol(*argv, &ep, 10);
-			if (!**argv || *ep) {
-				sh_warnx(psh, "illegal process id: %s", *argv);
+#if !defined(SH_FORKED_MODE) && defined(_MSC_VER)
+			pid = _strtoi64(strpid, &ep, 10);
+#elif !defined(SH_FORKED_MODE)
+			pid = strtoll(strpid, &ep, 10);
+#else
+			pid = strtol(strpid, &ep, 10);
+#endif
+			if (!*strpid || *ep) {
+				sh_warnx(psh, "illegal process id: %s", strpid);
 				errors = 1;
 				continue;
 			}
 		}
 		if (sh_kill(psh, pid, numsig) == -1) {
-			sh_warn(psh, "%s", *argv);
+			sh_warn(psh, "%s", strpid);
 			errors = 1;
 		}
 		/* Wakeup the process if it was suspended, so it can

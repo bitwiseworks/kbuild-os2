@@ -1,4 +1,4 @@
-# $Id: Makefile.kmk 3188 2018-03-24 15:32:26Z bird $
+# $Id: Makefile.kmk 3551 2022-01-29 02:57:33Z bird $
 ## @file
 # Sub-makefile for various libraries and stuff.
 #
@@ -42,9 +42,12 @@ kUtil_SOURCES = \
 	maybe_con_fwrite.c \
 	is_console.c \
        dos2unix.c \
-	kbuild_version.c
+	kbuild_version.c \
+	version_compare.c
 kUtil_SOURCES.win = \
+	get_codepage.c \
 	msc_buffered_printf.c \
+	win_get_processor_group_active_mask.c \
 	nt_fullpath.c \
 	nt_fullpath_cached.c \
 	quote_argv.c \
@@ -89,6 +92,18 @@ tstNtFts_TEMPLATE = BIN
 tstNtFts_SOURCES = nt/tstNtFts.c nt/fts-nt.c
 tstNtFts_LIBS = $(LIB_KUTIL)
 tstNtFts_NOINST = 1
+
+PROGRAMS.win += tstkFsCache
+tstkFsCache_TEMPLATE = BIN
+tstkFsCache_SOURCES = nt/tstkFsCache.c
+tstkFsCache_LIBS = $(LIB_KUTIL)
+tstkFsCache_NOINST = 1
+
+PROGRAMS += tstVersionCompare
+tstVersionCompare_TEMPLATE = BIN
+tstVersionCompare_SOURCES = version_compare.c
+tstVersionCompare_DEFS = TEST
+tstVersionCompare_NOINST = 1
 
 include $(FILE_KBUILD_SUB_FOOTER)
 

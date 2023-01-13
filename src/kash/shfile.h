@@ -1,4 +1,4 @@
-/* $Id: shfile.h 2546 2011-10-01 19:49:54Z bird $ */
+/* $Id: shfile.h 3473 2020-09-16 21:12:58Z bird $ */
 /** @file
  * File management.
  */
@@ -46,6 +46,7 @@
 #  define _PATH_DEFPATH "/bin:/usr/bin:/sbin:/usr/sbin"
 # endif
 #endif
+#include <limits.h> /* for PIPE_BUF */
 #ifndef _MSC_VER
 # include <fcntl.h>
 # include <unistd.h>
@@ -94,6 +95,9 @@
 # define O_NONBLOCK 0 /** @todo */
 
 #endif
+#if K_OS == K_OS_WINDOWS
+# include "nt/ntstat.h"
+#endif
 
 
 /**
@@ -105,17 +109,25 @@ typedef struct shfile
     unsigned            oflags;         /**< Open flags. */
     unsigned            shflags;        /**< The shell file descriptor flags. */
     intptr_t            native;         /**< The native file descriptor number. */
+#ifdef DEBUG
+    char               *dbgname;        /**< The name of the file, if applicable, debug builds only. */
+#  define SHFILE_DBGNAME(a) a
+# else
+#  define SHFILE_DBGNAME(a) NULL
+#endif
 } shfile;
 
 /** @name shfile::shflags values.
  * @{
  */
 #define SHFILE_FLAGS_CLOSE_ON_EXEC      0x0001
+#define SHFILE_FLAGS_TRACE              0x0002  /**< The 'trace' file, keep open after execve. */
 #define SHFILE_FLAGS_TYPE_MASK          0x00f0
 #define SHFILE_FLAGS_FILE               0x0000
 #define SHFILE_FLAGS_PIPE               0x0010
 #define SHFILE_FLAGS_DIR                0x0020
 #define SHFILE_FLAGS_TTY                0x0030
+#define SHFILE_FLAGS_DIRTY              0x0100  /**< The file has been written to. */
 /** @} */
 
 /**
@@ -130,11 +142,31 @@ typedef struct shfdtab
 } shfdtab;
 
 int shfile_init(shfdtab *, shfdtab *);
+void shfile_uninit(shfdtab *, int);
 void shfile_fork_win(shfdtab *pfdtab, int set, intptr_t *hndls);
-void *shfile_exec_win(shfdtab *pfdtab, int prepare, unsigned short *sizep, intptr_t *hndls);
+typedef struct shfdexecwin
+{
+    int inherithandles;
+    int startsuspended;
+    shmtxtmp tmp;
+    int replacehandles[3];
+    intptr_t handles[3];
+    void *strtinfo;
+} shfdexecwin;
+int shfile_exec_win(shfdtab *pfdtab, int prepare, shfdexecwin *info);
 int shfile_exec_unix(shfdtab *pfdtab);
+#if K_OS == K_OS_WINDOWS && defined(KASH_ASYNC_CLOSE_HANDLE)
+void shfile_async_close_sync(void);
+#endif
 
 int shfile_open(shfdtab *, const char *, unsigned, mode_t);
+#if K_OS == K_OS_WINDOWS
+# define SHFILE_PIPE_SIZE   65536
+#elif defined(PIPE_BUF)
+# define SHFILE_PIPE_SIZE   PIPE_BUF
+#else
+# define SHFILE_PIPE_SIZE   4096
+#endif
 int shfile_pipe(shfdtab *, int [2]);
 int shfile_close(shfdtab *, unsigned);
 long shfile_read(shfdtab *, int, void *, size_t);
@@ -146,12 +178,15 @@ int shfile_movefd(shfdtab *, int fdfrom, int fdto);
 int shfile_movefd_above(shfdtab *, int fdfrom, int fdmin);
 
 int shfile_stat(shfdtab *, const char *, struct stat *);
+int shfile_stat_isreg(shfdtab *, const char *);  /**< returns -1, 0 or 1. */
+int shfile_stat_exists(shfdtab *, const char *); /**< same as shfile_stat, but discards the stat data. */
 int shfile_lstat(shfdtab *, const char *, struct stat *);
 int shfile_chdir(shfdtab *, const char *);
 char *shfile_getcwd(shfdtab *, char *, int);
 int shfile_access(shfdtab *, const char *, int);
 int shfile_isatty(shfdtab *, int);
 int shfile_cloexec(shfdtab *, int, int);
+int shfile_set_trace(shfdtab *, int);
 int shfile_ioctl(shfdtab *, int, unsigned long, void *);
 #if defined(_MSC_VER) || defined(__OS2__)
 # define TIOCGWINSZ         0x4201

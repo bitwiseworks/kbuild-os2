@@ -1,4 +1,4 @@
-/* $Id: shfile.c 3240 2018-12-25 20:47:49Z bird $ */
+/* $Id: shfile.c 3542 2022-01-29 01:36:00Z bird $ */
 /** @file
  *
  * File management.
@@ -32,13 +32,8 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-#include <assert.h>
 
 #if K_OS == K_OS_WINDOWS
-# include <limits.h>
-# ifndef PIPE_BUF
-#  define PIPE_BUF 512
-# endif
 # include <ntstatus.h>
 # define WIN32_NO_STATUS
 # include <Windows.h>
@@ -98,16 +93,16 @@
 typedef struct
 {
     ULONG           Attributes;
-	ACCESS_MASK     GrantedAccess;
-	ULONG           HandleCount;
-	ULONG           PointerCount;
-	ULONG           PagedPoolUsage;
-	ULONG           NonPagedPoolUsage;
-	ULONG           Reserved[3];
-	ULONG           NameInformationLength;
-	ULONG           TypeInformationLength;
-	ULONG           SecurityDescriptorLength;
-	LARGE_INTEGER   CreateTime;
+    ACCESS_MASK     GrantedAccess;
+    ULONG           HandleCount;
+    ULONG           PointerCount;
+    ULONG           PagedPoolUsage;
+    ULONG           NonPagedPoolUsage;
+    ULONG           Reserved[3];
+    ULONG           NameInformationLength;
+    ULONG           TypeInformationLength;
+    ULONG           SecurityDescriptorLength;
+    LARGE_INTEGER   CreateTime;
 } MY_OBJECT_BASIC_INFORMATION;
 
 #if 0
@@ -142,36 +137,326 @@ typedef NTSTATUS (NTAPI * PFN_RtlUnicodeStringToAnsiString)(PANSI_STRING, PCUNIC
 #endif /* K_OS_WINDOWS */
 
 
-/*******************************************************************************
-*   Global Variables                                                           *
-*******************************************************************************/
+/*********************************************************************************************************************************
+*   Global Variables                                                                                                             *
+*********************************************************************************************************************************/
 #if K_OS == K_OS_WINDOWS
 static int                              g_shfile_globals_initialized = 0;
 static PFN_NtQueryObject                g_pfnNtQueryObject = NULL;
 static PFN_NtQueryDirectoryFile         g_pfnNtQueryDirectoryFile = NULL;
 static PFN_RtlUnicodeStringToAnsiString g_pfnRtlUnicodeStringToAnsiString = NULL;
+# ifdef KASH_ASYNC_CLOSE_HANDLE
+/** Data for the asynchronous CloseHandle machinery. */
+static struct shfileasyncclose
+{
+    /** Mutex protecting the asynchronous CloseHandle stuff. */
+    shmtx                               mtx;
+    /** Handle to event that the closer-threads are waiting on. */
+    HANDLE                              evt_workers;
+    /** The ring buffer read index (for closer-threads). */
+    unsigned volatile                   idx_read;
+    /** The ring buffer write index (for shfile_native_close).
+     * When idx_read and idx_write are the same, the ring buffer is empty. */
+    unsigned volatile                   idx_write;
+    /** Number of handles currently being pending closure (handles + current
+     *  CloseHandle calls). */
+    unsigned volatile                   num_pending;
+    /** Set if the threads should terminate. */
+    KBOOL volatile                      terminate_threads;
+    /** Set if one or more shell threads have requested evt_sync to be signalled
+     * when there are no more pending requests. */
+    KBOOL volatile                      signal_sync;
+    /** Number of threads that have been spawned. */
+    KU8                                 num_threads;
+    /** Handle to event that the shell threads are waiting on to sync. */
+    HANDLE                              evt_sync;
+    /** Ring buffer containing handles to be closed. */
+    HANDLE                              handles[32];
+    /** Worker threads doing the asynchronous closing. */
+    HANDLE                              threads[8];
+} g_shfile_async_close;
+# endif
 #endif /* K_OS_WINDOWS */
 
 
+/*********************************************************************************************************************************
+*   Internal Functions                                                                                                           *
+*********************************************************************************************************************************/
 #ifdef SHFILE_IN_USE
+# if K_OS == K_OS_WINDOWS
+static HANDLE shfile_set_inherit_win(shfile *pfd, int set);
+# endif
+#endif
+
+
+#ifdef SHFILE_IN_USE
+
+# ifdef DEBUG
+# if K_OS == K_OS_WINDOWS
+static KU64 shfile_nano_ts(void)
+{
+    static KBOOL volatile s_has_factor = K_FALSE;
+    static double volatile s_factor;
+    double factor;
+    LARGE_INTEGER now;
+    if (s_has_factor)
+        factor = s_factor;
+    else
+    {
+        QueryPerformanceFrequency(&now);
+        s_factor = factor = (double)1000000000.0 / now.QuadPart;
+        s_has_factor = K_TRUE;
+    }
+    QueryPerformanceCounter(&now);
+    return (KU64)(now.QuadPart * factor);
+}
+#  endif /* K_OS_WINDOWS */
+# endif /* DEBUG */
+
+# if K_OS == K_OS_WINDOWS && defined(KASH_ASYNC_CLOSE_HANDLE)
+/**
+ * The closer thread function.
+ */
+static unsigned __stdcall shfile_async_close_handle_thread(void *ignored)
+{
+    KBOOL decrement_pending = K_FALSE;
+    shthread_set_name("Async CloseHandle");
+    while (!g_shfile_async_close.terminate_threads)
+    {
+        HANDLE toclose;
+        unsigned idx;
+        shmtxtmp tmp;
+
+        /*
+         * Grab a handle if there is one:
+         */
+        shmtx_enter(&g_shfile_async_close.mtx, &tmp);
+
+        if (decrement_pending)
+        {
+            kHlpAssert(g_shfile_async_close.num_pending > 0);
+            g_shfile_async_close.num_pending -= 1;
+        }
+
+        idx = g_shfile_async_close.idx_read % K_ELEMENTS(g_shfile_async_close.handles);
+        if (idx != g_shfile_async_close.idx_write % K_ELEMENTS(g_shfile_async_close.handles))
+        {
+            kHlpAssert(g_shfile_async_close.num_pending > 0);
+            toclose = g_shfile_async_close.handles[idx];
+            kHlpAssert(toclose);
+            g_shfile_async_close.handles[idx] = NULL;
+            g_shfile_async_close.idx_read = (idx + 1) % K_ELEMENTS(g_shfile_async_close.handles);
+        }
+        else
+        {
+            /* Signal waiters if requested and we've reached zero pending requests. */
+            if (g_shfile_async_close.signal_sync && g_shfile_async_close.num_pending == 0)
+            {
+                BOOL rc = SetEvent(g_shfile_async_close.evt_sync);
+                kHlpAssert(rc);
+                g_shfile_async_close.signal_sync = FALSE;
+            }
+            toclose = NULL;
+        }
+        shmtx_leave(&g_shfile_async_close.mtx, &tmp);
+
+        /* Do the closing if we have something to close, otherwise wait for work to arrive. */
+        if (toclose != NULL)
+        {
+            BOOL rc = CloseHandle(toclose);
+            kHlpAssert(rc);
+            decrement_pending = K_TRUE;
+        }
+        else
+        {
+            DWORD dwRet = WaitForSingleObject(g_shfile_async_close.evt_workers, 10000 /*ms*/);
+            kHlpAssert(dwRet == WAIT_OBJECT_0 || dwRet == WAIT_TIMEOUT);
+            decrement_pending = K_FALSE;
+        }
+    }
+
+    K_NOREF(ignored);
+    return 0;
+}
+
+/**
+ * Try submit a handle for automatic closing.
+ *
+ * @returns K_TRUE if submitted successfully, K_FALSE if not.
+ */
+static KBOOL shfile_async_close_submit(HANDLE toclose)
+{
+    KBOOL    ret;
+    unsigned idx;
+    unsigned idx_next;
+    unsigned idx_read;
+    unsigned num_pending = 0;
+    unsigned num_threads = 0;
+    shmtxtmp tmp;
+    shmtx_enter(&g_shfile_async_close.mtx, &tmp);
+
+    /* Get the write index and check that there is a free slot in the buffer: */
+    idx      = g_shfile_async_close.idx_write % K_ELEMENTS(g_shfile_async_close.handles);
+    idx_next = (idx + 1)                      % K_ELEMENTS(g_shfile_async_close.handles);
+    idx_read = g_shfile_async_close.idx_read  % K_ELEMENTS(g_shfile_async_close.handles);
+    if (idx_next != idx_read)
+    {
+        /* Write the handle to the ring buffer: */
+        kHlpAssert(g_shfile_async_close.handles[idx] == NULL);
+        g_shfile_async_close.handles[idx] = toclose;
+        g_shfile_async_close.idx_write    = idx_next;
+
+        num_pending = g_shfile_async_close.num_pending + 1;
+        g_shfile_async_close.num_pending = num_pending;
+
+        ret = SetEvent(g_shfile_async_close.evt_workers);
+        kHlpAssert(ret);
+        if (ret)
+        {
+            /* If we have more pending requests than threads, create a new thread. */
+            num_threads = g_shfile_async_close.num_threads;
+            if (num_pending > num_threads && num_threads < K_ELEMENTS(g_shfile_async_close.threads))
+            {
+                int const savederrno = errno;
+                unsigned tid = 0;
+                intptr_t hThread = _beginthreadex(NULL /*security*/, 0 /*stack_size*/, shfile_async_close_handle_thread,
+                                                  NULL /*arg*/, 0 /*initflags*/, &tid);
+                kHlpAssert(hThread != -1);
+                if (hThread != -1)
+                {
+                    g_shfile_async_close.threads[num_threads] = (HANDLE)hThread;
+                    g_shfile_async_close.num_threads = ++num_threads;
+                }
+                else
+                {
+                    TRACE2((NULL, "shfile_async_close_submit: _beginthreadex failed: %d\n", errno));
+                    if (num_threads == 0)
+                        ret = K_FALSE;
+                }
+                errno = savederrno;
+            }
+        }
+        else
+            TRACE2((NULL, "shfile_async_close_submit: SetEvent(%p) failed: %u\n", g_shfile_async_close.evt_workers, GetLastError()));
+
+        /* cleanup on failure. */
+        if (ret)
+        { /* likely */ }
+        else
+        {
+            g_shfile_async_close.handles[idx] = NULL;
+            g_shfile_async_close.idx_write    = idx;
+            g_shfile_async_close.num_pending  = num_pending - 1;
+        }
+    }
+    else
+        ret = K_FALSE;
+
+    shmtx_leave(&g_shfile_async_close.mtx, &tmp);
+    TRACE2((NULL, "shfile_async_close_submit: toclose=%p idx=%d #pending=%u #thread=%u -> %d\n",
+            toclose, idx, num_pending, num_threads, ret));
+    return ret;
+}
+
+/**
+ * Wait for all pending CloseHandle calls to complete.
+ */
+void shfile_async_close_sync(void)
+{
+    shmtxtmp tmp;
+    shmtx_enter(&g_shfile_async_close.mtx, &tmp);
+
+    if (g_shfile_async_close.num_pending > 0)
+    {
+        DWORD dwRet;
+
+/** @todo help out? */
+        if (!g_shfile_async_close.signal_sync)
+        {
+            BOOL rc = ResetEvent(g_shfile_async_close.evt_sync);
+            kHlpAssert(rc); K_NOREF(rc);
+
+            g_shfile_async_close.signal_sync = K_TRUE;
+        }
+
+        shmtx_leave(&g_shfile_async_close.mtx, &tmp);
+
+        TRACE2((NULL, "shfile_async_close_sync: Calling WaitForSingleObject...\n"));
+        dwRet = WaitForSingleObject(g_shfile_async_close.evt_sync, 10000 /*ms*/);
+        kHlpAssert(dwRet == WAIT_OBJECT_0);
+        kHlpAssert(g_shfile_async_close.num_pending == 0);
+        TRACE2((NULL, "shfile_async_close_sync: WaitForSingleObject returned %u...\n", dwRet));
+    }
+    else
+        shmtx_leave(&g_shfile_async_close.mtx, &tmp);
+}
+
+# endif /* K_OS == K_OS_WINDOWS && defined(KASH_ASYNC_CLOSE_HANDLE) */
 
 /**
  * Close the specified native handle.
  *
  * @param   native      The native file handle.
- * @param   flags       The flags in case they might come in handy later.
+ * @param   file        The file table entry if available.
+ * @param   inheritable The inheritability of the handle on windows, K_FALSE elsewhere.
  */
-static void shfile_native_close(intptr_t native, unsigned flags)
+static void shfile_native_close(intptr_t native, shfile *file, KBOOL inheritable)
 {
 # if K_OS == K_OS_WINDOWS
+#  ifdef KASH_ASYNC_CLOSE_HANDLE
+    /*
+     * CloseHandle may take several milliseconds on NTFS after we've appended
+     * a few bytes to a file.  When a script uses lots of 'echo line-text >> file'
+     * we end up executing very slowly, even if 'echo' is builtin and the statement
+     * requires no subshells to be spawned.
+     *
+     * So, detect problematic handles and do CloseHandle asynchronously.   When
+     * executing a child process, we probably will have to make sure the CloseHandle
+     * operation has completed before we do ResumeThread on the child to make 100%
+     * sure we can't have any sharing conflicts or end up with incorrect CRT stat()
+     * results.  Sharing conflicts are not a problem for builtin commands, and for
+     * stat we do not use the CRT code but ntstat.c/h and it seems to work fine
+     * (might be a tiny bit slower, so (TODO) might be worth reducing what we ask for).
+     *
+     * If child processes are spawned using handle inheritance and the handle in
+     * question is inheritable, we will have to fix the inheriability before pushing
+     * on the async-close queue.  This shouldn't have the CloseHandle issues.
+     */
+    if (   file
+        &&    (file->shflags & (SHFILE_FLAGS_DIRTY | SHFILE_FLAGS_TYPE_MASK))
+           ==                  (SHFILE_FLAGS_DIRTY | SHFILE_FLAGS_FILE))
+    {
+        if (inheritable)
+            native = (intptr_t)shfile_set_inherit_win(file, 0);
+        if (shfile_async_close_submit((HANDLE)native))
+            return;
+    }
+
+    /*
+     * Otherwise close it right here:
+     */
+#   endif
+    {
+#  ifdef DEBUG
+    KU64 ns = shfile_nano_ts();
     BOOL fRc = CloseHandle((HANDLE)native);
-    assert(fRc); (void)fRc;
-# else
+    kHlpAssert(fRc); K_NOREF(fRc);
+    ns = shfile_nano_ts() - ns;
+    if (ns > 1000000)
+        TRACE2((NULL, "shfile_native_close: %u ns %p oflags=%#x %s\n",
+                ns, native, file ? file->oflags : 0, file ? file->dbgname : NULL));
+#  else
+    BOOL fRc = CloseHandle((HANDLE)native);
+    kHlpAssert(fRc); K_NOREF(fRc);
+#  endif
+    }
+
+# else  /* K_OS != K_OS_WINDOWS */
     int s = errno;
     close(native);
     errno = s;
-# endif
-    (void)flags;
+# endif /* K_OS != K_OS_WINDOWS */
+    K_NOREF(file);
 }
 
 /**
@@ -191,6 +476,7 @@ static int shfile_grow_tab_locked(shfdtab *pfdtab, int fdMin)
     int         new_size = pfdtab->size + SHFILE_GROW;
     while (new_size < fdMin)
         new_size += SHFILE_GROW;
+    TRACE2((NULL, "shfile_grow_tab_locked: old %p / %d entries; new size: %d\n", pfdtab->tab, pfdtab->size, new_size));
     new_tab = sh_realloc(shthread_get_shell(), pfdtab->tab, new_size * sizeof(shfile));
     if (new_tab)
     {
@@ -201,6 +487,9 @@ static int shfile_grow_tab_locked(shfdtab *pfdtab, int fdMin)
             new_tab[i].oflags = 0;
             new_tab[i].shflags = 0;
             new_tab[i].native = -1;
+# ifdef DEBUG
+            new_tab[i].dbgname = NULL;
+# endif
         }
 
         fdRet = pfdtab->size;
@@ -209,6 +498,8 @@ static int shfile_grow_tab_locked(shfdtab *pfdtab, int fdMin)
 
         pfdtab->tab = new_tab;
         pfdtab->size = new_size;
+
+        TRACE2((NULL, "shfile_grow_tab_locked: new %p / %d entries\n", pfdtab->tab, pfdtab->size));
     }
 
     return fdRet;
@@ -227,8 +518,10 @@ static int shfile_grow_tab_locked(shfdtab *pfdtab, int fdMin)
  * @param   shflags     The shell file flags.
  * @param   fdMin       The minimum file descriptor number, pass -1 if any is ok.
  * @param   who         Who we're doing this for (for logging purposes).
+ * @param   dbgname     The filename, if applicable/available.
  */
-static int shfile_insert(shfdtab *pfdtab, intptr_t native, unsigned oflags, unsigned shflags, int fdMin, const char *who)
+static int shfile_insert(shfdtab *pfdtab, intptr_t native, unsigned oflags, unsigned shflags, int fdMin,
+                         const char *who, const char *dbgname)
 {
     shmtxtmp tmp;
     int fd;
@@ -239,6 +532,8 @@ static int shfile_insert(shfdtab *pfdtab, intptr_t native, unsigned oflags, unsi
      */
     if (fdMin >= SHFILE_MAX)
     {
+        TRACE2((NULL, "shfile_insert: fdMin=%d is out of bounds; native=%p %s\n", fdMin, native, dbgname));
+        shfile_native_close(native, NULL, K_FALSE);
         errno = EMFILE;
         return -1;
     }
@@ -246,6 +541,7 @@ static int shfile_insert(shfdtab *pfdtab, intptr_t native, unsigned oflags, unsi
     if (fcntl((int)native, F_SETFD, fcntl((int)native, F_GETFD, 0) | FD_CLOEXEC) == -1)
     {
         int e = errno;
+        TRACE2((NULL, "shfile_insert: F_SETFD failed %d; native=%p %s\n", e, native, dbgname));
         close((int)native);
         errno = e;
         return -1;
@@ -276,9 +572,13 @@ static int shfile_insert(shfdtab *pfdtab, intptr_t native, unsigned oflags, unsi
         pfdtab->tab[fd].oflags = oflags;
         pfdtab->tab[fd].shflags = shflags;
         pfdtab->tab[fd].native = native;
+#ifdef DEBUG
+        pfdtab->tab[fd].dbgname = dbgname ? sh_strdup(NULL, dbgname) : NULL;
+#endif
+        TRACE2((NULL, "shfile_insert: #%d: native=%p oflags=%#x shflags=%#x %s\n", fd, native, oflags, shflags, dbgname));
     }
     else
-        shfile_native_close(native, oflags);
+        shfile_native_close(native, NULL, K_FALSE);
 
     shmtx_leave(&pfdtab->mtx, &tmp);
 
@@ -303,8 +603,10 @@ static int shfile_insert(shfdtab *pfdtab, intptr_t native, unsigned oflags, unsi
  * @param   shflags     The shell file flags.
  * @param   fdMin       The minimum file descriptor number, pass -1 if any is ok.
  * @param   who         Who we're doing this for (for logging purposes).
+ * @param   dbgname     The filename, if applicable/available.
  */
-static int shfile_copy_insert_and_close(shfdtab *pfdtab, int *pnative, unsigned oflags, unsigned shflags, int fdMin, const char *who)
+static int shfile_copy_insert_and_close(shfdtab *pfdtab, int *pnative, unsigned oflags, unsigned shflags, int fdMin,
+                                        const char *who, const char *dbgname)
 {
     int fd          = -1;
     int s           = errno;
@@ -314,7 +616,7 @@ static int shfile_copy_insert_and_close(shfdtab *pfdtab, int *pnative, unsigned 
     errno = s;
 
     if (native_copy != -1)
-        fd = shfile_insert(pfdtab, native_copy, oflags, shflags, fdMin, who);
+        fd = shfile_insert(pfdtab, native_copy, oflags, shflags, fdMin, who, dbgname);
     return fd;
 }
 # endif /* !K_OS_WINDOWS */
@@ -356,7 +658,7 @@ static shfile *shfile_get(shfdtab *pfdtab, int fd, shmtxtmp *ptmp)
 static void shfile_put(shfdtab *pfdtab, shfile *file, shmtxtmp *ptmp)
 {
     shmtx_leave(&pfdtab->mtx, ptmp);
-    assert(file);
+    kHlpAssert(file);
     (void)file;
 }
 
@@ -609,6 +911,36 @@ static void shfile_init_globals(void)
         {
             /* fatal error */
         }
+
+# ifdef KASH_ASYNC_CLOSE_HANDLE
+        /*
+         * Init the async CloseHandle state.
+         */
+        shmtx_init(&g_shfile_async_close.mtx);
+        g_shfile_async_close.evt_workers = CreateEventW(NULL, FALSE /*fManualReset*/, FALSE /*fInitialState*/, NULL /*pwszName*/);
+        g_shfile_async_close.evt_sync    = CreateEventW(NULL, TRUE /*fManualReset*/, FALSE /*fInitialState*/, NULL /*pwszName*/);
+        if (   !g_shfile_async_close.evt_workers
+            || !g_shfile_async_close.evt_sync)
+        {
+            fprintf(stderr, "fatal error: CreateEventW failed: %u\n", GetLastError());
+            _exit(19);
+        }
+        g_shfile_async_close.idx_read          = 0;
+        g_shfile_async_close.idx_write         = 0;
+        g_shfile_async_close.num_pending       = 0;
+        g_shfile_async_close.terminate_threads = K_FALSE;
+        g_shfile_async_close.signal_sync       = K_FALSE;
+        g_shfile_async_close.num_threads       = 0;
+        {
+            unsigned i = K_ELEMENTS(g_shfile_async_close.handles);
+            while (i-- > 0)
+                g_shfile_async_close.handles[i] = NULL;
+            i = K_ELEMENTS(g_shfile_async_close.threads);
+            while (i-- > 0)
+                g_shfile_async_close.threads[i] = NULL;
+        }
+# endif
+
         g_shfile_globals_initialized = 1;
     }
 #endif
@@ -636,13 +968,15 @@ int shfile_init(shfdtab *pfdtab, shfdtab *inherit)
     {
 #ifdef SHFILE_IN_USE
         /* Get CWD with unix slashes. */
-        char buf[SHFILE_MAX_PATH];
-        if (getcwd(buf, sizeof(buf)))
+        if (!inherit)
         {
-            shfile_fix_slashes(buf);
-
-            pfdtab->cwd = sh_strdup(NULL, buf);
-            if (!inherit)
+            char buf[SHFILE_MAX_PATH];
+            if (getcwd(buf, sizeof(buf)))
+            {
+                shfile_fix_slashes(buf);
+                pfdtab->cwd = sh_strdup(NULL, buf);
+            }
+            if (pfdtab->cwd)
             {
 # if K_OS == K_OS_WINDOWS
                 static const struct
@@ -693,8 +1027,9 @@ int shfile_init(shfdtab *pfdtab, shfdtab *inherit)
                     {
                         ph -= dwPerH;
 
-                        if (    (paf[i] & (FOPEN | FNOINHERIT)) == FOPEN
-                            &&  *ph != (uint32_t)INVALID_HANDLE_VALUE)
+                        if (   (paf[i] & (FOPEN | FNOINHERIT)) == FOPEN
+                            && *ph != (uint32_t)INVALID_HANDLE_VALUE
+                            && *ph != 0)
                         {
                             HANDLE  h = (HANDLE)(intptr_t)*ph;
                             int     fd2;
@@ -710,7 +1045,7 @@ int shfile_init(shfdtab *pfdtab, shfdtab *inherit)
                                 dwErr = shfile_query_handle_access_mask(h, &Mask);
                                 if (dwErr == ERROR_INVALID_HANDLE)
                                     continue;
-                                else if (dwErr == NO_ERROR)
+                                if (dwErr == NO_ERROR)
                                 {
                                     fFlags = 0;
                                     if (    (Mask & (GENERIC_READ | FILE_READ_DATA))
@@ -736,8 +1071,8 @@ int shfile_init(shfdtab *pfdtab, shfdtab *inherit)
                             else
                                 fFlags2 = 0;
 
-                            fd2 = shfile_insert(pfdtab, (intptr_t)h, fFlags, fFlags2, i, "shtab_init");
-                            assert(fd2 == i); (void)fd2;
+                            fd2 = shfile_insert(pfdtab, (intptr_t)h, fFlags, fFlags2, i, "shtab_init", NULL);
+                            kHlpAssert(fd2 == i); (void)fd2;
                             if (fd2 != i)
                                 rc = -1;
                         }
@@ -750,7 +1085,8 @@ int shfile_init(shfdtab *pfdtab, shfdtab *inherit)
                         ||  pfdtab->tab[i].fd == -1)
                     {
                         HANDLE hFile = GetStdHandle(aStdHandles[i].dwStdHandle);
-                        if (hFile != INVALID_HANDLE_VALUE)
+                        if (   hFile != INVALID_HANDLE_VALUE
+                            && hFile != NULL)
                         {
                             DWORD       dwType  = GetFileType(hFile);
                             unsigned    fFlags  = aStdHandles[i].fFlags;
@@ -762,8 +1098,8 @@ int shfile_init(shfdtab *pfdtab, shfdtab *inherit)
                                 fFlags2 = SHFILE_FLAGS_PIPE;
                             else
                                 fFlags2 = SHFILE_FLAGS_FILE;
-                            fd2 = shfile_insert(pfdtab, (intptr_t)hFile, fFlags, fFlags2, i, "shtab_init");
-                            assert(fd2 == i); (void)fd2;
+                            fd2 = shfile_insert(pfdtab, (intptr_t)hFile, fFlags, fFlags2, i, "shtab_init", NULL);
+                            kHlpAssert(fd2 == i); (void)fd2;
                             if (fd2 != i)
                                 rc = -1;
                         }
@@ -803,8 +1139,8 @@ int shfile_init(shfdtab *pfdtab, shfdtab *inherit)
                             native = fcntl(fd, F_DUPFD, SHFILE_UNIX_MIN_FD);
                             if (native == -1)
                                 native = fd;
-                            fd2 = shfile_insert(pfdtab, native, oflags, fFlags2, fd, "shtab_init");
-                            assert(fd2 == fd); (void)fd2;
+                            fd2 = shfile_insert(pfdtab, native, oflags, fFlags2, fd, "shtab_init", NULL);
+                            kHlpAssert(fd2 == fd); (void)fd2;
                             if (fd2 != fd)
                                 rc = -1;
                             if (native != fd)
@@ -816,23 +1152,159 @@ int shfile_init(shfdtab *pfdtab, shfdtab *inherit)
 # endif
             }
             else
-            {
-                /** @todo */
-                errno = ENOSYS;
                 rc = -1;
-            }
         }
         else
-            rc = -1;
+        {
+            /*
+             * Inherit from parent shell's file table.
+             */
+            shfile const *src;
+            shfile       *dst;
+            shmtxtmp      tmp;
+            unsigned      fdcount;
+            unsigned      fd;
+
+            shmtx_enter(&inherit->mtx, &tmp);
+
+            /* allocate table and cwd: */
+            fdcount = inherit->size;
+            pfdtab->tab = dst = (shfile *)(fdcount ? sh_calloc(NULL, sizeof(pfdtab->tab[0]), fdcount) : NULL);
+            pfdtab->cwd = sh_strdup(NULL, inherit->cwd);
+            if (   pfdtab->cwd
+                && (pfdtab->tab || fdcount == 0))
+            {
+                /* duplicate table entries: */
+                for (fd = 0, src = inherit->tab; fd < fdcount; fd++, src++, dst++)
+                    if (src->fd == -1)
+                        dst->native = dst->fd = -1;
+                    else
+                    {
+# if K_OS == K_OS_WINDOWS
+#  ifdef SH_FORKED_MODE
+                        KBOOL const cox = !!(src->shflags & SHFILE_FLAGS_CLOSE_ON_EXEC);
+#  else
+                        KBOOL const cox = K_TRUE;
+#  endif
+# endif
+                        *dst = *src;
+# ifdef DEBUG
+                        if (src->dbgname)
+                            dst->dbgname = sh_strdup(NULL, src->dbgname);
+# endif
+# if K_OS == K_OS_WINDOWS
+                        if (DuplicateHandle(GetCurrentProcess(),
+                                            (HANDLE)src->native,
+                                            GetCurrentProcess(),
+                                            (HANDLE *)&dst->native,
+                                            0,
+                                            FALSE /* bInheritHandle */,
+                                            DUPLICATE_SAME_ACCESS))
+                            TRACE2((NULL, "shfile_init: %d (%#x, %#x) %p (was %p)\n",
+                                    dst->fd, dst->oflags, dst->shflags, dst->native, src->native));
+                        else
+                        {
+                            dst->native = (intptr_t)INVALID_HANDLE_VALUE;
+                            rc = shfile_dos2errno(GetLastError());
+                            TRACE2((NULL, "shfile_init: %d (%#x, %#x) %p - failed %d / %u!\n",
+                                    dst->fd, dst->oflags, dst->shflags, src->native, rc, GetLastError()));
+                            break;
+                        }
+
+# elif K_OS == K_OS_LINUX /* 2.6.27 / glibc 2.9 */ || K_OS == K_OS_FREEBSD /* 10.0 */ || K_OS == K_OS_NETBSD /* 6.0 */
+                        dst->native = dup3(src->native, -1, cox ? O_CLOEXEC : 0);
+# else
+                        if (cox)
+                        {
+#  ifndef SH_FORKED_MODE
+                            shmtxtmp tmp2;
+                            shmtx_enter(&global_exec_something, &tmp)
+#  endif
+                            dst->native = dup2(src->native, -1);
+                            if (dst->native >= 0)
+                                rc = fcntl(dst->native, F_SETFD, FD_CLOEXEC);
+#  ifndef SH_FORKED_MODE
+                            shmtx_leave(&global_exec_something, &tmp)
+#  endif
+                            if (rc != 0)
+                                break;
+                        }
+                        else
+                            dst->native = dup2(src->native, -1);
+                        if (dst->native < 0)
+                        {
+                            rc = -1;
+                            break;
+                        }
+# endif
+                    }
+            }
+            else
+                rc = -1;
+            pfdtab->size = fd;
+            shmtx_leave(&inherit->mtx, &tmp);
+        }   /* inherit != NULL */
 #endif
     }
     return rc;
 }
 
+/**
+ * Deletes the file descriptor table.
+ *
+ * Safe to call more than once.
+ */
+void shfile_uninit(shfdtab *pfdtab, int tracefd)
+{
+    if (!pfdtab)
+        return;
+
+    if (pfdtab->tab)
+    {
+        unsigned left = pfdtab->size;
+        struct shfile *pfd = pfdtab->tab;
+        unsigned tracefdfound = 0;
+        while (left-- > 0)
+        {
+            if (pfd->fd != -1)
+            {
+                if (pfd->fd != tracefd)
+                {
+#if K_OS == K_OS_WINDOWS
+                    BOOL rc = CloseHandle((HANDLE)pfd->native);
+                    kHlpAssert(rc == TRUE); K_NOREF(rc);
+#else
+                    int rc = close((int)pfd->native);
+                    kHlpAssert(rc == 0); K_NOREF(rc);
+#endif
+                    pfd->fd     = -1;
+                    pfd->native = -1;
+                }
+                else
+                    tracefdfound++; /* there is only the one */
+            }
+            pfd++;
+        }
+
+        if (!tracefdfound)
+        { /* likely */ }
+        else
+            return;
+
+        sh_free(NULL, pfdtab->tab);
+        pfdtab->tab = NULL;
+    }
+
+    shmtx_delete(&pfdtab->mtx);
+
+    sh_free(NULL, pfdtab->cwd);
+    pfdtab->cwd = NULL;
+}
+
 #if K_OS == K_OS_WINDOWS && defined(SHFILE_IN_USE)
 
 /**
- * Changes the inheritability of a file descriptro, taking console handles into
+ * Changes the inheritability of a file descriptor, taking console handles into
  * account.
  *
  * @note    This MAY change the native handle for the entry.
@@ -862,19 +1334,20 @@ static HANDLE shfile_set_inherit_win(shfile *pfd, int set)
         {
             TRACE2((NULL, "shfile_set_inherit_win: %p -> %p (set=%d)\n", pfd->native, hFile, set));
             if (!CloseHandle((HANDLE)pfd->native))
-                assert(0);
+                kHlpAssert(0);
             pfd->native = (intptr_t)hFile;
         }
         else
         {
             err = GetLastError();
-            assert(0);
+            kHlpAssert(0);
             hFile = (HANDLE)pfd->native;
         }
     }
     return hFile;
 }
 
+# ifdef SH_FORKED_MODE
 /**
  * Helper for shfork.
  *
@@ -919,6 +1392,18 @@ void shfile_fork_win(shfdtab *pfdtab, int set, intptr_t *hndls)
 
     shmtx_leave(&pfdtab->mtx, &tmp);
 }
+# endif /* SH_FORKED_MODE */
+
+/** shfile_exec_win helper that make sure there are no _O_APPEND handles. */
+static KBOOL shfile_exec_win_no_append(shfdtab *pfdtab, unsigned count)
+{
+    unsigned i;
+    for (i = 0; i < count; i++)
+        if (   (pfdtab->tab[i].oflags & _O_APPEND)
+            && (pfdtab->tab[i].oflags & (_O_WRONLY | _O_RDWR)))
+            return K_FALSE;
+    return K_TRUE;
+}
 
 /**
  * Helper for sh_execve.
@@ -928,18 +1413,18 @@ void shfile_fork_win(shfdtab *pfdtab, int set, intptr_t *hndls)
  * the startup info for the CRT. On the second call, after CreateProcess,
  * it will restore the handle inheritability properties.
  *
- * @returns Pointer to CRT data if prepare is 1, NULL if prepare is 0.
+ * @returns 0 on success, non-zero on failure.
  * @param   pfdtab  The file descriptor table.
- * @param   prepare Which call, 1 if before and 0 if after.
- * @param   sizep   Where to store the size of the returned data.
- * @param   hndls   Where to store the three standard handles.
+ * @param   prepare Which call, 1 if before, 0 if after and success, -1 if after on failure.
+ * @param   info    The info structure.
  */
-void *shfile_exec_win(shfdtab *pfdtab, int prepare, unsigned short *sizep, intptr_t *hndls)
+int shfile_exec_win(shfdtab *pfdtab, int prepare, shfdexecwin *info)
 {
-    void       *pvRet;
-    shmtxtmp    tmp;
-    unsigned    count;
-    unsigned    i;
+    STARTUPINFOA   *strtinfo = (STARTUPINFOA *)info->strtinfo;
+    int             rc = 0;
+    shmtxtmp        tmp;
+    unsigned        count;
+    unsigned        i;
 
     shmtx_enter(&pfdtab->mtx, &tmp);
     TRACE2((NULL, "shfile_exec_win: prepare=%p\n", prepare));
@@ -947,43 +1432,70 @@ void *shfile_exec_win(shfdtab *pfdtab, int prepare, unsigned short *sizep, intpt
     count  = pfdtab->size < (0x10000-4) / (1 + sizeof(HANDLE))
            ? pfdtab->size
            : (0x10000-4) / (1 + sizeof(HANDLE));
-    while (count > 3 && pfdtab->tab[count - 1].fd == -1)
+    while (   count > 3
+           && (   pfdtab->tab[count - 1].fd == -1
+               || (pfdtab->tab[count - 1].shflags & SHFILE_FLAGS_CLOSE_ON_EXEC)))
         count--;
 
-    if (prepare)
+    if (prepare > 0)
     {
-        size_t      cbData = sizeof(int) + count * (1 + sizeof(HANDLE));
-        uint8_t    *pbData = sh_malloc(shthread_get_shell(), cbData);
-        uint8_t    *paf = pbData + sizeof(int);
-        HANDLE     *pah = (HANDLE *)(paf + count);
-
-        *(int *)pbData = count;
-
-        i = count;
-        while (i-- > 0)
+        if (count <= 3 && shfile_exec_win_no_append(pfdtab, count))
         {
-            if (    pfdtab->tab[i].fd == i
-                &&  !(pfdtab->tab[i].shflags & SHFILE_FLAGS_CLOSE_ON_EXEC))
+            info->inherithandles  = 0;
+            info->startsuspended  = 1;
+            strtinfo->cbReserved2 = 0;
+            strtinfo->lpReserved2 = NULL;
+        }
+        else
+        {
+            size_t      cbData = sizeof(int) + count * (1 + sizeof(HANDLE));
+            uint8_t    *pbData = sh_malloc(shthread_get_shell(), cbData);
+            uint8_t    *paf = pbData + sizeof(int);
+            HANDLE     *pah = (HANDLE *)(paf + count);
+
+            info->inherithandles  = 1;
+# ifdef KASH_ASYNC_CLOSE_HANDLE
+            info->startsuspended  = g_shfile_async_close.num_pending > 0;
+# else
+            info->startsuspended  = 0;
+# endif
+            strtinfo->cbReserved2 = (unsigned short)cbData;
+            strtinfo->lpReserved2 = pbData;
+
+# ifndef SH_FORKED_MODE
+            shmtx_leave(&pfdtab->mtx, &tmp); /* should be harmless as this isn't really necessary at all. */
+            shmtx_enter(&g_sh_exec_inherit_mtx, &info->tmp);
+            shmtx_enter(&pfdtab->mtx, &tmp);
+# endif
+
+            *(int *)pbData = count;
+
+            i = count;
+            while (i-- > 0)
             {
-                HANDLE hFile = shfile_set_inherit_win(&pfdtab->tab[i], 1);
-                TRACE2((NULL, "  #%d: native=%#x oflags=%#x shflags=%#x\n",
-                        i, hFile, pfdtab->tab[i].oflags, pfdtab->tab[i].shflags));
-                paf[i] = FOPEN;
-                if (pfdtab->tab[i].oflags & _O_APPEND)
-                    paf[i] |= FAPPEND;
-                if (pfdtab->tab[i].oflags & _O_TEXT)
-                    paf[i] |= FTEXT;
-                switch (pfdtab->tab[i].shflags & SHFILE_FLAGS_TYPE_MASK)
+                if (    pfdtab->tab[i].fd == i
+                    &&  !(pfdtab->tab[i].shflags & SHFILE_FLAGS_CLOSE_ON_EXEC))
                 {
-                    case SHFILE_FLAGS_TTY:  paf[i] |= FDEV; break;
-                    case SHFILE_FLAGS_PIPE: paf[i] |= FPIPE; break;
+                    HANDLE hFile = shfile_set_inherit_win(&pfdtab->tab[i], 1);
+                    TRACE2((NULL, "  #%d: native=%#x oflags=%#x shflags=%#x\n",
+                            i, hFile, pfdtab->tab[i].oflags, pfdtab->tab[i].shflags));
+                    paf[i] = FOPEN;
+                    if (pfdtab->tab[i].oflags & _O_APPEND)
+                        paf[i] |= FAPPEND;
+                    if (pfdtab->tab[i].oflags & _O_TEXT)
+                        paf[i] |= FTEXT;
+                    switch (pfdtab->tab[i].shflags & SHFILE_FLAGS_TYPE_MASK)
+                    {
+                        case SHFILE_FLAGS_TTY:  paf[i] |= FDEV; break;
+                        case SHFILE_FLAGS_PIPE: paf[i] |= FPIPE; break;
+                    }
+                    pah[i] = hFile;
                 }
-                pah[i] = hFile;
-            }
-            else
-            {
-                paf[i] = 0;
-                pah[i] = INVALID_HANDLE_VALUE;
+                else
+                {
+                    paf[i] = 0;
+                    pah[i] = INVALID_HANDLE_VALUE;
+                }
             }
         }
 
@@ -991,32 +1503,59 @@ void *shfile_exec_win(shfdtab *pfdtab, int prepare, unsigned short *sizep, intpt
         {
             if (    i < count
                 &&  pfdtab->tab[i].fd == i)
-                hndls[i] = pfdtab->tab[i].native;
+            {
+                info->replacehandles[i] = 1;
+                info->handles[i] = pfdtab->tab[i].native;
+            }
             else
-                hndls[i] = (intptr_t)INVALID_HANDLE_VALUE;
+            {
+                info->replacehandles[i] = 0;
+                info->handles[i] = (intptr_t)INVALID_HANDLE_VALUE;
+            }
             TRACE2((NULL, "shfile_exec_win: i=%d count=%d fd=%d native=%d hndls[%d]=\n",
-                    i, count, pfdtab->tab[i].fd, pfdtab->tab[i].native, i, hndls[i]));
+                    i, count, pfdtab->tab[i].fd, pfdtab->tab[i].native, i, info->handles[i]));
         }
-
-        *sizep = (unsigned short)cbData;
-        pvRet = pbData;
     }
     else
     {
-        assert(!hndls);
-        assert(!sizep);
+        shfile *file = pfdtab->tab;
+
+        sh_free(NULL, strtinfo->lpReserved2);
+        strtinfo->lpReserved2 = NULL;
+
         i = count;
-        while (i-- > 0)
-        {
-            if (    pfdtab->tab[i].fd == i
-                &&  !(pfdtab->tab[i].shflags & SHFILE_FLAGS_CLOSE_ON_EXEC))
-                shfile_set_inherit_win(&pfdtab->tab[i], 0);
-        }
-        pvRet = NULL;
+        if (prepare == 0)
+            for (i = 0; i < count; i++, file++)
+            {
+                if (   file->fd == i
+                    && !(file->shflags & SHFILE_FLAGS_TRACE))
+                {
+                    shfile_native_close(file->native, file, info->inherithandles);
+
+                    file->fd = -1;
+                    file->oflags = 0;
+                    file->shflags = 0;
+                    file->native = -1;
+# ifdef DEBUG
+                    sh_free(NULL, file->dbgname);
+                    file->dbgname = NULL;
+# endif
+                }
+            }
+        else if (info->inherithandles)
+            for (i = 0; i < count; i++, file++)
+                if (    file->fd == i
+                    &&  !(file->shflags & SHFILE_FLAGS_CLOSE_ON_EXEC))
+                    shfile_set_inherit_win(file, 0);
+
+# ifndef SH_FORKED_MODE
+        if (info->inherithandles)
+            shmtx_leave(&g_sh_exec_inherit_mtx, &info->tmp);
+# endif
     }
 
     shmtx_leave(&pfdtab->mtx, &tmp);
-    return pvRet;
+    return rc;
 }
 
 #endif /* K_OS_WINDOWS */
@@ -1117,6 +1656,9 @@ int shfile_open(shfdtab *pfdtab, const char *name, unsigned flags, mode_t mode)
     fd = shfile_make_path(pfdtab, name, &absname[0]);
     if (!fd)
     {
+#  ifdef DEBUG
+        KU64 ns = shfile_nano_ts();
+#  endif
         SetLastError(0);
         hFile = CreateFileA(absname,
                             dwDesiredAccess,
@@ -1125,8 +1667,13 @@ int shfile_open(shfdtab *pfdtab, const char *name, unsigned flags, mode_t mode)
                             dwCreationDisposition,
                             dwFlagsAndAttributes,
                             NULL /* hTemplateFile */);
+#  ifdef DEBUG
+        ns = shfile_nano_ts() - ns;
+        if (ns > 1000000)
+            TRACE2((NULL, "shfile_open: %u ns hFile=%p (%d) %s\n", ns, hFile, GetLastError(), absname));
+#  endif
         if (hFile != INVALID_HANDLE_VALUE)
-            fd = shfile_insert(pfdtab, (intptr_t)hFile, flags, 0, -1, "shfile_open");
+            fd = shfile_insert(pfdtab, (intptr_t)hFile, flags, 0, -1, "shfile_open", absname);
         else
             fd = shfile_dos2errno(GetLastError());
     }
@@ -1137,7 +1684,7 @@ int shfile_open(shfdtab *pfdtab, const char *name, unsigned flags, mode_t mode)
     {
         fd = open(absname, flags, mode);
         if (fd != -1)
-            fd = shfile_copy_insert_and_close(pfdtab, &fd, flags, 0, -1, "shfile_open");
+            fd = shfile_copy_insert_and_close(pfdtab, &fd, flags, 0, -1, "shfile_open", absname);
     }
 
 # endif /* K_OS != K_OS_WINDOWS */
@@ -1164,12 +1711,12 @@ int shfile_pipe(shfdtab *pfdtab, int fds[2])
     SecurityAttributes.bInheritHandle = FALSE;
 
     fds[1] = fds[0] = -1;
-    if (CreatePipe(&hRead, &hWrite, &SecurityAttributes, 4096))
+    if (CreatePipe(&hRead, &hWrite, &SecurityAttributes, SHFILE_PIPE_SIZE))
     {
-        fds[0] = shfile_insert(pfdtab, (intptr_t)hRead, O_RDONLY, SHFILE_FLAGS_PIPE, -1, "shfile_pipe");
+        fds[0] = shfile_insert(pfdtab, (intptr_t)hRead, O_RDONLY, SHFILE_FLAGS_PIPE, -1, "shfile_pipe", "pipe-rd");
         if (fds[0] != -1)
         {
-            fds[1] = shfile_insert(pfdtab, (intptr_t)hWrite, O_WRONLY, SHFILE_FLAGS_PIPE, -1, "shfile_pipe");
+            fds[1] = shfile_insert(pfdtab, (intptr_t)hWrite, O_WRONLY, SHFILE_FLAGS_PIPE, -1, "shfile_pipe", "pipe-wr");
             if (fds[1] != -1)
                 rc = 0;
         }
@@ -1180,10 +1727,10 @@ int shfile_pipe(shfdtab *pfdtab, int fds[2])
     fds[1] = fds[0] = -1;
     if (!pipe(native_fds))
     {
-        fds[0] = shfile_copy_insert_and_close(pfdtab, &native_fds[0], O_RDONLY, SHFILE_FLAGS_PIPE, -1, "shfile_pipe");
+        fds[0] = shfile_copy_insert_and_close(pfdtab, &native_fds[0], O_RDONLY, SHFILE_FLAGS_PIPE, -1, "shfile_pipe", "pipe-rd");
         if (fds[0] != -1)
         {
-            fds[1] = shfile_copy_insert_and_close(pfdtab, &native_fds[1], O_WRONLY, SHFILE_FLAGS_PIPE, -1, "shfile_pipe");
+            fds[1] = shfile_copy_insert_and_close(pfdtab, &native_fds[1], O_WRONLY, SHFILE_FLAGS_PIPE, -1, "shfile_pipe", "pipe-wr");
             if (fds[1] != -1)
                 rc = 0;
         }
@@ -1256,24 +1803,30 @@ int shfile_movefd(shfdtab *pfdtab, int fdfrom, int fdto)
     if (file)
     {
         /* prepare the new entry */
-        if (fdto >= (int)pfdtab->size)
+        if ((unsigned)fdto >= pfdtab->size)
             shfile_grow_tab_locked(pfdtab, fdto);
-        if (fdto < (int)pfdtab->size)
+        if ((unsigned)fdto < pfdtab->size)
         {
             if (pfdtab->tab[fdto].fd != -1)
-                shfile_native_close(pfdtab->tab[fdto].native, pfdtab->tab[fdto].oflags);
+                shfile_native_close(pfdtab->tab[fdto].native, &pfdtab->tab[fdto], K_FALSE);
 
             /* setup the target. */
             pfdtab->tab[fdto].fd      = fdto;
             pfdtab->tab[fdto].oflags  = file->oflags;
             pfdtab->tab[fdto].shflags = file->shflags;
             pfdtab->tab[fdto].native  = file->native;
+# ifdef DEBUG
+            pfdtab->tab[fdto].dbgname = file->dbgname;
+# endif
 
             /* close the source. */
             file->fd        = -1;
             file->oflags    = 0;
             file->shflags   = 0;
             file->native    = -1;
+# ifdef DEBUG
+            file->dbgname   = NULL;
+# endif
 
             rc = fdto;
         }
@@ -1331,12 +1884,18 @@ int shfile_movefd_above(shfdtab *pfdtab, int fdfrom, int fdMin)
             pfdtab->tab[fdto].oflags  = file->oflags;
             pfdtab->tab[fdto].shflags = file->shflags;
             pfdtab->tab[fdto].native  = file->native;
+# ifdef DEBUG
+            pfdtab->tab[fdto].dbgname = file->dbgname;
+# endif
 
             /* close the source. */
             file->fd        = -1;
             file->oflags    = 0;
             file->shflags   = 0;
             file->native    = -1;
+# ifdef DEBUG
+            file->dbgname   = NULL;
+# endif
         }
         else
         {
@@ -1369,12 +1928,16 @@ int shfile_close(shfdtab *pfdtab, unsigned fd)
     shfile     *file = shfile_get(pfdtab, fd, &tmp);
     if (file)
     {
-        shfile_native_close(file->native, file->oflags);
+        shfile_native_close(file->native, file, K_FALSE);
 
         file->fd = -1;
         file->oflags = 0;
         file->shflags = 0;
         file->native = -1;
+# ifdef DEBUG
+        sh_free(NULL, file->dbgname);
+        file->dbgname = NULL;
+# endif
 
         shfile_put(pfdtab, file, &tmp);
         rc = 0;
@@ -1443,6 +2006,7 @@ long shfile_write(shfdtab *pfdtab, int fd, const void *buf, size_t len)
         rc = write(file->native, buf, len);
 # endif
 
+        file->shflags |= SHFILE_FLAGS_DIRTY; /* there should be no concurrent access, so this is safe. */
         shfile_put(pfdtab, file, &tmp);
     }
     else
@@ -1483,9 +2047,9 @@ long shfile_lseek(shfdtab *pfdtab, int fd, long off, int whench)
     if (file)
     {
 # if K_OS == K_OS_WINDOWS
-        assert(SEEK_SET == FILE_BEGIN);
-        assert(SEEK_CUR == FILE_CURRENT);
-        assert(SEEK_END == FILE_END);
+        kHlpAssert(SEEK_SET == FILE_BEGIN);
+        kHlpAssert(SEEK_CUR == FILE_CURRENT);
+        kHlpAssert(SEEK_END == FILE_END);
         rc = SetFilePointer((HANDLE)file->native, off, NULL, whench);
         if (rc == INVALID_SET_FILE_POINTER)
             rc = shfile_dos2errno(GetLastError());
@@ -1536,7 +2100,7 @@ int shfile_fcntl(shfdtab *pfdtab, int fd, int cmd, int arg)
                 else
                 {
 # if K_OS == K_OS_WINDOWS
-                    assert(0);
+                    kHlpAssert(0);
                     errno = EINVAL;
                     rc = -1;
 # else
@@ -1559,13 +2123,15 @@ int shfile_fcntl(shfdtab *pfdtab, int fd, int cmd, int arg)
                                     0,
                                     FALSE /* bInheritHandle */,
                                     DUPLICATE_SAME_ACCESS))
-                    rc = shfile_insert(pfdtab, (intptr_t)hNew, file->oflags, file->shflags, arg, "shfile_fcntl");
+                    rc = shfile_insert(pfdtab, (intptr_t)hNew, file->oflags, file->shflags, arg,
+                                       "shfile_fcntl", SHFILE_DBGNAME(file->dbgname));
                 else
                     rc = shfile_dos2errno(GetLastError());
 # else
                 int nativeNew = fcntl(file->native, F_DUPFD, SHFILE_UNIX_MIN_FD);
                 if (nativeNew != -1)
-                    rc = shfile_insert(pfdtab, nativeNew, file->oflags, file->shflags, arg, "shfile_fcntl");
+                    rc = shfile_insert(pfdtab, nativeNew, file->oflags, file->shflags, arg,
+                                       "shfile_fcntl", SHFILE_DBGNAME(file->dbgname));
                 else
                     rc = -1;
 # endif
@@ -1606,21 +2172,74 @@ int shfile_stat(shfdtab *pfdtab, const char *path, struct stat *pst)
     if (!rc)
     {
 # if K_OS == K_OS_WINDOWS
+#  if 1
+        rc = birdStatFollowLink(abspath, pst);
+#  else
         int dir_slash = shfile_trailing_slash_hack(abspath);
         rc = stat(abspath, pst); /** @todo re-implement stat. */
         if (!rc && dir_slash && !S_ISDIR(pst->st_mode))
         {
             rc = -1;
             errno = ENOTDIR;
-        }
+
+       }
+#  endif
 # else
         rc = stat(abspath, pst);
 # endif
     }
-    TRACE2((NULL, "shfile_stat(,%s,) -> %d [%d]\n", path, rc, errno));
+    TRACE2((NULL, "shfile_stat(,%s,) -> %d [%d] st_size=%llu st_mode=%o\n",
+            path, rc, errno, (unsigned long long)pst->st_size, pst->st_mode));
     return rc;
 #else
     return stat(path, pst);
+#endif
+}
+
+/**
+ * @retval 1 if regular file.
+ * @retval 0 if found but not a regular file.
+ * @retval -1 and errno on failure
+ */
+int shfile_stat_isreg(shfdtab *pfdtab, const char *path)
+{
+#if defined(SHFILE_IN_USE) && K_OS == K_OS_WINDOWS
+    char    abspath[SHFILE_MAX_PATH];
+    KU16    mode = 0;
+    int     rc = shfile_make_path(pfdtab, path, &abspath[0]);
+    if (!rc)
+    {
+        rc = birdStatModeOnly(abspath, &mode, 0 /*fFollowLink*/);
+        if (rc >= 0)
+            rc = S_ISREG(mode) ? 1 : 0;
+    }
+    TRACE2((NULL, "shfile_stat_isreg(,%s,) -> %d [%d] st_mode=%o\n", path, rc, errno, mode));
+    return rc;
+#else
+    struct stat st;
+    int rc = shfile_stat(pfdtab, path, &st);
+    if (rc >= 0)
+        rc = S_ISREG(st.st_mode) ? 1 : 0;
+    return rc;
+#endif
+}
+
+/**
+ * Same as shfile_stat, but without the data structure.
+ */
+int shfile_stat_exists(shfdtab *pfdtab, const char *path)
+{
+#if defined(SHFILE_IN_USE) && K_OS == K_OS_WINDOWS
+    char    abspath[SHFILE_MAX_PATH];
+    KU16    mode = 0;
+    int     rc = shfile_make_path(pfdtab, path, &abspath[0]);
+    if (!rc)
+        rc = birdStatModeOnly(abspath, &mode, 0 /*fFollowLink*/);
+    TRACE2((NULL, "shfile_stat_exists(,%s,) -> %d [%d] st_mode=%o\n", path, rc, errno, mode));
+    return rc;
+#else
+    struct stat ignored;
+    return shfile_stat(pfdtab, path, &ignored);
 #endif
 }
 
@@ -1634,6 +2253,9 @@ int shfile_lstat(shfdtab *pfdtab, const char *path, struct stat *pst)
     if (!rc)
     {
 # if K_OS == K_OS_WINDOWS
+#  if 1
+        rc = birdStatOnLink(abspath, pst);
+#  else
         int dir_slash = shfile_trailing_slash_hack(abspath);
         rc = stat(abspath, pst); /** @todo re-implement stat. */
         if (!rc && dir_slash && !S_ISDIR(pst->st_mode))
@@ -1641,6 +2263,7 @@ int shfile_lstat(shfdtab *pfdtab, const char *path, struct stat *pst)
             rc = -1;
             errno = ENOTDIR;
         }
+#  endif
 # else
         rc = lstat(abspath, pst);
 # endif
@@ -1648,7 +2271,8 @@ int shfile_lstat(shfdtab *pfdtab, const char *path, struct stat *pst)
 #else
     rc = stat(path, pst);
 #endif
-    TRACE2((NULL, "shfile_stat(,%s,) -> %d [%d]\n", path, rc, errno));
+    TRACE2((NULL, "shfile_lstat(,%s,) -> %d [%d] st_size=%llu st_mode=%o\n",
+            path, rc, errno, (unsigned long long)pst->st_size, pst->st_mode));
     return rc;
 }
 
@@ -1821,6 +2445,31 @@ int shfile_cloexec(shfdtab *pfdtab, int fd, int closeit)
 #endif
 
     TRACE2((NULL, "shfile_cloexec(%d, %d) -> %d [%d]\n", fd, closeit, rc, errno));
+    return rc;
+}
+
+/**
+ * Sets the SHFILE_FLAGS_TRACE flag.
+ */
+int shfile_set_trace(shfdtab *pfdtab, int fd)
+{
+    int         rc;
+#ifdef SHFILE_IN_USE
+    shmtxtmp    tmp;
+    shfile     *file = shfile_get(pfdtab, fd, &tmp);
+    if (file)
+    {
+        file->shflags |= SHFILE_FLAGS_TRACE;
+        shfile_put(pfdtab, file, &tmp);
+        rc = 0;
+    }
+    else
+        rc = -1;
+#else
+    rc = 0;
+#endif
+
+    TRACE2((NULL, "shfile_set_trace(%d) -> %d\n", fd, rc));
     return rc;
 }
 

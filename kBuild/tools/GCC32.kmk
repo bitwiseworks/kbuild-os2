@@ -1,4 +1,4 @@
-# $Id: GCC32.kmk 3121 2017-10-31 10:58:59Z bird $
+# $Id: GCC32.kmk 3567 2022-06-26 20:00:02Z bird $
 ## @file
 # kBuild Tool Config - Generic 32-bit GCC v3.2.x or later Using The System GCC.
 #
@@ -35,12 +35,31 @@ TOOL_GCC32 := Generic 32-bit GCC v3.2.x or later Using The System GCC. \
 	More or less Linux/ELF specfic.
 
 # Tool Specific Properties
-TOOL_GCC32_CC  ?= gcc$(HOSTSUFF_EXE) -m32
-TOOL_GCC32_CXX ?= g++$(HOSTSUFF_EXE) -m32
-TOOL_GCC32_AS  ?= gcc$(HOSTSUFF_EXE) -m32
-TOOL_GCC32_AR  ?= ar$(HOSTSUFF_EXE)
-TOOL_GCC32_LD  ?= gcc$(HOSTSUFF_EXE) -m32
-TOOL_GCC32_LD_SYSMOD ?= ld$(HOSTSUFF_EXE)
+ifndef TOOL_GCC32_PREFIX
+ TOOL_GCC32_PREFIX :=
+endif
+ifndef TOOL_GCC32_SUFFIX
+ TOOL_GCC32_SUFFIX := $(HOSTSUFF_EXE)
+endif
+if1of ($(KBUILD_HOST), solaris)
+ TOOL_GCC32_PREFIX2  ?= g
+else
+ TOOL_GCC32_PREFIX2  ?=
+endif
+TOOL_GCC32_SUFFIX2   ?= $(HOSTSUFF_EXE)
+TOOL_GCC32_PREFIX3   ?=
+TOOL_GCC32_SUFFIX3   ?= $(HOSTSUFF_EXE)
+
+TOOL_GCC32_CC        ?= $(TOOL_GCC32_PREFIX)gcc$(TOOL_GCC32_SUFFIX) -m32
+TOOL_GCC32_CXX       ?= $(TOOL_GCC32_PREFIX)g++$(TOOL_GCC32_SUFFIX) -m32
+TOOL_GCC32_AS        ?= $(TOOL_GCC32_PREFIX)gcc$(TOOL_GCC32_SUFFIX) -m32
+TOOL_GCC32_AR        ?= $(TOOL_GCC32_PREFIX2)ar$(TOOL_GCC32_SUFFIX2)
+TOOL_GCC32_LD        ?= $(TOOL_GCC32_PREFIX)gcc$(TOOL_GCC32_SUFFIX) -m32
+if1of ($(KBUILD_HOST), solaris)
+ TOOL_GCC32_LD_SYSMOD ?= $(TOOL_GCC32_PREFIX3)ld$(TOOL_GCC32_SUFFIX3)
+else
+ TOOL_GCC32_LD_SYSMOD ?= $(TOOL_GCC32_PREFIX2)ld$(TOOL_GCC32_SUFFIX2)
+endif
 ifndef TOOL_GCC32_LDFLAGS.$(KBUILD_TARGET)
 TOOL_GCC32_LDFLAGS.dll ?= -shared
 else
@@ -58,16 +77,7 @@ TOOL_GCC32_LD_SYSMOD_MAP ?= -Zmap=$(1)
 else
 TOOL_GCC32_LD_SYSMOD_MAP ?=
 endif
-if1of ($(KBUILD_HOST), solaris)
- TOOL_GCC32_OBJCOPY ?= gobjcopy$(HOSTSUFF_EXE)
-else
- TOOL_GCC32_OBJCOPY ?= objcopy$(HOSTSUFF_EXE)
-endif
-
-ifdef SLKRUNS
- TOOL_GCC32_CC  += -fmessage-length=0
- TOOL_GCC32_CXX += -fmessage-length=0
-endif
+TOOL_GCC32_OBJCOPY ?= $(TOOL_GCC32_PREFIX2)objcopy$(TOOL_GCC32_SUFFIX2)
 
 # General Properties used by kBuild
 TOOL_GCC32_COBJSUFF         ?= .o
@@ -122,7 +132,7 @@ define TOOL_GCC32_COMPILE_C_CMDS
 	$(QUIET)$(KOBJCACHE) -f $(outbase).koc -d $(PATH_OBJCACHE) -t $(bld_trg).$(bld_trg_arch) -p\
 		--kObjCache-cpp $(outbase).i\
 		$(TOOL_GCC32_CC) -E -o -\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		$(abspath $(source))\
 		--kObjCache-cc $(obj)\
@@ -136,7 +146,7 @@ else # !KBUILD_USE_KOBJCACHE
 TOOL_GCC32_COMPILE_C_OUTPUT =
 define TOOL_GCC32_COMPILE_C_CMDS
 	$(QUIET)$(TOOL_GCC32_CC) -c\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		-o $(obj)\
 		$(abspath $(source))
@@ -166,7 +176,7 @@ define TOOL_GCC32_COMPILE_CXX_CMDS
 	$(QUIET)$(KOBJCACHE) -f $(outbase).koc -d $(PATH_OBJCACHE) -t $(bld_trg).$(bld_trg_arch) -p\
 		--kObjCache-cpp $(outbase).ii\
 		$(TOOL_GCC32_CXX) -E -o -\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		$(abspath $(source))\
 		--kObjCache-cc $(obj)\
@@ -181,7 +191,7 @@ else # !KBUILD_USE_KOBJCACHE
 TOOL_GCC32_COMPILE_CXX_OUTPUT =
 define TOOL_GCC32_COMPILE_CXX_CMDS
 	$(QUIET)$(TOOL_GCC32_CXX) -c\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		-o $(obj)\
 		$(abspath $(source))
@@ -208,7 +218,7 @@ TOOL_GCC32_COMPILE_AS_DEPEND =
 TOOL_GCC32_COMPILE_AS_DEPORD =
 define TOOL_GCC32_COMPILE_AS_CMDS
 	$(QUIET)$(TOOL_GCC32_AS) -c\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		-o $(obj)\
 		$(abspath $(source))

@@ -1,4 +1,4 @@
-# $Id: GXX3OMF.kmk 3258 2019-01-03 05:34:09Z bird $
+# $Id: GXX3OMF.kmk 3567 2022-06-26 20:00:02Z bird $
 ## @file
 # kBuild Tool Config - GCC v3 targeting OS/2 OMF, for building C++ code.
 #
@@ -34,28 +34,34 @@
 TOOL_GXX3OMF := GCC v3 targeting OS/2 OMF, for building C++ code.
 
 # Tool Specific Properties
-TOOL_GXX3OMF_CC  ?= gcc$(HOSTSUFF_EXE)
-TOOL_GXX3OMF_CXX ?= g++$(HOSTSUFF_EXE)
-TOOL_GXX3OMF_PCH ?= $(TOOL_GXX3OMF_CXX)
-TOOL_GXX3OMF_AS  ?= gcc$(HOSTSUFF_EXE)
-TOOL_GXX3OMF_AR  ?= emxomfar$(HOSTSUFF_EXE)
-TOOL_GXX3OMF_AR_IMP ?= emximp$(HOSTSUFF_EXE)
-TOOL_GXX3OMF_LD ?= g++$(HOSTSUFF_EXE)
-TOOL_GXX3OMF_LD_SYSMOD ?= g++$(HOSTSUFF_EXE)
+ifndef TOOL_GXX3OMF_PREFIX
+ TOOL_GXX3OMF_PREFIX   :=
+endif
+ifndef TOOL_GXX3OMF_SUFFIX
+ TOOL_GXX3OMF_SUFFIX   := $(HOSTSUFF_EXE)
+endif
+TOOL_GXX3OMF_PREFIX2   ?=
+TOOL_GXX3OMF_SUFFIX2   ?= $(HOSTSUFF_EXE)
+TOOL_GXX3OMF_PREFIX3   ?=
+TOOL_GXX3OMF_SUFFIX3   ?= $(HOSTSUFF_EXE)
+TOOL_GXX3OMF_CC        ?= $(TOOL_GXX3OMF_PREFIX)gcc$(TOOL_GXX3OMF_SUFFIX)
+TOOL_GXX3OMF_CXX       ?= $(TOOL_GXX3OMF_PREFIX)g++$(TOOL_GXX3OMF_SUFFIX)
+TOOL_GXX3OMF_PCH       ?= $(TOOL_GXX3OMF_CXX)
+TOOL_GXX3OMF_AS        ?= $(TOOL_GXX3OMF_PREFIX)gcc$(TOOL_GXX3OMF_SUFFIX)
+TOOL_GXX3OMF_AR        ?= $(TOOL_GXX3OMF_PREFIX2)emxomfar$(TOOL_GXX3OMF_SUFFIX2)
+TOOL_GXX3OMF_AR_IMP    ?= $(TOOL_GXX3OMF_PREFIX2)emximp$(TOOL_GXX3OMF_SUFFIX2)
+TOOL_GXX3OMF_LD        ?= $(TOOL_GXX3OMF_PREFIX)g++$(TOOL_GXX3OMF_SUFFIX)
+TOOL_GXX3OMF_LD_SYSMOD ?= $(TOOL_GXX3OMF_PREFIX)g++$(TOOL_GXX3OMF_SUFFIX)
 ifndef TOOL_GXX3OMF_LDFLAGS.$(KBUILD_TARGET)
-TOOL_GXX3OMF_LDFLAGS.dll ?= -shared -Zdll
+ TOOL_GXX3OMF_LDFLAGS.dll   ?= -shared -Zdll
 else
-TOOL_GXX3OMF_LDFLAGS.dll ?= $(TOOL_GXX3OMF_LDFLAGS.$(KBUILD_TARGET))
+ TOOL_GXX3OMF_LDFLAGS.dll   ?= $(TOOL_GXX3OMF_LDFLAGS.$(KBUILD_TARGET))
 endif
 TOOL_GXX3OMF_LDFLAGS.sysmod ?= -nostdlib
-TOOL_GXX3OMF_LD_MAP ?= -Zmap=$(1)
-TOOL_GXX3OMF_LD_SYSMOD_MAP ?= -Zmap=$(1)
-TOOL_GXX3OMF_RC = rc$(HOSTSUFF_EXE)
+TOOL_GXX3OMF_LD_MAP         ?= -Zmap=$(1)
+TOOL_GXX3OMF_LD_SYSMOD_MAP  ?= -Zmap=$(1)
 
-ifdef SLKRUNS
-TOOL_GXX3OMF_CC  += -fmessage-length=0
-TOOL_GXX3OMF_CXX += -fmessage-length=0
-endif
+TOOL_GXX3OMF_RC = $(TOOL_GXX3OMF_PREFIX3)rc$(TOOL_GXX3OMF_SUFFIX3)
 
 # General Properties used by kBuild
 TOOL_GXX3OMF_COBJSUFF         ?= .o
@@ -122,7 +128,7 @@ if "$(use_objcache)" != ""
 	$(QUIET)$(KOBJCACHE) -f $(outbase).koc -d $(PATH_OBJCACHE) -t $(bld_trg).$(bld_trg_arch) -p\
 		--kObjCache-cpp $(outbase).i\
 		$(TOOL_GXX3OMF_CC) -E -o -\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		$(abspath $(source))\
 		--kObjCache-cc $(obj)\
@@ -132,7 +138,7 @@ if "$(use_objcache)" != ""
 		-
 else
 	$(QUIET)$(TOOL_GXX3OMF_CC) -c\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		-o $(obj)\
 		$(abspath $(source))
@@ -163,7 +169,7 @@ if "$(use_objcache)" != ""
 		--kObjCache-cpp $(outbase).ii\
 		$(TOOL_GXX3OMF_CXX) -E -o - $(if-expr defined($(target)_PCH_HDR)\
 		,-fpch-preprocess -Winvalid-pch -I$($(target)_1_GCC_PCH_DIR) -include $(basename $($(target)_1_GCC_PCH_FILE)),)\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		$(abspath $(source))\
 		--kObjCache-cc $(obj)\
@@ -173,7 +179,7 @@ if "$(use_objcache)" != ""
 		-
 else
 	$(QUIET)$(TOOL_GXX3OMF_CXX) -c\
-		$(flags) $(addprefix -I, $($(target)_1_GCC_PCH_DIR) $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $($(target)_1_GCC_PCH_DIR) $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		-o $(obj) $(if-expr defined($(target)_PCH_HDR) \
 		,-Winvalid-pch -include $(basename $($(target)_1_GCC_PCH_FILE)),) \
@@ -200,7 +206,7 @@ TOOL_GXX3OMF_COMPILE_PCH_DEPEND =
 TOOL_GXX3OMF_COMPILE_PCH_DEPORD = $($(target)_1_GCC_PCH_DIR)
 define TOOL_GXX3OMF_COMPILE_PCH_CMDS
 	$(QUIET)$(TOOL_GXX3OMF_PCH) -c\
-		$(flags) $(addprefix -I, $($(target)_1_GCC_PCH_DIR) $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $($(target)_1_GCC_PCH_DIR) $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		-o $(obj)\
 		$(abspath $(source))
@@ -227,7 +233,7 @@ TOOL_GXX3OMF_COMPILE_AS_DEPEND =
 TOOL_GXX3OMF_COMPILE_AS_DEPORD =
 define TOOL_GXX3OMF_COMPILE_AS_CMDS
 	$(QUIET)$(TOOL_GXX3OMF_AS) -c\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		-o $(obj)\
 		$(abspath $(source))

@@ -1,4 +1,4 @@
-/* $Id: kDepObj.c 3238 2018-12-25 18:07:55Z bird $ */
+/* $Id: kDepObj.c 3364 2020-06-08 19:29:42Z bird $ */
 /** @file
  * kDepObj - Extract dependency information from an object file.
  */
@@ -441,8 +441,8 @@ int kDepObjOMFParse(PKDEPOBJGLOBALS pThis, const KU8 *pbFile, KSIZE cbFile)
                     /* Skip file numbers (we parse them to follow the stream correctly). */
                     if (uLinNumType != 3 && uLinNumType != 4)
                     {
-                        static const unsigned s_acbTypes[3] = { 2+2+4, 4+4+4, 2+2+4+4+4 };
-                        unsigned              cbEntry = s_acbTypes[uLinNumType];
+                        static const KU16 s_acbTypes[3] = { 2+2+4, 4+4+4, 2+2+4+4+4 };
+                        KU16              cbEntry = s_acbTypes[uLinNumType];
 
                         while (cLinNums && cbRecLeft)
                         {
@@ -503,7 +503,7 @@ int kDepObjOMFParse(PKDEPOBJGLOBALS pThis, const KU8 *pbFile, KSIZE cbFile)
                         /* Parse the file names / path table. */
                         while (iLinFile < cLinFiles && cbRecLeft)
                         {
-                            int cbName = *uData.pb++;
+                            KU16 cbName = *uData.pb++;
                             if (cbRecLeft < 1 + cbName)
                                 return kDepErr(pThis, 1, "%#07lx - Bad LINNUM32 record, file/path table entry too long.", (long)((const KU8 *)pHdr - pbFile));
                             iLinFile++;
@@ -702,7 +702,13 @@ int kDepObjCOFFParseCV8SymbolSection(PKDEPOBJGLOBALS pThis, const KU8 *pbSyms, K
                            off, cbSrcFiles);
         uSrc.pb = uSrcFiles.pb + off;
         u16Type = uSrc.pu16[2];
-        cbSrc = u16Type == 0x0110 ? 6 + 16 + 2 : 6 + 2;
+        switch (u16Type)
+        {
+            case 0x0110:    cbSrc = 6 + 16 + 2; break;  /* MD5 */
+            case 0x0214:    cbSrc = 6 + 20 + 2; break;  /* SHA1 */ /** @todo check this */
+            case 0x0320:    cbSrc = 6 + 32 + 2; break;  /* SHA-256 */
+            default:        cbSrc = 6 + 0  + 2; break;
+        }
         if (off + cbSrc > cbSrcFiles)
             return kDepErr(pThis, 1, "CV source file entry at %08" KX32_PRI " is too long; cbSrc=%#" KX32_PRI " cbSrcFiles=%#" KX32_PRI,
                            off, cbSrc, cbSrcFiles);
@@ -721,11 +727,17 @@ int kDepObjCOFFParseCV8SymbolSection(PKDEPOBJGLOBALS pThis, const KU8 *pbSyms, K
          * Display the result and add it to the dependency database.
          */
         depAdd(&pThis->Core, pszFile, cchFile);
-        if (u16Type == 0x0110)
-            dprintf(("#%03" KU32_PRI ": {todo-md5-todo} '%s'\n",
-                     iSrc, pszFile));
-        else
-            dprintf(("#%03" KU32_PRI ": type=%#06" KX16_PRI " '%s'\n", iSrc, u16Type, pszFile));
+#ifdef WITH_DPRINTF
+        dprintf(("#%03" KU32_PRI ": ", iSrc));
+        {
+            KU32 off = 6;
+            for (;off < cbSrc - 2; off++)
+                dprintf(("%02" KX8_PRI, uSrc.pb[off]));
+            if (cbSrc == 6)
+                dprintf(("type=%#06" KX16_PRI, u16Type));
+            dprintf((" '%s'\n", pszFile));
+        }
+#endif
 
 
         /* next */
@@ -759,6 +771,7 @@ int kDepObjCOFFParse(PKDEPOBJGLOBALS pThis, const KU8 *pbFile, KSIZE cbFile)
     KU32                                cSHdrs;
     unsigned                            iSHdr;
     KPCUINT                             u;
+    KBOOL                               fDebugS    = K_FALSE;
     int                                 rcRet      = 2;
     int                                 rc;
 
@@ -793,9 +806,27 @@ int kDepObjCOFFParse(PKDEPOBJGLOBALS pThis, const KU8 *pbFile, KSIZE cbFile)
                 rcRet = rc;
             if (rcRet != 2)
                 return rc;
+            fDebugS = K_TRUE;
         }
         dprintf(("#%d: %.8s\n", iSHdr, paSHdrs[iSHdr].Name));
     }
+
+    /* If we found no dependencies but did find a .debug$S section, check if
+       this is a case where the compile didn't emit any because there is no
+       code in this compilation unit. */
+    if (rcRet == 2)
+    {
+        if (fDebugS)
+        {
+            for (iSHdr = 0; iSHdr < cSHdrs; iSHdr++)
+                if (!memcmp(paSHdrs[iSHdr].Name, ".text", sizeof(".text") - 1))
+                    return kDepErr(pThis, 2, "%s: no dependencies (has text).", pThis->pszFile);
+            warnx(pThis->pCtx, "%s: no dependencies, but also no text, so probably (mostly) harmless.", pThis->pszFile);
+            return 0;
+        }
+        kDepErr(pThis, 2, "%s: no dependencies.", pThis->pszFile);
+    }
+
     return rcRet;
 }
 
@@ -1150,6 +1181,7 @@ int kmk_builtin_kDepObj(int argc, char **argv, char **envp, PKMKBUILTINCTX pCtx)
             pInput = fopen(argv[i], "rb" KMK_FOPEN_NO_INHERIT_MODE);
             if (!pInput)
                 return err(pCtx, 1, "Failed to open input file '%s'", argv[i]);
+            This.pszFile = argv[i];
             fInput = 1;
         }
 
@@ -1187,8 +1219,7 @@ int kmk_builtin_kDepObj(int argc, char **argv, char **envp, PKMKBUILTINCTX pCtx)
     if (!i)
     {
         depOptimize(&This.Core, fFixCase, fQuiet, pszIgnoreExt);
-        fprintf(pOutput, "%s:", pszTarget);
-        depPrint(&This.Core, pOutput);
+        depPrintTargetWithDeps(&This.Core, pOutput, pszTarget, 1 /*fEscapeTarget*/);
         if (fStubs)
             depPrintStubs(&This.Core, pOutput);
     }

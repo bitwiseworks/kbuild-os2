@@ -1,4 +1,4 @@
-# $Id: GCC4MACHO.kmk 3121 2017-10-31 10:58:59Z bird $
+# $Id: GCC4MACHO.kmk 3567 2022-06-26 20:00:02Z bird $
 ## @file
 # kBuild Tool Config - GCC v4 targeting Darwin (Mac OS X) Mach-O.
 #
@@ -34,8 +34,14 @@
 TOOL_GCC4MACHO := GCC v4 targeting Darwin (Mac OS X) Mach-O.
 
 # Tool Specific Properties
-TOOL_GCC4MACHO_PREFIX    ?=
-TOOL_GCC4MACHO_SUFFIX    ?= $(HOSTSUFF_EXE)
+ifndef TOOL_GCC4MACHO_PREFIX
+ TOOL_GCC4MACHO_PREFIX   :=
+endif
+ifndef TOOL_GCC4MACHO_SUFFIX
+ TOOL_GCC4MACHO_SUFFIX   := $(HOSTSUFF_EXE)
+endif
+TOOL_GCC4MACHO_PREFIX2   ?=
+TOOL_GCC4MACHO_SUFFIX2   ?= $(HOSTSUFF_EXE)
 TOOL_GCC4MACHO_CC        ?= $(TOOL_GCC4MACHO_PREFIX)gcc$(TOOL_GCC4MACHO_SUFFIX)
 TOOL_GCC4MACHO_CXX       ?= $(TOOL_GCC4MACHO_PREFIX)g++$(TOOL_GCC4MACHO_SUFFIX)
 TOOL_GCC4MACHO_OBJC      ?= $(TOOL_GCC4MACHO_PREFIX)gcc$(TOOL_GCC4MACHO_SUFFIX)
@@ -43,21 +49,16 @@ TOOL_GCC4MACHO_OBJCXX    ?= $(TOOL_GCC4MACHO_PREFIX)gcc$(TOOL_GCC4MACHO_SUFFIX)
 TOOL_GCC4MACHO_AS        ?= $(TOOL_GCC4MACHO_PREFIX)gcc$(TOOL_GCC4MACHO_SUFFIX)
 TOOL_GCC4MACHO_LD        ?= $(TOOL_GCC4MACHO_PREFIX)gcc$(TOOL_GCC4MACHO_SUFFIX)
 TOOL_GCC4MACHO_LD_SYSMOD ?= $(TOOL_GCC4MACHO_PREFIX)gcc$(TOOL_GCC4MACHO_SUFFIX)
-ifndef TOOL_GCC4MACHO_LDFLAGS.$(KBUILD_TARGET)
 TOOL_GCC4MACHO_LDFLAGS.dll ?= -dynamiclib
-else
-TOOL_GCC4MACHO_LDFLAGS.dll ?= $(TOOL_GCC4MACHO_LDFLAGS.$(KBUILD_TARGET))
-endif
 TOOL_GCC4MACHO_LDFLAGS.sysmod ?= -r
 #TOOL_GCC4MACHO_LD_SONAME = -Wl,-dylib_install_name $(firstword $($(1)_SONAME.$(KBUILD_TARGET).$(KBUILD_TYPE)) $($(1)_SONAME.$(KBUILD_TARGET)) $($(1)_SONAME.$(KBUILD_TYPE)) $($(1)_SONAME) $(notdir $(2)))
-TOOL_GCC4MACHO_DSYMUTIL  ?= dsymutil
 
-ifdef SLKRUNS
-TOOL_GCC4MACHO_CC        += -fmessage-length=0
-TOOL_GCC4MACHO_CXX       += -fmessage-length=0
-TOOL_GCC4MACHO_OBJC      += -fmessage-length=0
-TOOL_GCC4MACHO_OBJCXX    += -fmessage-length=0
-endif
+TOOL_GCC4MACHO_AR        ?= $(TOOL_GCC4MACHO_PREFIX2)ar$(TOOL_GCC4MACHO_SUFFIX2)
+TOOL_GCC4MACHO_DSYMUTIL  ?= $(TOOL_GCC4MACHO_PREFIX2)dsymutil$(TOOL_GCC4MACHO_SUFFIX2)
+TOOL_GCC4MACHO_STRIP     ?= $(TOOL_GCC4MACHO_PREFIX2)strip$(TOOL_GCC4MACHO_SUFFIX2)
+TOOL_GCC4MACHO_STRIP_PROGRAM ?= $(TOOL_GCC4MACHO_STRIP) -SXxru
+TOOL_GCC4MACHO_STRIP_DLL     ?= $(TOOL_GCC4MACHO_STRIP) -Sxru
+TOOL_GCC4MACHO_STRIP_SYSMOD  ?= $(TOOL_GCC4MACHO_STRIP) -Sru
 
 # General Properties used by kBuild
 TOOL_GCC4MACHO_COBJSUFF         ?= .o
@@ -97,17 +98,12 @@ TOOL_GCC4MACHO_ASFLAGS.debug    ?= -g
 TOOL_GCC4MACHO_ASFLAGS.profile  ?= -g
 TOOL_GCC4MACHO_ASOBJSUFF        ?= .o
 
-TOOL_GCC4MACHO_AR               ?= ar$(HOSTSUFF_EXE)
 TOOL_GCC4MACHO_ARFLAGS          ?= -c -rs
 TOOL_GCC4MACHO_ARLIBSUFF        ?= .a
 
 TOOL_GCC4MACHO_LDFLAGS          ?=
 TOOL_GCC4MACHO_LDFLAGS.debug    ?= -g
 TOOL_GCC4MACHO_LDFLAGS.profile  ?= -g
-
-TOOL_GCC4MACHO_STRIP_PROGRAM    ?= strip -SXxru
-TOOL_GCC4MACHO_STRIP_DLL        ?= strip -Sxru
-TOOL_GCC4MACHO_STRIP_SYSMOD     ?= strip -Sru
 
 
 ##
@@ -161,7 +157,7 @@ define TOOL_GCC4MACHO_COMPILE_C_CMDS
 	$(QUIET)$(KOBJCACHE) -f $(outbase).koc -d $(PATH_OBJCACHE) -t $(bld_trg).$(bld_trg_arch) -p\
 		--kObjCache-cpp $(outbase).i\
 		$(TOOL_GCC4MACHO_CC) -E -o -\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		$(abspath $(source))\
 		--kObjCache-cc $(obj)\
@@ -175,7 +171,7 @@ else  # !KBUILD_USE_KOBJCACHE
 TOOL_GCC4MACHO_COMPILE_C_OUTPUT =
 define TOOL_GCC4MACHO_COMPILE_C_CMDS
 	$(QUIET)$(TOOL_GCC4MACHO_CC) -c\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		-o $(obj)\
 		$(abspath $(source))
@@ -205,7 +201,7 @@ define TOOL_GCC4MACHO_COMPILE_CXX_CMDS
 	$(QUIET)$(KOBJCACHE) -f $(outbase).koc -d $(PATH_OBJCACHE) -t $(bld_trg).$(bld_trg_arch) -p\
 		--kObjCache-cpp $(outbase).ii\
 		$(TOOL_GCC4MACHO_CXX) -E -o -\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		$(abspath $(source))\
 		--kObjCache-cc $(obj)\
@@ -219,7 +215,7 @@ else  # !KBUILD_USE_KOBJCACHE
 TOOL_GCC4MACHO_COMPILE_CXX_OUTPUT =
 define TOOL_GCC4MACHO_COMPILE_CXX_CMDS
 	$(QUIET)$(TOOL_GCC4MACHO_CXX) -c\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		-o $(obj)\
 		$(abspath $(source))
@@ -249,7 +245,7 @@ define TOOL_GCC4MACHO_COMPILE_OBJC_CMDS
 	$(QUIET)$(KOBJCACHE) -f $(outbase).koc -d $(PATH_OBJCACHE) -t $(bld_trg).$(bld_trg_arch) -p\
 		--kObjCache-cpp $(outbase).ii\
 		$(TOOL_GCC4MACHO_OBJC) -E -o -\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		$(abspath $(source))\
 		--kObjCache-cc $(obj)\
@@ -263,7 +259,7 @@ else  # !KBUILD_USE_KOBJCACHE
 TOOL_GCC4MACHO_COMPILE_OBJC_OUTPUT =
 define TOOL_GCC4MACHO_COMPILE_OBJC_CMDS
 	$(QUIET)$(TOOL_GCC4MACHO_OBJC) -c\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		-o $(obj)\
 		$(abspath $(source))
@@ -293,7 +289,7 @@ define TOOL_GCC4MACHO_COMPILE_OBJCXX_CMDS
 	$(QUIET)$(KOBJCACHE) -f $(outbase).koc -d $(PATH_OBJCACHE) -t $(bld_trg).$(bld_trg_arch) -p\
 		--kObjCache-cpp $(outbase).mii\
 		$(TOOL_GCC4MACHO_OBJCXX) -E -o -\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		$(abspath $(source))\
 		--kObjCache-cc $(obj)\
@@ -307,7 +303,7 @@ else  # !KBUILD_USE_KOBJCACHE
 TOOL_GCC4MACHO_COMPILE_OBJCXX_OUTPUT =
 define TOOL_GCC4MACHO_COMPILE_OBJCXX_CMDS
 	$(QUIET)$(TOOL_GCC4MACHO_OBJCXX) -c\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		-o $(obj)\
 		$(abspath $(source))
@@ -334,7 +330,7 @@ TOOL_GCC4MACHO_COMPILE_AS_DEPEND =
 TOOL_GCC4MACHO_COMPILE_AS_DEPORD =
 define TOOL_GCC4MACHO_COMPILE_AS_CMDS
 	$(QUIET)$(TOOL_GCC4MACHO_AS) -c\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		-o $(obj)\
 		$(abspath $(source))

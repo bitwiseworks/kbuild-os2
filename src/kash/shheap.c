@@ -1,4 +1,4 @@
-/* $Id: shheap.c 2416 2010-09-14 00:30:30Z bird $ */
+/* $Id: shheap.c 3477 2020-09-17 21:52:16Z bird $ */
 /** @file
  * The shell memory heap methods.
  */
@@ -31,10 +31,9 @@
 #include "shheap.h"
 #include <string.h>
 #include <stdlib.h>
-#include <assert.h>
 #include "shinstance.h"
 
-#if K_OS == K_OS_WINDOWS
+#if K_OS == K_OS_WINDOWS && defined(SH_FORKED_MODE)
 # define SHHEAP_IN_USE
 #endif
 
@@ -104,7 +103,7 @@ typedef struct shmemchunk
 #else
 # define SHHEAP_CHECK()         shheap_check()
 # define SHHEAP_CHECK_2()       shheap_check()
-# define SHHEAP_ASSERT(expr)    assert(expr)
+# define SHHEAP_ASSERT(expr)    kHlpAssert(expr)
 # define SHHEAP_POISON_PSH(p,v) ((shinstance *)(v))
 # define SHHEAP_POISON_NULL(v)  ((void *)(v))
 #endif
@@ -383,10 +382,15 @@ static void shheap_unlink_free(shmemhdr *mem)
 void sh_free(shinstance *psh, void *ptr)
 {
 #ifdef SHHEAP_IN_USE
-    shmemhdr *mem = (shmemhdr *)ptr - 1;
+    shmemhdr *mem;
     shmemhdr *right;
     shmemhdr *left;
     shmtxtmp tmp;
+
+    if (ptr)
+        mem = (shmemhdr *)ptr - 1;
+    else
+        return;
 
     if (mem->magic != SHMEMHDR_MAGIC_USED)
     {

@@ -1,4 +1,4 @@
-/* $Id: kHlpAssert.h 101 2017-10-02 10:37:39Z bird $ */
+/* $Id: kHlpAssert.h 119 2021-12-19 13:01:47Z bird $ */
 /** @file
  * kHlpAssert - Assertion Macros.
  */
@@ -53,6 +53,12 @@ extern "C" {
 # define kHlpAssertBreakpoint() do { __asm__ __volatile__ ("int $3"); } while (0)
 #elif defined(__GNUC__) && (K_ARCH == K_ARCH_AMD64 || K_ARCH == K_ARCH_X86_32 || K_ARCH == K_ARCH_X86_16)
 # define kHlpAssertBreakpoint() do { __asm__ __volatile__ ("int3"); } while (0)
+#elif defined(__GNUC__) && (K_ARCH == K_ARCH_ARM_64 || K_ARCH == K_ARCH_ARM_32) /* probably not supported by older ARM CPUs */
+# define kHlpAssertBreakpoint() do { __asm__ __volatile__ ("brk	#0x1"); } while (0)
+#elif defined(__GNUC__) && (K_ARCH == K_ARCH_SPARC_32)
+# define kHlpAssertBreakpoint() do { __asm__ __volatile__ ("unimp 0"); } while (0) /*??*/
+#elif defined(__GNUC__) && (K_ARCH == K_ARCH_SPARC_64)
+# define kHlpAssertBreakpoint() do { __asm__ __volatile__ ("illtrap 0"); } while (0) /*??*/
 #else
 # error "Port Me"
 #endif

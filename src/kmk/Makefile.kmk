@@ -1,4 +1,4 @@
-# $Id: Makefile.kmk 3214 2018-03-30 21:03:40Z bird $
+# $Id: Makefile.kmk 3572 2022-10-24 08:36:35Z bird $
 ## @file
 # Sub-makefile for kmk / GNU Make.
 #
@@ -38,7 +38,7 @@ TEMPLATE_BIN-KMK_DEFS = \
 	HAVE_CONFIG_H \
 	$(TEMPLATE_BIN_DEFS) \
 	KBUILD_SVN_REV=$(KBUILD_SVN_REV) \
-	KBUILD_TYPE=\"$(KBUILD_TYPE)\"
+	KBUILD_TYPE=$(TMP_QUOTE_SLASH)"$(KBUILD_TYPE)$(TMP_QUOTE_SLASH)"
 TEMPLATE_BIN-KMK_DEPS = \
 	$(kmk_0_OUTDIR)/config.h \
 	$(kmk_0_OUTDIR)/fts.h
@@ -60,7 +60,9 @@ TEMPLATE_BIN-KMK_INCS = $(kmk_0_OUTDIR) . $(TEMPLATE_BIN-THREADED_INCS)
 ifneq ($(KBUILD_TARGET),os2)
  TEMPLATE_BIN-KMK_INCS += glob
 endif
-TEMPLATE_BIN-KMK_LIBS = $(LIB_KUTIL) $(TEMPLATE_BIN-THREADED_LIBS) $(kmkmissing_1_TARGET) $(LIB_KUTIL)
+TEMPLATE_BIN-KMK_LIBS       = $(LIB_KUTIL) $(TEMPLATE_BIN-THREADED_LIBS) $(kmkmissing_1_TARGET) $(LIB_KUTIL)
+TEMPLATE_BIN-KMK_LIBS.x86   = $(LIB_KUTIL) $(TEMPLATE_BIN-THREADED_LIBS.x86)
+TEMPLATE_BIN-KMK_LIBS.amd64 = $(LIB_KUTIL) $(TEMPLATE_BIN-THREADED_LIBS.amd64)
 ifdef ELECTRIC_HEAP # for electric heap (see electric.c).
 ifeq ($(KBUILD_TARGET),win)
  TEMPLATE_BIN-KMK_CFLAGS = $(TEMPLATE_BIN-THREADED_CFLAGS) /FI$(kmk_DEFPATH)/electric.h -DELECTRIC_HEAP=1
@@ -77,10 +79,18 @@ endif
 # GCC sanitizers.
 ifdef GCC_SANITIZERS
  TEMPLATE_BIN-KMK_CFLAGS  ?= $(TEMPLATE_BIN-THREADED_CFLAGS)
- TEMPLATE_BIN-KMK_CFLAGS  += -fsanitize=address -fsanitize=undefined -static-libubsan -D GCC_ADDRESS_SANITIZER
+# TEMPLATE_BIN-KMK_CFLAGS  += -fsanitize=address -fsanitize=undefined -static-libubsan -D GCC_ADDRESS_SANITIZER
+ TEMPLATE_BIN-KMK_CFLAGS  += -fsanitize=address -fsanitize=undefined -D GCC_ADDRESS_SANITIZER
  TEMPLATE_BIN-KMK_LDFLAGS ?= $(TEMPLATE_BIN-THREADED_LDFLAGS)
  TEMPLATE_BIN-KMK_LDFLAGS += -fsanitize=address -fsanitize=undefined
 endif
+
+#
+# Library version of the above.
+#
+TEMPLATE_LIB-KMK = Template for src/gmake libraries
+TEMPLATE_LIB-KMK_EXTENDS = BIN-KMK
+TEMPLATE_LIB-KMK_POST_CMDS.win = $(NO_SUCH_VARIABLE)
 
 #
 # Template for building standalone built-in utilities.
@@ -96,7 +106,7 @@ TEMPLATE_BIN-KMK-BUILTIN_SOURCES += kmkbuiltin/err.c
 # kmk_* binaries. Saves a bit of work later on.
 #
 LIBRARIES += kmkmissing
-kmkmissing_TEMPLATE = BIN-KMK
+kmkmissing_TEMPLATE = LIB-KMK
 kmkmissing_DEFS = KMK
 kmkmissing_NOINST = 1
 kmkmissing_SOURCES = \
@@ -224,9 +234,9 @@ kmk_DEFS = \
 	CONFIG_WITH_LAZY_DEPS_VARS \
 	CONFIG_WITH_MEMORY_OPTIMIZATIONS \
 	\
-	KBUILD_HOST=\"$(KBUILD_TARGET)\" \
-	KBUILD_HOST_ARCH=\"$(KBUILD_TARGET_ARCH)\" \
-	KBUILD_HOST_CPU=\"$(KBUILD_TARGET_CPU)\"
+	KBUILD_HOST=$(TMP_QUOTE_SLASH)"$(KBUILD_TARGET)$(TMP_QUOTE_SLASH)" \
+	KBUILD_HOST_ARCH=$(TMP_QUOTE_SLASH)"$(KBUILD_TARGET_ARCH)$(TMP_QUOTE_SLASH)" \
+	KBUILD_HOST_CPU=$(TMP_QUOTE_SLASH)"$(KBUILD_TARGET_CPU)$(TMP_QUOTE_SLASH)"
 # kmk_DEFS += CONFIG_WITH_COMPILER  # experimental, doesn't work 101% right it seems.
 kmk_DEFS.x86 = CONFIG_WITH_OPTIMIZATION_HACKS
 kmk_DEFS.amd64 = CONFIG_WITH_OPTIMIZATION_HACKS
@@ -339,6 +349,8 @@ kmk_SOURCES += \
 	kmkbuiltin/touch.c \
        \
 	kmkbuiltin/err.c
+kmk_SOURCES.win += \
+	kmkbuiltin/kill.c
 
 
 ## @todo kmkbuiltin/redirect.c
@@ -373,7 +385,9 @@ PROGRAMS += \
 	kmk_test \
 	kmk_touch \
 	kDepIDB \
-	kDepObj \
+	kDepObj
+PROGRAMS.win += \
+	kmk_kill
 
 kmk_append_TEMPLATE = BIN-KMK-BUILTIN
 kmk_append_INCS = .
@@ -410,6 +424,10 @@ kmk_expr_SOURCES = \
 kmk_install_TEMPLATE = BIN-KMK-BUILTIN
 kmk_install_SOURCES = \
 	kmkbuiltin/install.c
+
+kmk_kill_TEMPLATE = BIN-KMK-BUILTIN
+kmk_kill_SOURCES = \
+	kmkbuiltin/kill.c
 
 kmk_ln_TEMPLATE = BIN-KMK-BUILTIN
 kmk_ln_SOURCES = \

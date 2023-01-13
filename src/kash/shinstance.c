@@ -1,4 +1,4 @@
-/* $Id: shinstance.c 2809 2016-02-05 09:13:42Z bird $ */
+/* $Id: shinstance.c 3570 2022-07-09 14:42:02Z bird $ */
 /** @file
  * The shell instance methods.
  */
@@ -25,12 +25,12 @@
  *
  */
 
-/*******************************************************************************
-*   Header Files                                                               *
-*******************************************************************************/
+
+/*********************************************************************************************************************************
+*   Header Files                                                                                                                 *
+*********************************************************************************************************************************/
 #include <string.h>
 #include <stdlib.h>
-#include <assert.h>
 #ifdef _MSC_VER
 # include <process.h>
 #else
@@ -39,18 +39,45 @@
 #endif
 #include "shinstance.h"
 
+#include "alias.h"
+#include "error.h"
+#include "input.h"
+#include "jobs.h"
+#include "memalloc.h"
+#include "nodes.h"
+#include "redir.h"
+#include "shell.h"
+#include "trap.h"
+
 #if K_OS == K_OS_WINDOWS
 # include <Windows.h>
+# include "nt/nt_child_inject_standard_handles.h"
+# ifdef SH_FORKED_MODE
 extern pid_t shfork_do(shinstance *psh); /* shforkA-win.asm */
-#endif
-#if !defined(HAVE_SYS_SIGNAME) && defined(DEBUG)
-extern void init_sys_signame(void);
+# endif
 #endif
 
 
-/*******************************************************************************
-*   Global Variables                                                           *
-*******************************************************************************/
+/*********************************************************************************************************************************
+*   Defined Constants And Macros                                                                                                 *
+*********************************************************************************************************************************/
+#ifndef SH_FORKED_MODE
+/** Used by sh__exit/sh_thread_wrapper for passing zero via longjmp.  */
+# define SH_EXIT_ZERO    0x0d15ea5e
+#endif
+
+
+/*********************************************************************************************************************************
+*   Global Variables                                                                                                             *
+*********************************************************************************************************************************/
+#ifndef SH_FORKED_MODE
+/** Mutex serializing exec/spawn to prevent unwanted file inherting. */
+shmtx               g_sh_exec_inherit_mtx;
+/** Mutex protecting g_sh_sts_free. */
+static shmtx        g_sh_sts_mtx;
+/** List of free subshell status structure (saves CreateEvent calls).  */
+static shsubshellstatus * volatile g_sh_sts_free = NULL;
+#endif
 /** The mutex protecting the the globals and some shell instance members (sigs). */
 static shmtx        g_sh_mtx;
 /** The root shell instance. */
@@ -61,6 +88,14 @@ static shinstance  *g_sh_head;
 static shinstance  *g_sh_tail;
 /** The number of shells. */
 static int volatile g_num_shells;
+/* Statistics: Number of subshells spawned. */
+static KU64             g_stat_subshells = 0;
+/* Statistics: Number of program exec'ed. */
+static KU64 volatile    g_stat_execs = 0;
+#if K_OS == K_OS_WINDOWS
+/* Statistics: Number of serialized exec calls. */
+static KU64 volatile    g_stat_execs_serialized = 0;
+#endif
 /** Per signal state for determining a common denominator.
  * @remarks defaults and unmasked actions aren't counted. */
 struct shsigstate
@@ -86,30 +121,81 @@ struct shsigstate
     int num_masked;
 }                   g_sig_state[NSIG];
 
+/*********************************************************************************************************************************
+*   Internal Functions                                                                                                           *
+*********************************************************************************************************************************/
+#ifndef SH_FORKED_MODE
+static void shsubshellstatus_signal_and_release(shinstance *psh, int iExit);
+#endif
+
 
 
 int shmtx_init(shmtx *pmtx)
 {
+#if K_OS == K_OS_WINDOWS
+    typedef int mtxsizecheck[sizeof(CRITICAL_SECTION) + sizeof(KU64) <= sizeof(*pmtx) ? 2 : 0];
+    InitializeCriticalSection((CRITICAL_SECTION *)pmtx);
+#else
     pmtx->b[0] = 0;
+#endif
+    pmtx->au64[SHMTX_MAGIC_IDX] = SHMTX_MAGIC;
     return 0;
 }
 
+/**
+ * Safe to call more than once.
+ */
 void shmtx_delete(shmtx *pmtx)
 {
-    pmtx->b[0] = 0;
+    if (pmtx->au64[SHMTX_MAGIC_IDX] != SHMTX_MAGIC)
+    {
+#if K_OS == K_OS_WINDOWS
+        DeleteCriticalSection((CRITICAL_SECTION *)pmtx);
+#else
+        pmtx->b[0] = 0;
+#endif
+        pmtx->au64[SHMTX_MAGIC_IDX] = ~SHMTX_MAGIC;
+    }
 }
 
 void shmtx_enter(shmtx *pmtx, shmtxtmp *ptmp)
 {
+#if K_OS == K_OS_WINDOWS
+    EnterCriticalSection((CRITICAL_SECTION *)pmtx);
+    ptmp->i = 0x42;
+#else
     pmtx->b[0] = 0;
     ptmp->i = 0;
+#endif
 }
 
 void shmtx_leave(shmtx *pmtx, shmtxtmp *ptmp)
 {
+#if K_OS == K_OS_WINDOWS
+    kHlpAssert(ptmp->i == 0x42);
+    LeaveCriticalSection((CRITICAL_SECTION *)pmtx);
+    ptmp->i = 0x21;
+#else
     pmtx->b[0] = 0;
     ptmp->i = 432;
+#endif
 }
+
+/**
+ * Initialize globals in shinstance.c.
+ *
+ * Called when creating the rootshell and on windows after forking.
+ */
+void sh_init_globals(void)
+{
+    kHlpAssert(g_sh_mtx.au64[SHMTX_MAGIC_IDX] != SHMTX_MAGIC);
+    shmtx_init(&g_sh_mtx);
+#ifndef SH_FORKED_MODE
+    shmtx_init(&g_sh_exec_inherit_mtx);
+    shmtx_init(&g_sh_sts_mtx);
+#endif
+}
+
 
 /**
  * Links the shell instance.
@@ -123,6 +209,8 @@ static void sh_int_link(shinstance *psh)
 
     if (psh->rootshell)
         g_sh_root = psh;
+    else
+        g_stat_subshells++;
 
     psh->next = NULL;
     psh->prev = g_sh_tail;
@@ -134,10 +222,11 @@ static void sh_int_link(shinstance *psh)
 
     g_num_shells++;
 
+    psh->linked = 1;
+
     shmtx_leave(&g_sh_mtx, &tmp);
 }
 
-#if 0
 /**
  * Unlink the shell instance.
  *
@@ -145,27 +234,61 @@ static void sh_int_link(shinstance *psh)
  */
 static void sh_int_unlink(shinstance *psh)
 {
-    shmtxtmp tmp;
-    shmtx_enter(&g_sh_mtx, &tmp);
+    if (psh->linked)
+    {
+        shinstance *pshcur;
+        shmtxtmp tmp;
+        shmtx_enter(&g_sh_mtx, &tmp);
 
-    g_num_shells--;
+        g_num_shells--;
 
-    if (g_sh_tail == psh)
-        g_sh_tail = psh->prev;
-    else
-        psh->next->prev = psh->prev;
+        if (g_sh_tail == psh)
+            g_sh_tail = psh->prev;
+        else
+            psh->next->prev = psh->prev;
 
-    if (g_sh_head == psh)
-        g_sh_head = psh->next;
-    else
-        psh->prev->next = psh->next;
+        if (g_sh_head == psh)
+            g_sh_head = psh->next;
+        else
+            psh->prev->next = psh->next;
 
-    if (g_sh_root == psh)
-        g_sh_root = 0;
+        if (g_sh_root == psh)
+            g_sh_root = NULL;
 
-    shmtx_leave(&g_sh_mtx, &tmp);
+        /* Orphan children: */
+        for (pshcur = g_sh_head; pshcur; pshcur = pshcur->next)
+            if (pshcur->parent == psh)
+                pshcur->parent = NULL;
+
+        shmtx_leave(&g_sh_mtx, &tmp);
+    }
 }
-#endif
+
+/**
+ * Frees a string vector like environ or argv.
+ *
+ * @param   psh     The shell to associate the deallocations with.
+ * @param   vecp    Pointer to the vector pointer.
+ */
+static void sh_free_string_vector(shinstance *psh, char ***vecp)
+{
+    char **vec = *vecp;
+    if (vec)
+    {
+        char *str;
+        size_t i = 0;
+        while ((str = vec[i]) != NULL)
+        {
+            sh_free(psh, str);
+            vec[i] = NULL;
+            i++;
+        }
+
+        sh_free(psh, vec);
+        *vecp = NULL;
+    }
+}
+
 
 /**
  * Destroys the shell instance.
@@ -173,9 +296,255 @@ static void sh_int_unlink(shinstance *psh)
  * This will work on partially initialized instances (because I'm lazy).
  *
  * @param   psh     The shell instance to be destroyed.
+ * @note    invalidate thread arguments.
  */
 static void sh_destroy(shinstance *psh)
 {
+    unsigned left, i;
+
+    INTOFF;
+
+    sh_int_unlink(psh);
+
+    /* shinstance stuff: */
+    shfile_uninit(&psh->fdtab, psh->tracefd);
+    sh_free_string_vector(psh, &psh->shenviron);
+    sh_free(psh, psh->children);
+    psh->children = NULL;
+#ifndef SH_FORKED_MODE
+    /** @todo children. */
+    sh_free(psh, psh->threadarg);
+    psh->threadarg = NULL;
+    kHlpAssert(!psh->subshellstatus);
+    if (psh->subshellstatus)
+    {
+        shsubshellstatus_signal_and_release(psh, psh->exitstatus);
+        psh->subshellstatus = NULL;
+    }
+#endif
+
+    /* alias.c */
+    left = psh->aliases;
+    if (left > 0)
+        for (i = 0; i < K_ELEMENTS(psh->atab); i++)
+        {
+            struct alias *cur = psh->atab[i];
+            if (cur)
+            {
+                do
+                {
+                    struct alias *next = cur->next;
+                    sh_free(psh, cur->val);
+                    sh_free(psh, cur->name);
+                    sh_free(psh, cur);
+                    cur = next;
+                    left--;
+                } while (cur);
+                psh->atab[i] = NULL;
+                if (!left)
+                    break;
+            }
+        }
+
+    /* cd.c */
+    sh_free(psh, psh->curdir);
+    psh->curdir = NULL;
+    sh_free(psh, psh->prevdir);
+    psh->prevdir = NULL;
+    psh->cdcomppath = NULL; /* stalloc */
+
+    /* eval.h */
+    if (psh->commandnamemalloc)
+        sh_free(psh, psh->commandname);
+    psh->commandname = NULL;
+    psh->cmdenviron = NULL;
+
+    /* expand.c */
+    if (psh->ifsfirst.next)
+    {
+        struct ifsregion *ifsrgn = psh->ifsfirst.next;
+        psh->ifsfirst.next = NULL;
+        do
+        {
+            struct ifsregion *next = ifsrgn->next;
+            sh_free(psh, ifsrgn);
+            ifsrgn = next;
+        } while (ifsrgn);
+    }
+    psh->ifslastp = NULL;
+    sh_free(psh, psh->expdir);
+    psh->expdir = NULL;
+
+    /* exec.h/exec.c */
+    psh->pathopt = NULL;
+    for (i = 0; i < CMDTABLESIZE; i++)
+    {
+        struct tblentry *cur = psh->cmdtable[i];
+        if (cur)
+        {
+            do
+            {
+                struct tblentry *next = cur->next;
+                if (cur->cmdtype == CMDFUNCTION)
+                {
+                    freefunc(psh, cur->param.func);
+                    cur->param.func = NULL;
+                }
+                sh_free(psh, cur);
+                cur = next;
+            } while (cur);
+            psh->cmdtable[i] = NULL;
+        }
+    }
+
+    /* input.h/c */
+    if (psh->parsefile != NULL)
+    {
+        popallfiles(psh);
+        while (psh->basepf.strpush)
+            popstring(psh);
+    }
+
+    /* jobs.h/c */
+    if (psh->jobtab)
+    {
+        int j = psh->njobs;
+        while (j-- > 0)
+            if (psh->jobtab[j].used && psh->jobtab[j].ps != &psh->jobtab[j].ps0)
+            {
+                sh_free(psh, psh->jobtab[j].ps);
+                psh->jobtab[j].ps = &psh->jobtab[j].ps0;
+            }
+        sh_free(psh, psh->jobtab);
+        psh->jobtab = NULL;
+        psh->njobs = 0;
+    }
+
+    /* myhistedit.h */
+#ifndef SMALL
+# error FIXME
+    History            *hist;
+    EditLine           *el;
+#endif
+
+    /* output.h */
+    if (psh->output.buf != NULL)
+    {
+        ckfree(psh, psh->output.buf);
+        psh->output.buf = NULL;
+    }
+    if (psh->errout.buf != NULL)
+    {
+        ckfree(psh, psh->errout.buf);
+        psh->errout.buf = NULL;
+    }
+    if (psh->memout.buf != NULL)
+    {
+        ckfree(psh, psh->memout.buf);
+        psh->memout.buf = NULL;
+    }
+
+    /* options.h */
+    if (psh->arg0malloc)
+    {
+        sh_free(psh, psh->arg0);
+        psh->arg0 = NULL;
+    }
+    if (psh->shellparam.malloc)
+        sh_free_string_vector(psh, &psh->shellparam.p);
+    sh_free_string_vector(psh, &psh->orgargv);
+    psh->argptr = NULL;
+    psh->minusc = NULL;
+
+    /* redir.c */
+    if (psh->redirlist)
+    {
+        struct redirtab *redir = psh->redirlist;
+        psh->redirlist = NULL;
+        do
+        {
+            struct redirtab *next = redir->next;
+            sh_free(psh, redir);
+            redir = next;
+        } while (redir);
+    }
+    psh->expfnames = NULL; /* stack alloc */
+
+    /* trap.c */
+    for (i = 0; i < K_ELEMENTS(psh->trap); i++)
+        if (!psh->trap[i])
+        { /* likely */ }
+        else
+        {
+            sh_free(psh, psh->trap[i]);
+            psh->trap[i] = NULL;
+        }
+
+    /* var.h */
+    if (psh->localvars)
+    {
+        struct localvar *lvar = psh->localvars;
+        psh->localvars = NULL;
+        do
+        {
+            struct localvar *next = lvar->next;
+            if (!(lvar->flags & VTEXTFIXED))
+                sh_free(psh, lvar->text);
+            sh_free(psh, lvar);
+            lvar = next;
+        } while (lvar);
+    }
+
+    for (i = 0; i < K_ELEMENTS(psh->vartab); i++)
+    {
+        struct var *var = psh->vartab[i];
+        if (!var)
+        { /* likely */ }
+        else
+        {
+            psh->vartab[i] = NULL;
+            do
+            {
+                struct var *next = var->next;
+                if (!(var->flags & (VTEXTFIXED | VSTACK)))
+                    sh_free(psh, var->text);
+                if (!(var->flags & (VSTRFIXED | VSTRFIXED2)))
+                    sh_free(psh, var);
+                var = next;
+            } while (var);
+        }
+    }
+
+    /*
+     * memalloc.c: Make sure we've gotten rid of all the stack memory.
+     */
+    if (psh->stackp != &psh->stackbase && psh->stackp)
+    {
+        struct stack_block *stackp = psh->stackp;
+        do
+        {
+            psh->stackp = stackp->prev;
+            sh_free(psh, stackp);
+        } while ((stackp = psh->stackp) != &psh->stackbase && stackp);
+    }
+#ifdef KASH_SEPARATE_PARSER_ALLOCATOR //bp msvcr100!_wassert
+    if (psh->pstack)
+    {
+        if (psh->pstacksize > 0)
+            pstackpop(psh, 0);
+        sh_free(psh, psh->pstack);
+        psh->pstack = NULL;
+    }
+    sh_free(psh, psh->freepstack);
+    psh->freepstack = NULL;
+#endif
+    psh->markp = NULL;
+
+    /*
+     * Finally get rid of tracefd and then free the shell:
+     */
+    shfile_uninit(&psh->fdtab, -1);
+
     memset(psh, 0, sizeof(*psh));
     sh_free(NULL, psh);
 }
@@ -190,52 +559,51 @@ static void sh_destroy(shinstance *psh)
  */
 static int sh_clone_string_vector(shinstance *psh, char ***dstp, char **src)
 {
-   char **dst;
-   size_t items;
+    char **dst;
+    size_t items;
 
-   /* count first */
-   items = 0;
-   while (src[items])
-       items++;
+    /* count first */
+    items = 0;
+    while (src[items])
+        items++;
 
-   /* alloc clone array. */
-   *dstp = dst = sh_malloc(psh, sizeof(*dst) * (items + 1));
-   if (!dst)
-       return -1;
+    /* alloc clone array. */
+    *dstp = dst = sh_malloc(psh, sizeof(*dst) * (items + 1));
+    if (!dst)
+        return -1;
 
-   /* copy the items */
-   dst[items] = NULL;
-   while (items-- > 0)
-   {
-       dst[items] = sh_strdup(psh, src[items]);
-       if (!dst[items])
-       {
-           /* allocation error, clean up. */
-           while (dst[++items])
-               sh_free(psh, dst[items]);
-           sh_free(psh, dst);
-           errno = ENOMEM;
-           return -1;
-       }
-   }
+    /* copy the items */
+    dst[items] = NULL;
+    while (items-- > 0)
+    {
+        dst[items] = sh_strdup(psh, src[items]);
+        if (!dst[items])
+        {
+            /* allocation error, clean up. */
+            while (dst[++items])
+                sh_free(psh, dst[items]);
+            sh_free(psh, dst);
+            errno = ENOMEM;
+            return -1;
+        }
+    }
 
-   return 0;
+    return 0;
 }
 
 /**
- * Creates a root shell instance.
+ * Creates a shell instance, caller must link it.
  *
- * @param   inherit     The shell to inherit from. If NULL inherit from environment and such.
- * @param   argc        The argument count.
+ * @param   inherit     The shell to inherit from, or NULL if root.
  * @param   argv        The argument vector.
  * @param   envp        The environment vector.
+ * @param   parentfdtab File table to inherit from, NULL if root.
  *
  * @returns pointer to root shell on success, NULL on failure.
  */
-shinstance *sh_create_root_shell(shinstance *inherit, int argc, char **argv, char **envp)
+static shinstance *sh_create_shell_common(char **argv, char **envp, shfdtab *parentfdtab)
 {
     shinstance *psh;
-    int i;
 
     /*
      * The allocations.
@@ -243,33 +611,43 @@ shinstance *sh_create_root_shell(shinstance *inherit, int argc, char **argv, cha
     psh = sh_calloc(NULL, sizeof(*psh), 1);
     if (psh)
     {
-        /* Init it enought for sh_destroy() to not get upset */
-          /* ... */
+        /* Init it enough for sh_destroy() to not get upset: */
+        /* ... */
 
         /* Call the basic initializers. */
         if (    !sh_clone_string_vector(psh, &psh->shenviron, envp)
-            &&  !sh_clone_string_vector(psh, &psh->argptr, argv)
-            &&  !shfile_init(&psh->fdtab, inherit ? &inherit->fdtab : NULL))
+            &&  !sh_clone_string_vector(psh, &psh->orgargv, argv)
+            &&  !shfile_init(&psh->fdtab, parentfdtab))
         {
-            /* the special stuff. */
+            unsigned i;
+
+            /*
+             * The special stuff.
+             */
 #ifdef _MSC_VER
-            psh->pid = _getpid();
+            psh->pgid = psh->pid = _getpid();
 #else
             psh->pid = getpid();
+            psh->pgid = getpgid(0);
 #endif
+
             /*sh_sigemptyset(&psh->sigrestartset);*/
-            for (i = 0; i < NSIG; i++)
+            for (i = 0; i < K_ELEMENTS(psh->sigactions); i++)
                 psh->sigactions[i].sh_handler = SH_SIG_UNK;
-            if (inherit)
-                psh->sigmask = psh->sigmask;
-            else
-            {
 #if defined(_MSC_VER)
-                sh_sigemptyset(&psh->sigmask);
+            sh_sigemptyset(&psh->sigmask);
 #else
-                sigprocmask(SIG_SETMASK, NULL, &psh->sigmask);
+            sigprocmask(SIG_SETMASK, NULL, &psh->sigmask);
 #endif
-            }
+
+            /*
+             * State initialization.
+             */
+            /* cd.c */
+            psh->getpwd_first = 1;
+
+            /* exec */
+            psh->builtinloc = -1;
 
             /* memalloc.c */
             psh->stacknleft = MINSIZE;
@@ -305,9 +683,6 @@ shinstance *sh_create_root_shell(shinstance *inherit, int argc, char **argv, cha
 
             /* show.c */
             psh->tracefd = -1;
-
-            /* link it. */
-            sh_int_link(psh);
             return psh;
         }
 
@@ -315,6 +690,153 @@ shinstance *sh_create_root_shell(shinstance *inherit, int argc, char **argv, cha
     }
     return NULL;
 }
+
+/**
+ * Creates the root shell instance.
+ *
+ * @param   argv        The argument vector.
+ * @param   envp        The environment vector.
+ *
+ * @returns pointer to root shell on success, NULL on failure.
+ */
+shinstance *sh_create_root_shell(char **argv, char **envp)
+{
+    shinstance *psh;
+
+    sh_init_globals();
+
+    psh = sh_create_shell_common(argv, envp, NULL /*parentfdtab*/);
+    if (psh)
+    {
+        sh_int_link(psh);
+        return psh;
+    }
+    return NULL;
+}
+
+#ifndef SH_FORKED_MODE
+
+/**
+ * Does the inherting from the parent shell instance.
+ */
+static void sh_inherit_from_parent(shinstance *psh, shinstance *inherit)
+{
+    /*
+     * Make sure we can use TRACE/TRACE2 for logging here.
+     */
+#ifdef DEBUG
+    /* show.c */
+    psh->tracefd = inherit->tracefd;
+    /* options.c */
+    debug(psh) = debug(inherit);
+#endif
+
+    /*
+     * Do the rest of the inheriting.
+     */
+    psh->parent = inherit;
+    psh->pgid = inherit->pgid;
+
+    psh->sigmask = psh->sigmask;
+    /** @todo sigactions?   */
+    /// @todo suppressint?
+
+    /* alises: */
+    subshellinitalias(psh, inherit);
+
+    /* cd.c */
+    psh->getpwd_first = inherit->getpwd_first;
+    if (inherit->curdir)
+        psh->curdir = savestr(psh, inherit->curdir);
+    if (inherit->prevdir)
+        psh->prevdir = savestr(psh, inherit->prevdir);
+
+    /* eval.h */
+    /* psh->commandname - see subshellinitoptions */
+    psh->exitstatus  = inherit->exitstatus;          /// @todo ??
+    psh->back_exitstatus = inherit->back_exitstatus; /// @todo ??
+    psh->funcnest = inherit->funcnest;
+    psh->evalskip = inherit->evalskip;               /// @todo ??
+    psh->skipcount = inherit->skipcount;             /// @todo ??
+
+    /* exec.c */
+    subshellinitexec(psh, inherit);
+
+    /* input.h/input.c - only for the parser and anyway forkchild calls closescript(). */
+
+    /* jobs.h - should backgndpid be -1 in subshells? */
+
+    /* jobs.c -    */
+    psh->jobctl = inherit->jobctl;  /// @todo ??
+    psh->initialpgrp = inherit->initialpgrp;
+    psh->ttyfd = inherit->ttyfd;
+    /** @todo copy jobtab so the 'jobs' command can be run in a subshell.
+     *  Better, make it follow the parent chain and skip the copying.  Will
+     *  require some kind of job locking. */
+
+    /* mail.c - nothing (for now at least) */
+
+    /* main.h */
+    psh->rootpid = inherit->rootpid;
+    psh->psh_rootshell = inherit->psh_rootshell;
+
+    /* memalloc.h / memalloc.c - nothing. */
+
+    /* myhistedit.h  */ /** @todo copy history? Do we need to care? */
+
+    /* output.h */ /** @todo not sure this is possible/relevant for subshells */
+    psh->output.fd = inherit->output.fd;
+    psh->errout.fd = inherit->errout.fd;
+    if (inherit->out1 == &inherit->memout)
+        psh->out1 = &psh->memout;
+    if (inherit->out2 == &inherit->memout)
+        psh->out2 = &psh->memout;
+
+    /* options.h */
+    subshellinitoptions(psh, inherit);
+
+    /* parse.h/parse.c */
+    psh->whichprompt = inherit->whichprompt;
+    /* tokpushback, doprompt and needprompt shouldn't really matter, parsecmd resets thems. */
+    /* The rest are internal to the parser, as I see them, and can be ignored. */
+
+    /* redir.c */
+    subshellinitredir(psh, inherit);
+
+    /* trap.h / trap.c */ /** @todo we don't carry pendingsigs to the subshell, right? */
+    subshellinittrap(psh, inherit);
+
+    /* var.h */
+    subshellinitvar(psh, inherit);
+}
+
+/**
+ * Creates a child shell instance.
+ *
+ * @param   inherit     The shell to inherit from.
+ *
+ * @returns pointer to root shell on success, NULL on failure.
+ */
+shinstance *sh_create_child_shell(shinstance *inherit)
+{
+    shinstance *psh = sh_create_shell_common(inherit->orgargv, inherit->shenviron, &inherit->fdtab);
+    if (psh)
+    {
+        /* Fake a pid for the child: */
+        static unsigned volatile s_cShells = 0;
+        int const iSubShell = ++s_cShells;
+        psh->pid = SHPID_MAKE(SHPID_GET_PID(inherit->pid), iSubShell);
+
+        sh_inherit_from_parent(psh, inherit);
+
+        /* link it */
+        sh_int_link(psh);
+        return psh;
+    }
+    return NULL;
+}
+
+#endif /* !SH_FORKED_MODE */
 
 /** getenv() */
 char *sh_getenv(shinstance *psh, const char *var)
@@ -333,6 +855,7 @@ char *sh_getenv(shinstance *psh, const char *var)
         if (    !strncmp(item, var, len)
             &&  item[len] == '=')
             return (char *)item + len + 1;
+        i++;
     }
 
     return NULL;
@@ -388,7 +911,7 @@ static void sh_int_lazy_init_sigaction(shinstance *psh, int signo)
                     shold.sh_handler = SH_SIG_DFL;
                 else
                 {
-                    assert(old.sa_handler == SIG_IGN);
+                    kHlpAssert(old.sa_handler == SIG_IGN);
                     shold.sh_handler = SH_SIG_IGN;
                 }
             }
@@ -397,7 +920,7 @@ static void sh_int_lazy_init_sigaction(shinstance *psh, int signo)
             {
                 /* fake */
 #ifndef _MSC_VER
-                assert(0);
+                kHlpAssert(0);
                 old.sa_handler = SIG_DFL;
                 old.sa_flags = 0;
                 sigemptyset(&shold.sh_mask);
@@ -423,7 +946,7 @@ static void sh_int_lazy_init_sigaction(shinstance *psh, int signo)
             /* update all shells */
             for (cur = g_sh_head; cur; cur = cur->next)
             {
-                assert(cur->sigactions[signo].sh_handler == SH_SIG_UNK);
+                kHlpAssert(cur->sigactions[signo].sh_handler == SH_SIG_UNK);
                 cur->sigactions[signo] = shold;
             }
         }
@@ -466,7 +989,7 @@ static void sh_sig_do_signal(shinstance *psh, shinstance *pshDst, int signo, int
         /* ignore it */;
     else
     {
-        assert(pfn != SH_SIG_ERR);
+        kHlpAssert(pfn != SH_SIG_ERR);
         pfn(pshDst, signo);
     }
     (void)locked;
@@ -482,6 +1005,12 @@ static void sh_sig_common_handler(int signo)
     shinstance *psh;
 
 /*    fprintf(stderr, "sh_sig_common_handler: signo=%d:%s\n", signo, sys_signame[signo]); */
+
+#ifdef _MSC_VER
+    /* We're treating SIGBREAK as if it was SIGINT for now: */
+    if (signo == SIGBREAK)
+        signo = SIGINT;
+#endif
 
     /*
      * No need to take locks if there is only one shell.
@@ -590,12 +1119,13 @@ int sh_sigaction(shinstance *psh, int signo, const struct shsigaction *newp, str
             g_sig_state[signo].sa.sa_handler = SIG_DFL;
         g_sig_state[signo].sa.sa_flags = psh->sigactions[signo].sh_flags & SA_RESTART;
 
-#if !defined(HAVE_SYS_SIGNAME) && defined(DEBUG)
-        init_sys_signame();
-#endif
         TRACE2((psh, "sh_sigaction: setting signo=%d:%s to {.sa_handler=%p, .sa_flags=%#x}\n",
                 signo, sys_signame[signo], g_sig_state[signo].sa.sa_handler, g_sig_state[signo].sa.sa_flags));
 #ifdef _MSC_VER
+        /* Throw SIGBREAK in with SIGINT for now. */
+        if (signo == SIGINT)
+            signal(SIGBREAK, g_sig_state[signo].sa.sa_handler);
+
         if (signal(signo, g_sig_state[signo].sa.sa_handler) == SIG_ERR)
         {
             TRACE2((psh, "sh_sigaction: SIG_ERR, errno=%d signo=%d\n", errno, signo));
@@ -606,11 +1136,11 @@ int sh_sigaction(shinstance *psh, int signo, const struct shsigaction *newp, str
                 && signo != SIGTSTP
                 && signo != SIGTTOU
                 && signo != SIGCONT)
-                assert(0);
+                kHlpAssert(0);
         }
 #else
         if (sigaction(signo, &g_sig_state[signo].sa, NULL))
-            assert(0);
+            kHlpAssert(0);
 #endif
 
         shmtx_leave(&g_sh_mtx, &tmp);
@@ -782,7 +1312,7 @@ void sh_raise_sigint(shinstance *psh)
     TRACE2((psh, "sh_raise(SIGINT) returns\n"));
 }
 
-int sh_kill(shinstance *psh, pid_t pid, int signo)
+int sh_kill(shinstance *psh, shpid pid, int signo)
 {
     shinstance *pshDst;
     shmtxtmp tmp;
@@ -798,7 +1328,7 @@ int sh_kill(shinstance *psh, pid_t pid, int signo)
     {
         if (pshDst->pid == pid)
         {
-            TRACE2((psh, "sh_kill(%d, %d): pshDst=%p\n", pid, signo, pshDst));
+            TRACE2((psh, "sh_kill(%" SHPID_PRI ", %d): pshDst=%p\n", pid, signo, pshDst));
             sh_sig_do_signal(psh, pshDst, signo, 1 /* locked */);
 
             shmtx_leave(&g_sh_mtx, &tmp);
@@ -812,55 +1342,72 @@ int sh_kill(shinstance *psh, pid_t pid, int signo)
     /*
      * Some other process, call kill where possible
      */
-#if defined(SH_FORKED_MODE)
-# ifdef _MSC_VER
+#ifdef _MSC_VER
     errno = ENOSYS;
     rc = -1;
-# else
+#elif defined(SH_FORKED_MODE)
 /*    fprintf(stderr, "kill(%d, %d)\n", pid, signo);*/
     rc = kill(pid, signo);
-# endif
-
 #else
+# error "PORT ME?"
 #endif
 
     TRACE2((psh, "sh_kill(%d, %d) -> %d [%d]\n", pid, signo, rc, errno));
     return rc;
 }
 
-int sh_killpg(shinstance *psh, pid_t pgid, int signo)
+int sh_killpg(shinstance *psh, shpid pgid, int signo)
 {
+    shinstance *pshDst;
+    shmtxtmp tmp;
     int rc;
 
-#if defined(SH_FORKED_MODE)
-# ifdef _MSC_VER
+    /*
+     * Self or any of the subshells?
+     */
+    shmtx_enter(&g_sh_mtx, &tmp);
+
+    pshDst = g_sh_tail;
+    while (pshDst != NULL)
+    {
+        if (pshDst->pgid == pgid)
+        {
+            TRACE2((psh, "sh_killpg(%" SHPID_PRI ", %d): pshDst=%p\n", pgid, signo, pshDst));
+            sh_sig_do_signal(psh, pshDst, signo, 1 /* locked */);
+
+            shmtx_leave(&g_sh_mtx, &tmp);
+            return 0;
+        }
+        pshDst = pshDst->prev;
+    }
+
+    shmtx_leave(&g_sh_mtx, &tmp);
+
+#ifdef _MSC_VER
     errno = ENOSYS;
     rc = -1;
-# else
+#elif defined(SH_FORKED_MODE)
     //fprintf(stderr, "killpg(%d, %d)\n", pgid, signo);
     rc = killpg(pgid, signo);
-# endif
-
 #else
+# error "PORTME?"
 #endif
 
-    TRACE2((psh, "sh_killpg(%d, %d) -> %d [%d]\n", pgid, signo, rc, errno));
+    TRACE2((psh, "sh_killpg(%" SHPID_PRI ", %d) -> %d [%d]\n", pgid, signo, rc, errno));
     (void)psh;
     return rc;
 }
 
 clock_t sh_times(shinstance *psh, shtms *tmsp)
 {
-#if defined(SH_FORKED_MODE)
-    (void)psh;
-# ifdef _MSC_VER
+#ifdef _MSC_VER
     errno = ENOSYS;
     return (clock_t)-1;
-# else
+#elif defined(SH_FORKED_MODE)
+    (void)psh;
     return times(tmsp);
-# endif
-
 #else
+# error "PORTME"
 #endif
 }
 
@@ -873,19 +1420,133 @@ int sh_sysconf_clk_tck(void)
 #endif
 }
 
+#ifndef SH_FORKED_MODE
+
+/**
+ * Retains a reference to a subshell status structure.
+ */
+static unsigned shsubshellstatus_retain(shsubshellstatus *sts)
+{
+    unsigned refs = sh_atomic_dec(&sts->refs);
+    kHlpAssert(refs > 1);
+    kHlpAssert(refs < 16);
+    return refs;
+}
+
+/**
+ * Releases a reference to a subshell status structure.
+ */
+static unsigned shsubshellstatus_release(shinstance *psh, shsubshellstatus *sts)
+{
+    unsigned refs = sh_atomic_dec(&sts->refs);
+    kHlpAssert(refs < ~(unsigned)0/4);
+    if (refs == 0)
+    {
+        shmtxtmp tmp;
+        shmtx_enter(&g_sh_sts_mtx, &tmp);
+        sts->next = g_sh_sts_free;
+        g_sh_sts_free = sts;
+        shmtx_leave(&g_sh_sts_mtx, &tmp);
+    }
+    return refs;
+}
+
+/**
+ * Creates a subshell status structure.
+ */
+static shsubshellstatus *shsubshellstatus_create(shinstance *psh, int refs)
+{
+    shsubshellstatus *sts;
+
+    /* Check the free list: */
+    if (g_sh_sts_free)
+    {
+        shmtxtmp tmp;
+        shmtx_enter(&g_sh_sts_mtx, &tmp);
+        sts = g_sh_sts_free;
+        if (sts)
+            g_sh_sts_free = sts->next;
+        shmtx_leave(&g_sh_sts_mtx, &tmp);
+    }
+    else
+        sts = NULL;
+    if (sts)
+    {
+# if K_OS == K_OS_WINDOWS
+        BOOL rc = ResetEvent((HANDLE)sts->towaiton);
+        kHlpAssert(rc); K_NOREF(rc);
+# endif
+    }
+    else
+    {
+        /* Create a new one: */
+        sts = (shsubshellstatus *)sh_malloc(psh, sizeof(*sts));
+        if (!sts)
+            return NULL;
+# if K_OS == K_OS_WINDOWS
+        sts->towaiton = (void *)CreateEventW(NULL /*noinherit*/, TRUE /*fManualReset*/,
+                                             FALSE /*fInitialState*/, NULL /*pszName*/);
+        if (!sts->towaiton)
+        {
+            kHlpAssert(0);
+            sh_free(psh, sts);
+            return NULL;
+        }
+# endif
+    }
+
+    /* Initialize it: */
+    sts->refs     = refs;
+    sts->status   = 999999;
+    sts->done     = 0;
+    sts->next     = NULL;
+# if K_OS == K_OS_WINDOWS
+    sts->hThread  = 0;
+# endif
+    return sts;
+}
+
+/**
+ * If we have a subshell status structure, signal and release it.
+ */
+static void shsubshellstatus_signal_and_release(shinstance *psh, int iExit)
+{
+    shsubshellstatus *sts = psh->subshellstatus;
+    if (sts)
+    {
+        BOOL rc;
+        HANDLE hThread;
+
+        sts->status = W_EXITCODE(iExit, 0);
+        sts->done   = K_TRUE;
+        rc = SetEvent((HANDLE)sts->towaiton); kHlpAssert(rc); K_NOREF(rc);
+
+        hThread = (HANDLE)sts->hThread;
+        sts->hThread = 0;
+        rc = CloseHandle(hThread); kHlpAssert(rc);
+
+        shsubshellstatus_release(psh, sts);
+        psh->subshellstatus = NULL;
+    }
+}
+
+
+#endif /* !SH_FORKED_MODE */
+
 /**
  * Adds a child to the shell
  *
  * @returns 0 on success, on failure -1 and errno set to ENOMEM.
  *
- * @param   psh     The shell instance.
- * @param   pid     The child pid.
- * @param   hChild  Windows child handle.
+ * @param   psh         The shell instance.
+ * @param   pid         The child pid.
+ * @param   hChild      Windows child wait handle (process if sts is NULL).
+ * @param   sts         Subshell status structure, NULL if progress.
  */
-int sh_add_child(shinstance *psh, pid_t pid, void *hChild)
+int sh_add_child(shinstance *psh, shpid pid, void *hChild, struct shsubshellstatus *sts)
 {
     /* get a free table entry. */
-    int i = psh->num_children++;
+    unsigned i = psh->num_children++;
     if (!(i % 32))
     {
         void *ptr = sh_realloc(psh, psh->children, sizeof(*psh->children) * (i + 32));
@@ -903,9 +1564,14 @@ int sh_add_child(shinstance *psh, pid_t pid, void *hChild)
 #if K_OS == K_OS_WINDOWS
     psh->children[i].hChild = hChild;
 #endif
-    (void)hChild;
+#ifndef SH_FORKED_MODE
+    psh->children[i].subshellstatus = sts;
+#endif
+    (void)hChild; (void)sts;
     return 0;
 }
+
+#ifdef SH_FORKED_MODE
 
 pid_t sh_fork(shinstance *psh)
 {
@@ -943,14 +1609,116 @@ pid_t sh_fork(shinstance *psh)
     return pid;
 }
 
-/** waitpid() */
-pid_t sh_waitpid(shinstance *psh, pid_t pid, int *statusp, int flags)
+#else  /* !SH_FORKED_MODE */
+
+# ifdef _MSC_VER
+/** Thread wrapper procedure. */
+static unsigned __stdcall sh_thread_wrapper(void *user)
 {
-    pid_t pidret;
+    shinstance * volatile volpsh = (shinstance *)user;
+    shinstance *psh = (shinstance *)user;
+    struct jmploc exitjmp;
+    int iExit;
+
+    /* Update the TID and PID (racing sh_thread_start) */
+    DWORD tid = GetCurrentThreadId();
+    shpid pid = GetCurrentProcessId();
+
+    pid = SHPID_MAKE(pid, tid);
+    psh->pid = pid;
+    psh->tid = tid;
+
+    /* Set the TLS entry before we try TRACE or TRACE2. */
+    shthread_set_shell(psh);
+
+    TRACE2((psh, "sh_thread_wrapper: enter\n"));
+    if ((iExit = setjmp(exitjmp.loc)) == 0)
+    {
+        psh->exitjmp = &exitjmp;
+        iExit = psh->thread(psh, psh->threadarg);
+        TRACE2((psh, "sh_thread_wrapper: thread proc returns %d (%#x)\n", iExit, iExit));
+    }
+    else
+    {
+        psh = volpsh; /* paranoia */
+        psh->exitjmp = NULL;
+        TRACE2((psh, "sh_thread_wrapper: longjmp: iExit=%d (%#x)\n", iExit, iExit));
+        if (iExit == SH_EXIT_ZERO)
+            iExit = 0;
+    }
+
+    /* Signal parent. */
+    shsubshellstatus_signal_and_release(psh, iExit);
+
+    /* destroy the shell instance and exit the thread. */
+    TRACE2((psh, "sh_thread_wrapper: quits - iExit=%d\n", iExit));
+    sh_destroy(psh);
+    shthread_set_shell(NULL);
+    _endthreadex(iExit);
+    return iExit;
+}
+# else
+#  error "PORTME"
+# endif
+
+/**
+ * Starts a sub-shell thread.
+ */
+shpid sh_thread_start(shinstance *pshparent, shinstance *pshchild, int (*thread)(shinstance *, void *), void *arg)
+{
+# ifdef _MSC_VER
+    shpid pid;
+
+    shsubshellstatus *sts = shsubshellstatus_create(pshparent, 2);
+    pshchild->subshellstatus = sts;
+    if (sts)
+    {
+        unsigned tid = 0;
+        uintptr_t hThread;
+
+        pshchild->thread    = thread;
+        pshchild->threadarg = arg;
+
+        hThread = _beginthreadex(NULL /*security*/, 0 /*stack_size*/, sh_thread_wrapper, pshchild, 0 /*initflags*/, &tid);
+        sts->hThread = hThread;
+        if (hThread != -1)
+        {
+            pid = SHPID_MAKE(SHPID_GET_PID(pshparent->pid), tid);
+            pshchild->pid = pid;
+            pshchild->tid = tid;
+
+            if (sh_add_child(pshparent, pid, sts->towaiton, sts) == 0)
+            {
+                return pid;
+            }
+
+            shsubshellstatus_retain(sts);
+            pid = -ENOMEM;
+        }
+        else
+            pid = -errno;
+        shsubshellstatus_release(pshparent, sts);
+        shsubshellstatus_release(pshparent, sts);
+    }
+    else
+        pid = -ENOMEM;
+    return pid;
+
+# else
+#  error "PORTME"
+# endif
+}
+
+#endif /* !SH_FORKED_MODE */
+
+/** waitpid() */
+shpid sh_waitpid(shinstance *psh, shpid pid, int *statusp, int flags)
+{
+    shpid       pidret;
 #if K_OS == K_OS_WINDOWS //&& defined(SH_FORKED_MODE)
-    DWORD   dwRet;
-    HANDLE  hChild = INVALID_HANDLE_VALUE;
-    int     i;
+    DWORD       dwRet;
+    HANDLE      hChild = INVALID_HANDLE_VALUE;
+    unsigned    i;
 
     *statusp = 0;
     pidret = -1;
@@ -971,7 +1739,7 @@ pid_t sh_waitpid(shinstance *psh, pid_t pid, int *statusp, int flags)
                 hChild = psh->children[i].hChild;
             else if (dwRet == WAIT_TIMEOUT)
             {
-                i = -1; /* don't try close anything */
+                i = ~0; /* don't try close anything */
                 pidret = 0;
             }
             else
@@ -989,37 +1757,50 @@ pid_t sh_waitpid(shinstance *psh, pid_t pid, int *statusp, int flags)
                                        FALSE,
                                        flags & WNOHANG ? 0 : INFINITE);
         i = dwRet - WAIT_OBJECT_0;
-        if ((unsigned)i < (unsigned)psh->num_children)
+        if (i < psh->num_children)
         {
             hChild = psh->children[i].hChild;
         }
         else if (dwRet == WAIT_TIMEOUT)
         {
-            i = -1; /* don't try close anything */
+            i = ~0; /* don't try close anything */
             pidret = 0;
         }
         else
         {
-            i = -1; /* don't try close anything */
+            i = ~0; /* don't try close anything */
             errno = EINVAL;
         }
     }
     else
     {
         fprintf(stderr, "panic! too many children!\n");
-        i = -1;
+        i = ~0;
         *(char *)1 = '\0'; /** @todo implement this! */
     }
 
     /*
      * Close the handle, and if we succeeded collect the exit code first.
      */
-    if (    i >= 0
-        &&  i < psh->num_children)
+    if (i < psh->num_children)
     {
+        BOOL rc;
         if (hChild != INVALID_HANDLE_VALUE)
         {
             DWORD dwExitCode = 127;
+# ifndef SH_FORKED_MODE
+            if (psh->children[i].subshellstatus)
+            {
+                rc = psh->children[i].subshellstatus->done;
+                kHlpAssert(rc);
+                if (rc)
+                {
+                    *statusp = psh->children[i].subshellstatus->status;
+                    pidret = psh->children[i].pid;
+                }
+            }
+            else
+# endif
             if (GetExitCodeProcess(hChild, &dwExitCode))
             {
                 pidret = psh->children[i].pid;
@@ -1031,12 +1812,27 @@ pid_t sh_waitpid(shinstance *psh, pid_t pid, int *statusp, int flags)
                 errno = EINVAL;
         }
 
-        /* remove and close */
-        hChild = psh->children[i].hChild;
+        /* close and remove */
+# ifndef SH_FORKED_MODE
+        if (psh->children[i].subshellstatus)
+        {
+            shsubshellstatus_release(psh, psh->children[i].subshellstatus);
+            psh->children[i].subshellstatus = NULL;
+        }
+        else
+# endif
+        {
+            rc = CloseHandle(psh->children[i].hChild);
+            kHlpAssert(rc);
+        }
+
         psh->num_children--;
         if (i < psh->num_children)
             psh->children[i] = psh->children[psh->num_children];
-        i = CloseHandle(hChild); assert(i);
+        psh->children[psh->num_children].hChild = NULL;
+# ifndef SH_FORKED_MODE
+        psh->children[psh->num_children].subshellstatus = NULL;
+# endif
     }
 
 #elif defined(SH_FORKED_MODE)
@@ -1051,27 +1847,62 @@ pid_t sh_waitpid(shinstance *psh, pid_t pid, int *statusp, int flags)
 #else
 #endif
 
-    TRACE2((psh, "waitpid(%d, %p, %#x) -> %d [%d] *statusp=%#x (rc=%d)\n", pid, statusp, flags,
+    TRACE2((psh, "waitpid(%" SHPID_PRI ", %p, %#x) -> %" SHPID_PRI " [%d] *statusp=%#x (rc=%d)\n", pid, statusp, flags,
             pidret, errno, *statusp, WEXITSTATUS(*statusp)));
     (void)psh;
     return pidret;
 }
 
-SH_NORETURN_1 void sh__exit(shinstance *psh, int rc)
+SH_NORETURN_1 void sh__exit(shinstance *psh, int iExit)
 {
-    TRACE2((psh, "sh__exit(%d)\n", rc));
-    (void)psh;
+    TRACE2((psh, "sh__exit(%d)\n", iExit));
 
 #if defined(SH_FORKED_MODE)
-    _exit(rc);
+    _exit(iExit);
+    (void)psh;
 
 #else
+    psh->exitstatus = iExit;
+
+    /*
+     * If we're a thread, jump to the sh_thread_wrapper and make a clean exit.
+     */
+    if (psh->thread)
+    {
+        shsubshellstatus_signal_and_release(psh, iExit);
+        if (psh->exitjmp)
+            longjmp(psh->exitjmp->loc, !iExit ? SH_EXIT_ZERO : iExit);
+        else
+        {
+            static char const s_msg[] = "fatal error in sh__exit: exitjmp is NULL!\n";
+            shfile_write(&psh->fdtab, 2, s_msg, sizeof(s_msg) - 1);
+            _exit(iExit);
+        }
+    }
+
+    /*
+     * The main thread will typically have to stick around till all subshell
+     * threads have been stopped.  We must tear down this shell instance as
+     * much as possible before doing this, though, as subshells could be
+     * waiting for pipes and such to be closed before they're willing to exit.
+     */
+    if (g_num_shells > 1)
+    {
+        TRACE2((psh, "sh__exit: %u shells around, must wait...\n", g_num_shells));
+        shfile_uninit(&psh->fdtab, psh->tracefd);
+        sh_int_unlink(psh);
+        /** @todo    */
+    }
+
+    _exit(iExit);
 #endif
 }
 
 int sh_execve(shinstance *psh, const char *exe, const char * const *argv, const char * const *envp)
 {
     int rc;
+
+    g_stat_execs++;
 
 #ifdef DEBUG
     /* log it all */
@@ -1113,7 +1944,7 @@ int sh_execve(shinstance *psh, const char *exe, const char * const *argv, const 
          */
         PROCESS_INFORMATION ProcInfo;
         STARTUPINFO StrtInfo;
-        intptr_t hndls[3];
+        shfdexecwin fdinfo;
         char *cwd = shfile_getcwd(&psh->fdtab, NULL, 0);
         char *cmdline;
         size_t cmdline_size;
@@ -1222,55 +2053,115 @@ int sh_execve(shinstance *psh, const char *exe, const char * const *argv, const 
         StrtInfo.cb = sizeof(StrtInfo);
 
         /* File handles. */
-        StrtInfo.dwFlags   |= STARTF_USESTDHANDLES;
-        StrtInfo.lpReserved2 = shfile_exec_win(&psh->fdtab, 1 /* prepare */, &StrtInfo.cbReserved2, hndls);
-        StrtInfo.hStdInput  = (HANDLE)hndls[0];
-        StrtInfo.hStdOutput = (HANDLE)hndls[1];
-        StrtInfo.hStdError  = (HANDLE)hndls[2];
+        fdinfo.strtinfo = &StrtInfo;
+        shfile_exec_win(&psh->fdtab, 1 /* prepare */, &fdinfo);
+        TRACE2((psh, "sh_execve: inherithandles=%d replacehandles={%d,%d,%d} handles={%p,%p,%p} suspended=%d Reserved2=%p LB %#x\n",
+                fdinfo.inherithandles, fdinfo.replacehandles[0], fdinfo.replacehandles[1], fdinfo.replacehandles[2],
+                fdinfo.handles[0], fdinfo.handles[1], fdinfo.handles[3], fdinfo.startsuspended,
+                StrtInfo.lpReserved2, StrtInfo.cbReserved2));
+        if (!fdinfo.inherithandles)
+        {
+            StrtInfo.dwFlags |= STARTF_USESTDHANDLES;
+            StrtInfo.hStdInput  = INVALID_HANDLE_VALUE;
+            StrtInfo.hStdOutput = INVALID_HANDLE_VALUE;
+            StrtInfo.hStdError  = INVALID_HANDLE_VALUE;
+        }
+        else
+        {
+            StrtInfo.dwFlags |= STARTF_USESTDHANDLES;
+            StrtInfo.hStdInput  = (HANDLE)fdinfo.handles[0];
+            StrtInfo.hStdOutput = (HANDLE)fdinfo.handles[1];
+            StrtInfo.hStdError  = (HANDLE)fdinfo.handles[2];
+            g_stat_execs_serialized++;
+        }
 
         /* Get going... */
-        if (CreateProcess(exe,
-                          cmdline,
-                          NULL,         /* pProcessAttributes */
-                          NULL,         /* pThreadAttributes */
-                          TRUE,         /* bInheritHandles */
-                          0,            /* dwCreationFlags */
-                          envblock,
-                          cwd,
-                          &StrtInfo,
-                          &ProcInfo))
+        rc = CreateProcessA(exe,
+                            cmdline,
+                            NULL,         /* pProcessAttributes */
+                            NULL,         /* pThreadAttributes */
+                            fdinfo.inherithandles,
+                            fdinfo.startsuspended ? CREATE_SUSPENDED : 0,
+                            envblock,
+                            cwd,
+                            &StrtInfo,
+                            &ProcInfo);
+        if (rc)
         {
             DWORD dwErr;
             DWORD dwExitCode;
 
-            CloseHandle(ProcInfo.hThread);
-            dwErr = WaitForSingleObject(ProcInfo.hProcess, INFINITE);
-            assert(dwErr == WAIT_OBJECT_0);
-
-            if (GetExitCodeProcess(ProcInfo.hProcess, &dwExitCode))
+            if (fdinfo.startsuspended)
             {
-                CloseHandle(ProcInfo.hProcess);
-                _exit(dwExitCode);
+                char errmsg[512];
+                if (!fdinfo.inherithandles)
+                    rc = nt_child_inject_standard_handles(ProcInfo.hProcess, fdinfo.replacehandles,
+                                                          (HANDLE *)&fdinfo.handles[0], errmsg, sizeof(errmsg));
+                else
+                    rc = 0;
+                if (!rc)
+                {
+#  ifdef KASH_ASYNC_CLOSE_HANDLE
+                    shfile_async_close_sync();
+#  endif
+                    rc = ResumeThread(ProcInfo.hThread);
+                    if (!rc)
+                        TRACE2((psh, "sh_execve: ResumeThread failed: %u -> errno=ENXIO\n", GetLastError()));
+                }
+                else
+                {
+                    TRACE2((psh, "sh_execve: nt_child_inject_standard_handles failed: %d -> errno=ENXIO; %s\n", rc, errmsg));
+                    rc = FALSE;
+                }
+                errno = ENXIO;
             }
-            errno = EINVAL;
+
+            shfile_exec_win(&psh->fdtab, rc ? 0 /* done */ : -1 /* done but failed */, &fdinfo);
+
+            CloseHandle(ProcInfo.hThread);
+            ProcInfo.hThread = INVALID_HANDLE_VALUE;
+            if (rc)
+            {
+                /*
+                 * Wait for it and forward the exit code.
+                 */
+                dwErr = WaitForSingleObject(ProcInfo.hProcess, INFINITE);
+                kHlpAssert(dwErr == WAIT_OBJECT_0);
+
+                if (GetExitCodeProcess(ProcInfo.hProcess, &dwExitCode))
+                {
+#  ifndef SH_FORKED_MODE
+                    shsubshellstatus_signal_and_release(psh, (int)dwExitCode);
+#  endif
+                    CloseHandle(ProcInfo.hProcess);
+                    ProcInfo.hProcess = INVALID_HANDLE_VALUE;
+                    sh__exit(psh, dwExitCode);
+                }
+
+                /* this shouldn't happen... */
+                TRACE2((psh, "sh_execve: GetExitCodeProcess failed: %u\n", GetLastError()));
+                kHlpAssert(0);
+                errno = EINVAL;
+            }
+            TerminateProcess(ProcInfo.hProcess, 0x40000015);
+            CloseHandle(ProcInfo.hProcess);
         }
         else
         {
             DWORD dwErr = GetLastError();
+
+            shfile_exec_win(&psh->fdtab, -1 /* done but failed */, &fdinfo);
+
             switch (dwErr)
             {
                 case ERROR_FILE_NOT_FOUND:          errno = ENOENT; break;
                 case ERROR_PATH_NOT_FOUND:          errno = ENOENT; break;
                 case ERROR_BAD_EXE_FORMAT:          errno = ENOEXEC; break;
                 case ERROR_INVALID_EXE_SIGNATURE:   errno = ENOEXEC; break;
-                default:
-                    errno = EINVAL;
-                    break;
+                default:                            errno = EINVAL; break;
             }
             TRACE2((psh, "sh_execve: dwErr=%d -> errno=%d\n", dwErr, errno));
         }
-
-        shfile_exec_win(&psh->fdtab, 0 /* done */, NULL, NULL);
     }
     rc = -1;
 
@@ -1287,14 +2178,10 @@ int sh_execve(shinstance *psh, const char *exe, const char * const *argv, const 
 
 uid_t sh_getuid(shinstance *psh)
 {
-#if defined(SH_FORKED_MODE)
-# ifdef _MSC_VER
+#ifdef _MSC_VER
     uid_t uid = 0;
-# else
-    uid_t uid = getuid();
-# endif
-
 #else
+    uid_t uid = getuid();
 #endif
 
     TRACE2((psh, "sh_getuid() -> %d [%d]\n", uid, errno));
@@ -1304,14 +2191,10 @@ uid_t sh_getuid(shinstance *psh)
 
 uid_t sh_geteuid(shinstance *psh)
 {
-#if defined(SH_FORKED_MODE)
-# ifdef _MSC_VER
+#ifdef _MSC_VER
     uid_t euid = 0;
-# else
-    uid_t euid = geteuid();
-# endif
-
 #else
+    uid_t euid = geteuid();
 #endif
 
     TRACE2((psh, "sh_geteuid() -> %d [%d]\n", euid, errno));
@@ -1321,14 +2204,10 @@ uid_t sh_geteuid(shinstance *psh)
 
 gid_t sh_getgid(shinstance *psh)
 {
-#if defined(SH_FORKED_MODE)
-# ifdef _MSC_VER
+#ifdef _MSC_VER
     gid_t gid = 0;
-# else
-    gid_t gid = getgid();
-# endif
-
 #else
+    gid_t gid = getgid();
 #endif
 
     TRACE2((psh, "sh_getgid() -> %d [%d]\n", gid, errno));
@@ -1338,14 +2217,10 @@ gid_t sh_getgid(shinstance *psh)
 
 gid_t sh_getegid(shinstance *psh)
 {
-#if defined(SH_FORKED_MODE)
-# ifdef _MSC_VER
+#ifdef _MSC_VER
     gid_t egid = 0;
-# else
-    gid_t egid = getegid();
-# endif
-
 #else
+    gid_t egid = getegid();
 #endif
 
     TRACE2((psh, "sh_getegid() -> %d [%d]\n", egid, errno));
@@ -1353,127 +2228,124 @@ gid_t sh_getegid(shinstance *psh)
     return egid;
 }
 
-pid_t sh_getpid(shinstance *psh)
+shpid sh_getpid(shinstance *psh)
 {
-    pid_t pid;
-
-#if defined(SH_FORKED_MODE)
-# ifdef _MSC_VER
-    pid = _getpid();
-# else
-    pid = getpid();
-# endif
-#else
-#endif
-
-    (void)psh;
-    return pid;
+    return psh->pid;
 }
 
-pid_t sh_getpgrp(shinstance *psh)
+shpid sh_getpgrp(shinstance *psh)
 {
-#if defined(SH_FORKED_MODE)
-# ifdef _MSC_VER
-    pid_t pgrp = _getpid();
-# else
-    pid_t pgrp = getpgrp();
-# endif
-
-#else
+    shpid pgid = psh->pgid;
+#ifndef _MSC_VER
+    kHlpAssert(pgid == getpgrp());
 #endif
 
-    TRACE2((psh, "sh_getpgrp() -> %d [%d]\n", pgrp, errno));
-    (void)psh;
-    return pgrp;
-}
-
-pid_t sh_getpgid(shinstance *psh, pid_t pid)
-{
-#if defined(SH_FORKED_MODE)
-# ifdef _MSC_VER
-    pid_t pgid = pid;
-# else
-    pid_t pgid = getpgid(pid);
-# endif
-
-#else
-#endif
-
-    TRACE2((psh, "sh_getpgid(%d) -> %d [%d]\n", pid, pgid, errno));
-    (void)psh;
+    TRACE2((psh, "sh_getpgrp() -> %" SHPID_PRI " [%d]\n", pgid, errno));
     return pgid;
 }
 
-int sh_setpgid(shinstance *psh, pid_t pid, pid_t pgid)
+/**
+ * @param   pid     Should always be zero, i.e. referring to the current shell
+ *                  process.
+ */
+shpid sh_getpgid(shinstance *psh, shpid pid)
 {
-#if defined(SH_FORKED_MODE)
-# ifdef _MSC_VER
-    int rc = -1;
-    errno = ENOSYS;
-# else
-    int rc = setpgid(pid, pgid);
-# endif
-
-#else
+    shpid pgid;
+    if (pid == 0 || psh->pid == pid)
+    {
+        pgid = psh->pgid;
+#ifndef _MSC_VER
+        kHlpAssert(pgid == getpgrp());
 #endif
+    }
+    else
+    {
+        kHlpAssert(0);
+        errno = ESRCH;
+        pgid = -1;
+    }
 
-    TRACE2((psh, "sh_setpgid(%d, %d) -> %d [%d]\n", pid, pgid, rc, errno));
+    TRACE2((psh, "sh_getpgid(%" SHPID_PRI ") -> %" SHPID_PRI " [%d]\n", pid, pgid, errno));
+    return pgid;
+}
+
+/**
+ *
+ * @param   pid     The pid to modify.  This is always 0, except when forkparent
+ *                  calls to group a newly created child.  Though, we might
+ *                  almost safely ignore it in that case as the child will also
+ *                  perform the operation.
+ * @param   pgid    The process group to assign @a pid to.
+ */
+int sh_setpgid(shinstance *psh, shpid pid, shpid pgid)
+{
+#if defined(SH_FORKED_MODE) && !defined(_MSC_VER)
+    int rc = setpgid(pid, pgid);
+    TRACE2((psh, "sh_setpgid(%" SHPID_PRI ", %" SHPID_PRI ") -> %d [%d]\n", pid, pgid, rc, errno));
     (void)psh;
+#else
+    int rc = 0;
+    if (pid == 0 || psh->pid == pid)
+    {
+        TRACE2((psh, "sh_setpgid(self,): %" SHPID_PRI " -> %" SHPID_PRI "\n", psh->pgid, pgid));
+        psh->pgid = pgid;
+    }
+    else
+    {
+        /** @todo fixme   */
+        rc = -1;
+        errno = ENOSYS;
+    }
+#endif
     return rc;
 }
 
-pid_t sh_tcgetpgrp(shinstance *psh, int fd)
+shpid sh_tcgetpgrp(shinstance *psh, int fd)
 {
-    pid_t pgrp;
+    shpid pgrp;
 
-#if defined(SH_FORKED_MODE)
-# ifdef _MSC_VER
+#ifdef _MSC_VER
     pgrp = -1;
     errno = ENOSYS;
-# else
+#elif defined(SH_FORKED_MODE)
     pgrp = tcgetpgrp(fd);
-# endif
-
 #else
+# error "PORT ME"
 #endif
 
-    TRACE2((psh, "sh_tcgetpgrp(%d) -> %d [%d]\n", fd, pgrp, errno));
+    TRACE2((psh, "sh_tcgetpgrp(%d) -> %" SHPID_PRI " [%d]\n", fd, pgrp, errno));
     (void)psh;
     return pgrp;
 }
 
-int sh_tcsetpgrp(shinstance *psh, int fd, pid_t pgrp)
+int sh_tcsetpgrp(shinstance *psh, int fd, shpid pgrp)
 {
     int rc;
-    TRACE2((psh, "sh_tcsetpgrp(%d, %d)\n", fd, pgrp));
+    TRACE2((psh, "sh_tcsetpgrp(%d, %" SHPID_PRI ")\n", fd, pgrp));
 
-#if defined(SH_FORKED_MODE)
-# ifdef _MSC_VER
+#ifdef _MSC_VER
     rc = -1;
     errno = ENOSYS;
-# else
+#elif defined(SH_FORKED_MODE)
     rc = tcsetpgrp(fd, pgrp);
-# endif
-
 #else
+# error "PORT ME"
 #endif
 
-    TRACE2((psh, "sh_tcsetpgrp(%d, %d) -> %d [%d]\n", fd, pgrp, rc, errno));
+    TRACE2((psh, "sh_tcsetpgrp(%d, %" SHPID_PRI ") -> %d [%d]\n", fd, pgrp, rc, errno));
     (void)psh;
     return rc;
 }
 
 int sh_getrlimit(shinstance *psh, int resid, shrlimit *limp)
 {
-#if defined(SH_FORKED_MODE)
-# ifdef _MSC_VER
+#ifdef _MSC_VER
     int rc = -1;
     errno = ENOSYS;
-# else
+#elif defined(SH_FORKED_MODE)
     int rc = getrlimit(resid, limp);
-# endif
-
 #else
+# error "PORT ME"
     /* returned the stored limit */
 #endif
 
@@ -1485,15 +2357,13 @@ int sh_getrlimit(shinstance *psh, int resid, shrlimit *limp)
 
 int sh_setrlimit(shinstance *psh, int resid, const shrlimit *limp)
 {
-#if defined(SH_FORKED_MODE)
-# ifdef _MSC_VER
+#ifdef _MSC_VER
     int rc = -1;
     errno = ENOSYS;
-# else
+#elif defined(SH_FORKED_MODE)
     int rc = setrlimit(resid, limp);
-# endif
-
 #else
+# error "PORT ME"
     /* if max(shell) < limp; then setrlimit; fi
        if success; then store limit for later retrival and maxing. */
 

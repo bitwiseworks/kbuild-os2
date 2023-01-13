@@ -1,4 +1,4 @@
-/* $Id: kDefs.h 116 2019-01-08 19:23:20Z bird $ */
+/* $Id: kDefs.h 120 2022-02-18 02:00:53Z bird $ */
 /** @file
  * kTypes - Defines and Macros.
  */
@@ -188,6 +188,14 @@
 #define K_ARCH_SPARC_32         (12 | K_ARCH_BIT_32 | K_ARCH_END_BIG)
 /** 64-bit SPARC. */
 #define K_ARCH_SPARC_64         (12 | K_ARCH_BIT_64 | K_ARCH_END_BI)
+/** 32-bit RISC-V, little endian. */
+#define K_ARCH_RISCV_32         (13 | K_ARCH_BIT_32 | K_ARCH_END_LITTLE)
+/** 32-bit RISC-V, big endian. */
+#define K_ARCH_RISCV_32_BE      (13 | K_ARCH_BIT_32 | K_ARCH_END_BIG)
+/** 64-bit RISC-V, little endian. */
+#define K_ARCH_RISCV_64         (13 | K_ARCH_BIT_64 | K_ARCH_END_LITTLE)
+/** 64-bit RISC-V, big endian. */
+#define K_ARCH_RISCV_64_BE      (13 | K_ARCH_BIT_64 | K_ARCH_END_BIG)
 /** The end of the valid architecture values (exclusive). */
 #define K_ARCH_MAX              (12+1)
 /** @} */
@@ -224,6 +232,18 @@
 #  define K_ARCH    K_ARCH_POWERPC_64
 # elif defined(__powerpc__) || defined(__ppc__) || defined(__PPC__)
 #  define K_ARCH    K_ARCH_POWERPC_32
+# elif defined(__riscv)
+#  if __BYTE_ORDER__ == WORDS_BIG_ENDIAN
+#   if defined(__riscv32) || __riscv_xlen+0 == 32
+#    define K_ARCH  K_ARCH_RISCV_32_BE
+#   else
+#    define K_ARCH  K_ARCH_RISCV_64_BE
+#   endif
+#  elif defined(__riscv32) || __riscv_xlen+0 == 32
+#   define K_ARCH   K_ARCH_RISCV_32
+#  else
+#   define K_ARCH   K_ARCH_RISCV_64
+#  endif
 # elif defined(__sparcv9__) || defined(__sparcv9)
 #  define K_ARCH    K_ARCH_SPARC_64
 # elif defined(__sparc__) || defined(__sparc)
@@ -234,12 +254,12 @@
 #  define K_ARCH    K_ARCH_S390_32
 # elif defined(__sh__)
 #  if !defined(__SH5__)
-#   define K_ARCH    K_ARCH_SH_32
+#   define K_ARCH   K_ARCH_SH_32
 #  else
 #   if __SH5__ == 64
-#    define K_ARCH   K_ARCH_SH_64
+#    define K_ARCH  K_ARCH_SH_64
 #   else
-#    define K_ARCH   K_ARCH_SH_32
+#    define K_ARCH  K_ARCH_SH_32
 #   endif
 #  endif
 # else

@@ -416,6 +416,17 @@ int process_affinity = 0;
 int make_expensive_statistics = 0;
 #endif
 
+#if defined (WINDOWS32) && defined (CONFIG_NEW_WIN_CHILDREN)
+/* --job-object[=mode]. */
+char *win_job_object_mode = NULL;
+
+/* --job-object-name=name */
+char *win_job_object_name = NULL;
+
+/** --job-object-no-kill.   */
+int win_job_object_no_kill = 0;
+#endif
+
 
 /* The usage output.  We write it this way to make life easier for the
    translators, especially those trying to translate to right-to-left
@@ -549,6 +560,19 @@ static const char *const usage[] =
     N_("\
   --statistics                Gather extra statistics for $(make-stats ).\n"),
 #endif
+#if defined (WINDOWS32) && defined (CONFIG_NEW_WIN_CHILDREN)
+    N_("\
+  --job-object=mode           Windows job object mode:\n\
+                                login = Per login session (default).\n\
+                                root  = Root make instance only.\n\
+                                each  = Each make instances.\n\
+                                none  = No job objects.\n"),
+    N_("\
+  --job-object-name=name      Name of windows job object to open or create.\n\
+                              The default name depends on the level.\n"),
+    N_("\
+  --job-object-no-kill        Do not kill orphaned child processes when done.\n"),
+#endif
     NULL
   };
 
@@ -574,24 +598,24 @@ static const struct command_switch switches[] =
     { 'n', flag, &just_print_flag, 1, 1, 1, 0, 0, "just-print" },
     { 'p', flag, &print_data_base_flag, 1, 1, 0, 0, 0, "print-data-base" },
 #ifdef CONFIG_PRETTY_COMMAND_PRINTING
-    { CHAR_MAX+10, flag, (char *) &pretty_command_printing, 1, 1, 1, 0, 0,
+    { CHAR_MAX+50, flag, (char *) &pretty_command_printing, 1, 1, 1, 0, 0,
        "pretty-command-printing" },
 #endif
 #ifdef CONFIG_WITH_PRINT_STATS_SWITCH
-    { CHAR_MAX+11, flag, (char *) &print_stats_flag, 1, 1, 1, 0, 0,
+    { CHAR_MAX+51, flag, (char *) &print_stats_flag, 1, 1, 1, 0, 0,
        "print-stats" },
 #endif
 #ifdef CONFIG_WITH_PRINT_TIME_SWITCH
-    { CHAR_MAX+12, positive_int, (char *) &print_time_min, 1, 1, 0,
+    { CHAR_MAX+52, positive_int, (char *) &print_time_min, 1, 1, 0,
       (char *) &no_val_print_time_min, (char *) &default_print_time_min,
       "print-time" },
 #endif
 #ifdef KMK
-    { CHAR_MAX+14, positive_int, (char *) &process_priority, 1, 1, 0,
+    { CHAR_MAX+54, positive_int, (char *) &process_priority, 1, 1, 0,
       (char *) &process_priority, (char *) &process_priority, "priority" },
-    { CHAR_MAX+15, positive_int, (char *) &process_affinity, 1, 1, 0,
+    { CHAR_MAX+55, positive_int, (char *) &process_affinity, 1, 1, 0,
       (char *) &process_affinity, (char *) &process_affinity, "affinity" },
-    { CHAR_MAX+17, flag, (char *) &process_priority, 1, 1, 0, 0, 0, "nice" },
+    { CHAR_MAX+56, flag, (char *) &process_priority, 1, 1, 0, 0, 0, "nice" },
 #endif
     { 'q', flag, &question_flag, 1, 1, 1, 0, 0, "question" },
     { 'r', flag, &no_builtin_rules_flag, 1, 1, 0, 0, 0, "no-builtin-rules" },
@@ -601,7 +625,7 @@ static const struct command_switch switches[] =
     { 'S', flag_off, &keep_going_flag, 1, 1, 0, 0, &default_keep_going_flag,
       "no-keep-going" },
 #if defined (CONFIG_WITH_MAKE_STATS) || defined (CONFIG_WITH_MINIMAL_STATS)
-    { CHAR_MAX+16, flag, (char *) &make_expensive_statistics, 1, 1, 1, 0, 0,
+    { CHAR_MAX+57, flag, (char *) &make_expensive_statistics, 1, 1, 1, 0, 0,
        "statistics" },
 #endif
     { 't', flag, &touch_flag, 1, 1, 1, 0, 0, "touch" },
@@ -636,6 +660,13 @@ static const struct command_switch switches[] =
       "warn-undefined-variables" },
     { CHAR_MAX+6, strlist, &eval_strings, 1, 0, 0, 0, 0, "eval" },
     { CHAR_MAX+7, string, &sync_mutex, 1, 1, 0, 0, 0, "sync-mutex" },
+#if defined (WINDOWS32) && defined (CONFIG_NEW_WIN_CHILDREN)
+    { CHAR_MAX+58, string, &win_job_object_mode, 1, 1, 1, 0, 0, "job-object" },
+    { CHAR_MAX+59, string, &win_job_object_name, 1, 1, 1, 0, 0,
+      "job-object-name" },
+    { CHAR_MAX+60, flag, &win_job_object_no_kill, 1, 1, 1, 0, 0,
+      "job-object-no-kill" },
+#endif
     { 0, 0, 0, 0, 0, 0, 0, 0, 0 }
   };
 
@@ -785,6 +816,11 @@ unsigned short stopchar_map[UCHAR_MAX + 1] = {0};
    options, while reading makefiles, etc.  */
 
 struct output make_sync;
+
+#ifdef KMK
+/** Current umask() value. */
+mode_t g_fUMask = 0022;
+#endif
 
 
 /* Mask of signals that are being caught with fatal_error_signal.  */
@@ -1515,7 +1551,7 @@ get_online_cpu_count(void)
       }
     if (!cpus)
       cpus = 1;
-#  ifdef CONFIG_NEW_WIN_CHILDREN
+#  ifndef CONFIG_NEW_WIN_CHILDREN
     if (cpus > 64)
       cpus = 64; /* (wait for multiple objects limit) */
 #  endif
@@ -1731,6 +1767,11 @@ main (int argc, char **argv, char **envp)
 #endif
 #ifdef SIGXFSZ
   FATAL_SIG (SIGXFSZ);
+#endif
+
+#ifdef KMK
+  /* Get the incoming umask so we don't have to modify it later to get it. */
+  umask(g_fUMask = umask(0077));
 #endif
 
 #ifdef CONFIG_NEW_WIN32_CTRL_EVENT
@@ -3722,6 +3763,17 @@ decode_switches (int argc, const char **argv, int env)
   /* If there are any options that need to be decoded do it now.  */
   decode_debug_flags ();
   decode_output_sync_flags ();
+
+#if defined (WINDOWS32) && defined (CONFIG_NEW_WIN_CHILDREN)
+  /* validate the job object mode value . */
+  if (win_job_object_mode == NULL)
+    win_job_object_mode = xstrdup ("login");
+  else if (   strcmp (win_job_object_mode, "none") != 0
+           && strcmp (win_job_object_mode, "login") != 0
+           && strcmp (win_job_object_mode, "root") != 0
+           && strcmp (win_job_object_mode, "each") != 0)
+    OS (fatal, NILF, _("unknown job object mode '%s'"), win_job_object_mode);
+#endif
 }
 
 /* Decode switches from environment variable ENVAR (which is LEN chars long).
@@ -4056,8 +4108,10 @@ define_makeflags (int all, int makefile)
   /* Provide simple access to some of the options. */
   {
     char val[32];
-    sprintf (val, "%u", job_slots);
+    sprintf (val, "%u", job_slots ? job_slots : master_job_slots);
     define_variable_cname ("KMK_OPTS_JOBS", val, o_default, 1);
+    sprintf (val, "%u", default_job_slots);
+    define_variable_cname ("KMK_OPTS_JOBS_DEFAULT", val, o_default, 1);
     define_variable_cname ("KMK_OPTS_KEEP_GOING", keep_going_flag ? "1" : "0", o_default, 1);
     define_variable_cname ("KMK_OPTS_JUST_PRINT", just_print_flag ? "1" : "0", o_default, 1);
     define_variable_cname ("KMK_OPTS_PRETTY_COMMAND_PRINTING",
@@ -4296,11 +4350,16 @@ clean_jobserver (int status)
 /* Exit with STATUS, cleaning up as necessary.  */
 
 void
+#ifdef KMK
+die_with_job_output (int status, struct output *out)
+#else
 die (int status)
+#endif
 {
   static char dying = 0;
 #ifdef KMK
   static char need_2nd_error = 0;
+  static char need_2nd_error_output = 0;
 #endif
 
   if (!dying)
@@ -4318,7 +4377,14 @@ die (int status)
           && (   job_slots_used > 0
               || print_data_base_flag
               || print_stats_flag))
-        need_2nd_error = 1;
+        {
+          need_2nd_error = 1;
+          need_2nd_error_output = job_slots_used >= 2
+                               && out != NULL
+                               && out != &make_sync;
+          if (need_2nd_error_output)
+            output_metered = 0;
+        }
 #endif /* KMK */
 
       /* Wait for children to die.  */
@@ -4394,7 +4460,23 @@ die (int status)
      failure again before exiting. */
   if (need_2nd_error != 0)
     ON (error, NILF, _("*** Exiting with status %d"), status);
+  if (out)
+  {
+      out->dont_truncate = 0;
+      if (need_2nd_error_output && output_metered > 20)
+        output_dump (out);
+      else
+        output_reset (out);
+      output_close (out);
+  }
 #endif
 
   exit (status);
 }
+
+#ifdef KMK
+void die (int status)
+{
+    die_with_job_output (status, NULL);
+}
+#endif

@@ -1,4 +1,4 @@
-/* $Id: kmkbuiltin.c 3293 2019-01-08 21:13:50Z bird $ */
+/* $Id: kmkbuiltin.c 3389 2020-06-26 17:16:26Z bird $ */
 /** @file
  * kMk Builtin command execution.
  */
@@ -134,6 +134,13 @@ int kmk_builtin_command(const char *pszCmd, struct child *pChild, char ***ppapsz
                             else
                             {
                                 ch = *pszCmd++;
+                                if (ch == '\n')                    /* escaped end-of-line */
+                                    break;
+                                if (ch == '\r' && *pszCmd == '\n') /* escaped end-of-line */
+                                {
+                                    pszCmd++;
+                                    break;
+                                }
                                 if (ch)
                                     *pszDst++ = ch;
                                 else
@@ -220,7 +227,9 @@ int kmk_builtin_command(const char *pszCmd, struct child *pChild, char ***ppapsz
          * Skip argument separators (IFS=space() for now).  Check for EOS.
          */
         if (ch != 0)
-            while ((ch = *pszCmd) && isspace(ch))
+            while (   (ch = *pszCmd)
+                   && (   isspace(ch)
+                       || (ch == '\\' && (pszCmd[1] == '\n' || (pszCmd[1] == '\r' && pszCmd[2] == '\n')))))
                 pszCmd++;
         if (ch == 0)
             break;
@@ -255,6 +264,7 @@ static const KMKBUILTINENTRY g_aBuiltIns[] =
     BUILTIN_ENTRY(kmk_builtin_kDepObj,  "kDepObj",      FN_SIG_MAIN,            1, 0),
 #ifdef KBUILD_OS_WINDOWS
     BUILTIN_ENTRY(kmk_builtin_kSubmit,  "kSubmit",      FN_SIG_MAIN_SPAWNS,     0, 1),
+    BUILTIN_ENTRY(kmk_builtin_kill,     "kill",         FN_SIG_MAIN,            0, 0),
 #endif
     BUILTIN_ENTRY(kmk_builtin_mkdir,    "mkdir",        FN_SIG_MAIN,            0, 0),
     BUILTIN_ENTRY(kmk_builtin_mv,       "mv",           FN_SIG_MAIN,            0, 0),
@@ -391,14 +401,13 @@ int kmk_builtin_command_parsed(int argc, char **argv, struct child *pChild, char
 #endif
                 {
                     /*
-                     * Call the worker function, making sure to preserve umask.
+                     * Call the worker function.
                      */
 #ifdef CONFIG_WITH_KMK_BUILTIN_STATS
                     big_int nsStart = print_stats_flag ? nano_timestamp() : 0;
 #endif
                     KMKBUILTINCTX Ctx;
-                    int const iUmask = umask(0);        /* save umask */
-                    umask(iUmask);
+                    assert(g_fUMask == umask(g_fUMask));
 
                     Ctx.pszProgName = pEntry->uName.s.sz;
                     Ctx.pOut = pChild ? &pChild->output : NULL;
@@ -437,7 +446,7 @@ int kmk_builtin_command_parsed(int argc, char **argv, struct child *pChild, char
                     else
                         rc = 99;
 
-                    umask(iUmask);                      /* restore it */
+                    assert(g_fUMask == umask(g_fUMask)); /* builtin command must preserve umask! */
 
 #ifdef CONFIG_WITH_KMK_BUILTIN_STATS
                     if (print_stats_flag)

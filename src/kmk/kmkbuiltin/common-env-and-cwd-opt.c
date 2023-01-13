@@ -1,4 +1,4 @@
-/* $Id: common-env-and-cwd-opt.c 3192 2018-03-26 20:25:56Z bird $ */
+/* $Id: common-env-and-cwd-opt.c 3332 2020-04-19 23:08:16Z bird $ */
 /** @file
  * kMk Builtin command - Commmon environment and CWD option handling code.
  */
@@ -277,7 +277,7 @@ static int kBuiltinOptEnvAppendPrepend(PKMKBUILTINCTX pCtx, char ***ppapszEnv, u
         }
         return kBuiltinOptEnvAddVar(pCtx, ppapszEnv, pcEnvVars, pcAllocatedEnvVars, cVerbosity, pszValue);
     }
-    return errx(pCtx, 1, "Missing '=': -E %s", pszValue);
+    return errx(pCtx, 1, "Missing '=': -%c %s", fAppend ? 'A' : 'D', pszValue);
 }
 
 

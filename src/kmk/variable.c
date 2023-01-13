@@ -624,7 +624,11 @@ undefine_variable_in_set (const char *name, unsigned int length,
             strcache2_set_user_val (&variable_strcache, v->name, NULL);
 #endif
           free_variable_name_and_value (v);
+#ifndef CONFIG_WITH_ALLOC_CACHES
           free (v);
+#else
+          alloccache_free (&variable_cache, v);
+#endif
           if (set == &global_variable_set)
             ++variable_changenum;
         }
@@ -1591,9 +1595,7 @@ define_automatic_variables (void)
   const char *val;
   struct variable *envvar1;
   struct variable *envvar2;
-# ifdef WINDOWS32
-  OSVERSIONINFOEX oix;
-# else
+# ifndef WINDOWS32
   struct utsname uts;
 # endif
   unsigned long ulMajor = 0, ulMinor = 0, ulPatch = 0, ul4th = 0;
@@ -1639,7 +1641,7 @@ define_automatic_variables (void)
   if (!envvar1)
     define_variable_cname ("KBUILD_HOST", val, o_default, 0);
   if (!envvar2)
-    define_variable_cname ("BUILD_PLATFORM", val, o_default, 0);
+    define_variable_cname ("BUILD_PLATFORM", "$(KBUILD_HOST)", o_default, 1);
 
   envvar1 = lookup_variable (STRING_SIZE_TUPLE ("KBUILD_HOST_ARCH"));
   envvar2 = lookup_variable (STRING_SIZE_TUPLE ("BUILD_PLATFORM_ARCH"));
@@ -1649,7 +1651,7 @@ define_automatic_variables (void)
   if (!envvar1)
     define_variable_cname ("KBUILD_HOST_ARCH", val, o_default, 0);
   if (!envvar2)
-    define_variable_cname ("BUILD_PLATFORM_ARCH", val, o_default, 0);
+    define_variable_cname ("BUILD_PLATFORM_ARCH", "$(KBUILD_HOST_ARCH)", o_default, 1);
 
   envvar1 = lookup_variable (STRING_SIZE_TUPLE ("KBUILD_HOST_CPU"));
   envvar2 = lookup_variable (STRING_SIZE_TUPLE ("BUILD_PLATFORM_CPU"));
@@ -1659,35 +1661,52 @@ define_automatic_variables (void)
   if (!envvar1)
     define_variable_cname ("KBUILD_HOST_CPU", val, o_default, 0);
   if (!envvar2)
-    define_variable_cname ("BUILD_PLATFORM_CPU", val, o_default, 0);
+    define_variable_cname ("BUILD_PLATFORM_CPU", "$(KBUILD_HOST_CPU)", o_default, 1);
 
   /* The host kernel version. */
-#if defined(WINDOWS32)
-  memset (&oix, '\0', sizeof (oix));
-  oix.dwOSVersionInfoSize = sizeof(OSVERSIONINFOEX);
-  if (!GetVersionEx ((LPOSVERSIONINFO)&oix))
-    {
-      memset (&oix, '\0', sizeof (oix));
-      oix.dwOSVersionInfoSize = sizeof (OSVERSIONINFO);
-      GetVersionEx ((LPOSVERSIONINFO)&oix);
-    }
-  if (oix.dwPlatformId == VER_PLATFORM_WIN32_NT)
-    {
-      ulMajor = oix.dwMajorVersion;
-      ulMinor = oix.dwMinorVersion;
-      ulPatch = oix.wServicePackMajor;
-      ul4th   = oix.wServicePackMinor;
-    }
-  else
-    {
-      ulMajor = oix.dwPlatformId == 1 ? 0 /*Win95/98/ME*/
-              : oix.dwPlatformId == 3 ? 1 /*WinCE*/
-              : 2; /*??*/
-      ulMinor = oix.dwMajorVersion;
-      ulPatch = oix.dwMinorVersion;
-      ul4th   = oix.wServicePackMajor;
-    }
-#else
+# if defined(WINDOWS32)
+  {
+    OSVERSIONINFOEXW oix;
+    NTSTATUS (WINAPI *pfnRtlGetVersion)(OSVERSIONINFOEXW *);
+    *(FARPROC *)&pfnRtlGetVersion = GetProcAddress (GetModuleHandleW (L"NTDLL.DLL"),
+                                                    "RtlGetVersion"); /* GetVersionEx lies */
+    memset (&oix, '\0', sizeof (oix));
+    oix.dwOSVersionInfoSize = sizeof (OSVERSIONINFOEXW);
+    if (!pfnRtlGetVersion || pfnRtlGetVersion (&oix) < 0)
+      {
+        memset (&oix, '\0', sizeof (oix));
+        oix.dwOSVersionInfoSize = sizeof (OSVERSIONINFOEXW);
+        if (!GetVersionExW((LPOSVERSIONINFOW)&oix))
+          {
+            memset (&oix, '\0', sizeof (oix));
+            oix.dwOSVersionInfoSize = sizeof (OSVERSIONINFOW);
+            GetVersionExW ((LPOSVERSIONINFOW)&oix);
+          }
+      }
+    if (oix.dwPlatformId == VER_PLATFORM_WIN32_NT)
+      {
+        ulMajor = oix.dwMajorVersion;
+        ulMinor = oix.dwMinorVersion;
+        ulPatch = oix.wServicePackMajor;
+        ul4th   = oix.wServicePackMinor;
+      }
+    else
+      {
+        ulMajor = oix.dwPlatformId == 1 ? 0 /*Win95/98/ME*/
+                : oix.dwPlatformId == 3 ? 1 /*WinCE*/
+                : 2; /*??*/
+        ulMinor = oix.dwMajorVersion;
+        ulPatch = oix.dwMinorVersion;
+        ul4th   = oix.wServicePackMajor;
+      }
+    oix.dwBuildNumber &= 0x3fffffff;
+    sprintf (buf, "%lu", oix.dwBuildNumber);
+    define_variable_cname ("KBUILD_HOST_VERSION_BUILD", buf, o_default, 0);
+
+    sprintf (buf, "%lu.%lu.%lu.%lu.%lu", ulMajor, ulMinor, ulPatch, ul4th, oix.dwBuildNumber);
+    define_variable_cname ("KBUILD_HOST_VERSION", buf, o_default, 0);
+  }
+# else
   memset (&uts, 0, sizeof(uts));
   uname (&uts);
   val = uts.release;
@@ -1701,10 +1720,10 @@ define_automatic_variables (void)
   define_variable_cname ("KBUILD_HOST_UNAME_VERSION", uts.version, o_default, 0);
   define_variable_cname ("KBUILD_HOST_UNAME_MACHINE", uts.machine, o_default, 0);
   define_variable_cname ("KBUILD_HOST_UNAME_NODENAME", uts.nodename, o_default, 0);
-#endif
 
   sprintf (buf, "%lu.%lu.%lu.%lu", ulMajor, ulMinor, ulPatch, ul4th);
   define_variable_cname ("KBUILD_HOST_VERSION", buf, o_default, 0);
+# endif
 
   sprintf (buf, "%lu", ulMajor);
   define_variable_cname ("KBUILD_HOST_VERSION_MAJOR", buf, o_default, 0);
@@ -1719,8 +1738,8 @@ define_automatic_variables (void)
   define_variable_cname ("KBUILD_PATH", get_kbuild_path (), o_default, 0);
   define_variable_cname ("KBUILD_BIN_PATH", get_kbuild_bin_path (), o_default, 0);
 
-  define_variable_cname ("PATH_KBUILD", get_kbuild_path (), o_default, 0);
-  define_variable_cname ("PATH_KBUILD_BIN", get_kbuild_bin_path (), o_default, 0);
+  define_variable_cname ("PATH_KBUILD", "$(KBUILD_PATH)", o_default, 1);
+  define_variable_cname ("PATH_KBUILD_BIN", "$(KBUILD_BIN_PATH)", o_default, 1);
 
   /* Define KMK_FEATURES to indicate various working KMK features. */
 # if defined (CONFIG_WITH_RSORT) \
@@ -1750,7 +1769,7 @@ define_automatic_variables (void)
   && defined (CONFIG_WITH_DEFINED_FUNCTIONS) \
   && defined (KMK_HELPERS)
   define_variable_cname ("KMK_FEATURES",
-                         "append-dash-n abspath includedep-queue install-hard-linking umask"
+                         "append-dash-n abspath includedep-queue install-hard-linking umask quote versort"
                          " kBuild-define"
                          " rsort"
                          " abspathex"
@@ -1781,7 +1800,7 @@ define_automatic_variables (void)
                          , o_default, 0);
 # else /* MSC can't deal with strings mixed with #if/#endif, thus the slow way. */
 #  error "All features should be enabled by default!"
-  strcpy (buf, "append-dash-n abspath includedep-queue install-hard-linking umask"
+  strcpy (buf, "append-dash-n abspath includedep-queue install-hard-linking umask quote versort"
                " kBuild-define");
 #  if defined (CONFIG_WITH_RSORT)
   strcat (buf, " rsort");

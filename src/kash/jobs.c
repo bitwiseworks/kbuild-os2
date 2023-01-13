@@ -63,6 +63,7 @@ __RCSID("$NetBSD: jobs.c,v 1.63 2005/06/01 15:41:19 lukem Exp $");
 #include "memalloc.h"
 #include "error.h"
 #include "mystring.h"
+#include "init.h"
 #include "shinstance.h"
 
 //static struct job *jobtab;		/* array of jobs */
@@ -78,11 +79,29 @@ __RCSID("$NetBSD: jobs.c,v 1.63 2005/06/01 15:41:19 lukem Exp $");
 STATIC void restartjob(shinstance *, struct job *);
 STATIC void freejob(shinstance *, struct job *);
 STATIC struct job *getjob(shinstance *, const char *, int);
-STATIC int dowait(shinstance *, int, struct job *);
-STATIC int waitproc(shinstance *, int, struct job *, int *);
+STATIC shpid dowait(shinstance *, int, struct job *);
+STATIC shpid waitproc(shinstance *, int, struct job *, int *);
 STATIC void cmdtxt(shinstance *, union node *);
 STATIC void cmdlist(shinstance *, union node *, int);
+STATIC void cmdredirlist(shinstance *, union node *, int);
 STATIC void cmdputs(shinstance *, const char *);
+STATIC shpid forkparent(shinstance *psh, struct job *jp, union node *n, int mode, shpid pid);
+STATIC void forkchild(shinstance *psh, shpid pgrp, union node *n, int mode);
+#ifdef KASH_USE_FORKSHELL2
+# ifndef SH_FORKED_MODE
+struct forkshell2args
+{
+	shinstance *psh;
+	int mode;
+	shpid pgrp; 	/**< The forkchild() pgrp argument (-1 if not in group). */
+	union node *n;
+	void *argp; 	/**< Points to child callback data following this structure. */
+	int (* child)(shinstance *, union node *, void *);
+	struct stackmark smark; /* do we need this? */
+};
+static int forkshell2_thread(shinstance *psh, void *argp);
+# endif
+#endif
 
 
 /*
@@ -144,9 +163,9 @@ out:
 			}
 		} while (0);
 
-		setsignal(psh, SIGTSTP, 0);
-		setsignal(psh, SIGTTOU, 0);
-		setsignal(psh, SIGTTIN, 0);
+		setsignal(psh, SIGTSTP);
+		setsignal(psh, SIGTTOU);
+		setsignal(psh, SIGTTIN);
 		if (sh_getpgid(psh, 0) != psh->rootpid && sh_setpgid(psh, 0, psh->rootpid) == -1)
 			error(psh, "Cannot set process group (%s) at %d",
 			    sh_strerror(psh, errno), __LINE__);
@@ -162,9 +181,9 @@ out:
 			    sh_strerror(psh, errno), __LINE__);
 		shfile_close(&psh->fdtab, psh->ttyfd);
 		psh->ttyfd = -1;
-		setsignal(psh, SIGTSTP, 0);
-		setsignal(psh, SIGTTOU, 0);
-		setsignal(psh, SIGTTIN, 0);
+		setsignal(psh, SIGTSTP);
+		setsignal(psh, SIGTTOU);
+		setsignal(psh, SIGTTIN);
 	}
 	psh->jobctl = on;
 }
@@ -323,7 +342,7 @@ showjob(shinstance *psh, struct output *out, struct job *jp, int mode)
 #if JOBS
 	if (mode & SHOW_PGID) {
 		/* just output process (group) id of pipeline */
-		outfmt(out, "%ld\n", (long)jp->ps->pid);
+		outfmt(out, "%" SHPID_PRI "\n", jp->ps->pid);
 		return;
 	}
 #endif
@@ -377,7 +396,7 @@ showjob(shinstance *psh, struct output *out, struct job *jp, int mode)
 			fmtstr(s, 16, "      " );
 		col = strlen(s);
 		if (mode & SHOW_PID) {
-			fmtstr(s + col, 16, "%ld ", (long)ps->pid);
+			fmtstr(s + col, 16, "%" SHPID_PRI " ", ps->pid);
 			     col += strlen(s + col);
 		}
 		if (ps->status == -1) {
@@ -389,6 +408,7 @@ showjob(shinstance *psh, struct output *out, struct job *jp, int mode)
 			else
 				fmtstr(s + col, 16, "Done");
 		} else {
+			const char *pszSigNm;
 #if JOBS
 			if (WIFSTOPPED(ps->status))
 				st = WSTOPSIG(ps->status);
@@ -396,8 +416,9 @@ showjob(shinstance *psh, struct output *out, struct job *jp, int mode)
 #endif
 				st = WTERMSIG(ps->status);
 			st &= 0x7f;
-			if (st < NSIG && sys_siglist[st])
-				scopyn(sys_siglist[st], s + col, 32);
+			pszSigNm = st < NSIG ? strsignal(st) : NULL;
+			if (pszSigNm)
+				scopyn(pszSigNm, s + col, 32);
 			else
 				fmtstr(s + col, 16, "Signal %d", st);
 			if (WCOREDUMP(ps->status)) {
@@ -468,7 +489,8 @@ showjobs(shinstance *psh, struct output *out, int mode)
 {
 	int jobno;
 	struct job *jp;
-	int silent = 0, gotpid;
+	int silent = 0;
+	shpid gotpid;
 
 	TRACE((psh, "showjobs(%x) called\n", mode));
 
@@ -600,13 +622,13 @@ jobidcmd(shinstance *psh, int argc, char **argv)
 	nextopt(psh, "");
 	jp = getjob(psh, *psh->argptr, 0);
 	for (i = 0 ; i < jp->nprocs ; ) {
-		out1fmt(psh, "%ld", (long)jp->ps[i].pid);
+		out1fmt(psh, "%" SHPID_PRI, jp->ps[i].pid);
 		out1c(psh, ++i < jp->nprocs ? ' ' : '\n');
 	}
 	return 0;
 }
 
-int
+shpid
 getjobpgrp(shinstance *psh, const char *name)
 {
 	struct job *jp;
@@ -734,7 +756,7 @@ makejob(shinstance *psh, union node *node, int nprocs)
 				psh->jobtab = jp;
 			}
 			jp = psh->jobtab + psh->njobs;
-			for (i = 4 ; --i >= 0 ; psh->jobtab[psh->njobs++].used = 0);
+			for (i = 4 ; --i >= 0 ; psh->jobtab[psh->njobs++].used = 0) { /*empty*/ }
 			INTON;
 			break;
 		}
@@ -777,7 +799,8 @@ makejob(shinstance *psh, union node *node, int nprocs)
  * in a pipeline).
  */
 
-int
+#ifndef KASH_USE_FORKSHELL2
+shpid
 forkshell(shinstance *psh, struct job *jp, union node *n, int mode)
 {
 	int pid;
@@ -790,17 +813,84 @@ forkshell(shinstance *psh, struct job *jp, union node *n, int mode)
 		error(psh, "Cannot fork");
 		return -1; /* won't get here */
 	case 0:
-		forkchild(psh, jp, n, mode, 0);
+		forkchild(psh, jp == NULL || jp->nprocs == 0 ? -1 : jp->ps[0].pid, n, mode);
 		return 0;
 	default:
 		return forkparent(psh, jp, n, mode, pid);
 	}
 }
-
-int
-forkparent(shinstance *psh, struct job *jp, union node *n, int mode, pid_t pid)
+#else /* KASH_USE_FORKSHELL2 */
+shpid
+forkshell2(shinstance *psh, struct job *jp, union node *n, int mode,
+	       int (*child)(struct shinstance *, void *, union node *),
+	       union node *nchild, void *argp, size_t arglen,
+	       void (*setupchild)(struct shinstance *, struct shinstance *, void *))
 {
-	int pgrp;
+	shpid pid;
+
+# ifdef SH_FORKED_MODE
+	/*
+	 * fork variant.
+	 */
+	pid = sh_fork(psh);
+	if (pid == 0)
+	{
+		/* child */
+		forkchild(psh, jp == NULL || jp->nprocs == 0 ? -1 : jp->ps[0].pid, n, mode);
+		sh__exit(psh, child(psh, nchild, argp));
+		return 0;
+	}
+
+	/* parent */
+	if (pid != -1)
+		return forkparent(psh, jp, n, mode, pid);
+	TRACE((psh, "Fork failed, errno=%d\n", errno));
+	INTON;
+	(void)arglen;
+	(void)setupchild;
+	error(psh, "Cannot fork");
+	return -1; /* won't get here */
+
+# else
+	/*
+	 * Clone the shell and start a thread to service the subshell.
+	 */
+	struct shinstance *pshchild;
+
+	TRACE((psh, "forkshell2(%%%d, %p, %d, %p, %p, %p, %d) called\n",
+		   jp - psh->jobtab, n, mode, child, nchild, argp, (int)arglen));
+
+	pshchild = sh_create_child_shell(psh);
+	if (pshchild) {
+		/* pack arguments */
+		struct forkshell2args *args = (struct forkshell2args *)sh_calloc(pshchild, sizeof(*args) + arglen, 1);
+		args->psh = pshchild;
+		args->argp = memcpy(args + 1, argp, arglen);
+		args->child = child;
+		args->mode = mode;
+		args->pgrp = jp == NULL || jp->nprocs == 0 ? -1 : jp->ps[0].pid;
+		setstackmark(pshchild, &args->smark);
+		args->n = copyparsetree(pshchild, n);
+		if (setupchild)
+			setupchild(pshchild, psh, args->argp);
+
+		/* start the thread */
+		pid = sh_thread_start(psh, pshchild, forkshell2_thread, args);
+		if (pid >= 0)
+			return forkparent(psh, jp, n, mode, pid);
+		error(psh, "sh_start_child_thread failed (%d)!", (int)pid);
+	}
+	else
+		error(psh, "sh_create_child_shell failed!");
+	return -1;
+# endif
+}
+#endif
+
+STATIC shpid
+forkparent(shinstance *psh, struct job *jp, union node *n, int mode, shpid pid)
+{
+	shpid pgrp;
 
 	if (psh->rootshell && mode != FORK_NOJOB && mflag(psh)) {
 		if (jp == NULL || jp->nprocs == 0)
@@ -820,33 +910,28 @@ forkparent(shinstance *psh, struct job *jp, union node *n, int mode, pid_t pid)
 		if (/* iflag && rootshell && */ n)
 			commandtext(psh, ps, n);
 	}
-	TRACE((psh, "In parent shell:  child = %d\n", pid));
+	TRACE((psh, "In parent shell:  child = %" SHPID_PRI "\n", pid));
 	return pid;
 }
 
-void
-forkchild(shinstance *psh, struct job *jp, union node *n, int mode, int vforked)
+STATIC void
+forkchild(shinstance *psh, shpid pgrp, union node *n, int mode)
 {
 	int wasroot;
-	int pgrp;
 	const char *devnull = _PATH_DEVNULL;
 	const char *nullerr = "Can't open %s";
 
 	wasroot = psh->rootshell;
-	TRACE((psh, "Child shell %d\n", sh_getpid(psh)));
-	if (!vforked)
-		psh->rootshell = 0;
+	TRACE((psh, "Child shell %" SHPID_PRI "\n", sh_getpid(psh)));
+	psh->rootshell = 0;
 
-	closescript(psh, vforked);
-	clear_traps(psh, vforked);
+	closescript(psh);
+	clear_traps(psh);
 #if JOBS
-	if (!vforked)
-		psh->jobctl = 0;		/* do job control only in root shell */
+	psh->jobctl = 0;		/* do job control only in root shell */
 	if (wasroot && mode != FORK_NOJOB && mflag(psh)) {
-		if (jp == NULL || jp->nprocs == 0)
+		if (pgrp == -1)
 			pgrp = sh_getpid(psh);
-		else
-			pgrp = jp->ps[0].pid;
 		/* This can fail because we are doing it in the parent also.
                    And we must ignore SIGTTOU at this point or we'll be stopped! */
 		(void)sh_setpgid(psh, 0, pgrp);
@@ -855,39 +940,97 @@ forkchild(shinstance *psh, struct job *jp, union node *n, int mode, int vforked)
 				error(psh, "Cannot set tty process group (%s) at %d",
 				    sh_strerror(psh, errno), __LINE__);
 		}
-		setsignal(psh, SIGTSTP, vforked);
-		setsignal(psh, SIGTTOU, vforked);
-	} else if (mode == FORK_BG) {
-		ignoresig(psh, SIGINT, vforked);
-		ignoresig(psh, SIGQUIT, vforked);
-		if ((jp == NULL || jp->nprocs == 0) &&
-		    ! fd0_redirected_p(psh)) {
-			shfile_close(&psh->fdtab, 0);
-			if (shfile_open(&psh->fdtab, devnull, O_RDONLY, 0) != 0)
-				error(psh, nullerr, devnull);
-		}
-	}
-#else
-	if (mode == FORK_BG) {
-		ignoresig(psh, SIGINT, vforked);
-		ignoresig(psh, SIGQUIT, vforked);
-		if ((jp == NULL || jp->nprocs == 0) &&
-		    ! fd0_redirected_p(psh)) {
-			shfile_close(&psh->fdtab, 0);
-			if (shfile_open(&psh->fdtab, devnull, O_RDONLY, 0) != 0)
-				error(psh, nullerr, devnull);
-		}
-	}
+		setsignal(psh, SIGTSTP);
+		setsignal(psh, SIGTTOU);
+	} else
 #endif
+	if (mode == FORK_BG) {
+		ignoresig(psh, SIGINT);
+		ignoresig(psh, SIGQUIT);
+		if (pgrp == -1 && ! fd0_redirected_p(psh)) {
+			shfile_close(&psh->fdtab, 0);
+			if (shfile_open(&psh->fdtab, devnull, O_RDONLY, 0) != 0)
+				error(psh, nullerr, devnull);
+		}
+	}
 	if (wasroot && iflag(psh)) {
-		setsignal(psh, SIGINT, vforked);
-		setsignal(psh, SIGQUIT, vforked);
-		setsignal(psh, SIGTERM, vforked);
+		setsignal(psh, SIGINT);
+		setsignal(psh, SIGQUIT);
+		setsignal(psh, SIGTERM);
 	}
 
-	if (!vforked)
-		psh->jobs_invalid = 1;
+	psh->jobs_invalid = 1;
 }
+
+#if defined(KASH_USE_FORKSHELL2) && !defined(SH_FORKED_MODE)
+/** thread procedure */
+static int forkshell2_thread(shinstance *psh, void *argp)
+{
+	struct forkshell2args * volatile volargs = (struct forkshell2args *)argp;
+	struct jmploc jmp;
+	TRACE2((psh, "forkshell2_thread:\n"));
+
+	if (setjmp(jmp.loc) == 0) {
+		struct forkshell2args * const args = volargs;
+
+		forkchild(psh, args->pgrp, args->n, args->mode);
+
+		psh->handler = &jmp;
+		return args->child(psh, args->n, args->argp);
+	}
+
+	/*
+	 * (We longjmp'ed here.)
+	 *
+	 * This is copied from main() and simplified:
+	 */
+	for (;;) {
+		psh = volargs->psh; /* longjmp paranoia */
+
+		if (psh->exception != EXSHELLPROC) {
+			if (psh->exception == EXEXEC)
+				psh->exitstatus = psh->exerrno;
+			else if (psh->exception == EXERROR)
+				psh->exitstatus = 2;
+			TRACE2((psh, "forkshell2_thread: exception=%d -> exitshell2(,%d)\n", psh->exception, psh->exitstatus));
+			return exitshell2(psh, psh->exitstatus);
+		}
+
+		/* EXSHELLPROC - tryexec gets us here and it wants to run a program
+		   hoping (?) it's a shell script.  We must reset the shell state and
+		   turn ourselves into a root shell before doing so. */
+		TRACE2((psh, "forkshell2_thread: exception=EXSHELLPROC\n"));
+		psh->rootpid = /*getpid()*/ psh->pid;
+		psh->rootshell = 1;
+		psh->minusc = NULL;
+
+		reset(psh);
+		popstackmark(psh, &volargs->smark);
+
+		FORCEINTON;				/* enable interrupts */
+
+		/* state3: */
+		if (sflag(psh) == 0) {
+# ifdef SIGTSTP
+			static int sigs[] =  { SIGINT, SIGQUIT, SIGHUP, SIGPIPE, SIGTSTP };
+# else
+			static int sigs[] =  { SIGINT, SIGQUIT, SIGHUP, SIGPIPE };
+# endif
+			unsigned i;
+			for (i = 0; i < K_ELEMENTS(sigs); i++)
+				setsignal(psh, sigs[i]);
+		}
+
+		if (setjmp(jmp.loc) == 0) {
+			psh->handler = &jmp;
+			cmdloop(psh, 1);
+			TRACE2((psh, "forkshell2_thread: cmdloop returned -> exitshell2(,%d)\n", psh->exitstatus));
+			return exitshell2(psh, psh->exitstatus);
+		}
+	}
+}
+#endif
+
 
 /*
  * Wait for job to finish.
@@ -912,7 +1055,7 @@ int
 waitforjob(shinstance *psh, struct job *jp)
 {
 #if JOBS
-	int mypgrp = sh_getpgrp(psh);
+	shpid mypgrp = sh_getpgrp(psh);
 #endif
 	int status;
 	int st;
@@ -969,10 +1112,10 @@ waitforjob(shinstance *psh, struct job *jp)
  * Wait for a process to terminate.
  */
 
-STATIC int
+STATIC shpid
 dowait(shinstance *psh, int block, struct job *job)
 {
-	int pid;
+	shpid pid;
 	int status;
 	struct procstat *sp;
 	struct job *jp;
@@ -983,7 +1126,7 @@ dowait(shinstance *psh, int block, struct job *job)
 	TRACE((psh, "dowait(%d) called\n", block));
 	do {
 		pid = waitproc(psh, block, job, &status);
-		TRACE((psh, "wait returns pid %d, status %d\n", pid, status));
+		TRACE((psh, "wait returns pid %" SHPID_PRI ", status %d\n", pid, status));
 	} while (pid == -1 && errno == EINTR && psh->gotsig[SIGINT - 1] == 0);
 	if (pid <= 0)
 		return pid;
@@ -997,7 +1140,8 @@ dowait(shinstance *psh, int block, struct job *job)
 				if (sp->pid == -1)
 					continue;
 				if (sp->pid == pid) {
-					TRACE((psh, "Job %d: changing status of proc %d from 0x%x to 0x%x\n", jp - psh->jobtab + 1, pid, sp->status, status));
+					TRACE((psh, "Job %d: changing status of proc %" SHPID_PRI " from 0x%x to 0x%x\n",
+						   jp - psh->jobtab + 1, pid, sp->status, status));
 					sp->status = status;
 					thisjob = jp;
 				}
@@ -1046,7 +1190,7 @@ dowait(shinstance *psh, int block, struct job *job)
  * stopped processes.  If block is zero, we return a value of zero
  * rather than blocking.
  */
-STATIC int
+STATIC shpid
 waitproc(shinstance *psh, int block, struct job *jp, int *status)
 {
 	int flags = 0;
@@ -1210,7 +1354,7 @@ until:
 		break;
 	case NCMD:
 		cmdlist(psh, n->ncmd.args, 1);
-		cmdlist(psh, n->ncmd.redirect, 0);
+		cmdredirlist(psh, n->ncmd.redirect, 0);
 		break;
 	case NARG:
 		cmdputs(psh, n->narg.text);
@@ -1262,6 +1406,18 @@ cmdlist(shinstance *psh, union node *np, int sep)
 			cmdputs(psh, " ");
 		cmdtxt(psh, np);
 		if (sep && np->narg.next)
+			cmdputs(psh, " ");
+	}
+}
+
+STATIC void
+cmdredirlist(shinstance *psh, union node *np, int sep)
+{
+	for (; np; np = np->nfile.next) {
+		if (!sep)
+			cmdputs(psh, " ");
+		cmdtxt(psh, np);
+		if (sep && np->nfile.next)
 			cmdputs(psh, " ");
 	}
 }

@@ -1,4 +1,4 @@
-/* $Id: nthlpcore.c 2998 2016-11-05 19:37:35Z bird $ */
+/* $Id: nthlpcore.c 3534 2021-12-20 23:31:55Z bird $ */
 /** @file
  * MSC + NT core helpers functions and globals.
  */
@@ -118,7 +118,7 @@ void birdResolveImportsWorker(void)
                 || !WriteFile(GetStdHandle(STD_ERROR_HANDLE), pszSym, (DWORD)strlen(pszSym), &cbWritten, NULL)
                 || !WriteFile(GetStdHandle(STD_ERROR_HANDLE), "\r\n", sizeof("\r\n") - 1, &cbWritten, NULL)
                 )
-                *(void **)i = NULL;
+                *(void **)(size_t)i = NULL;
             ExitProcess(127);
         }
     }

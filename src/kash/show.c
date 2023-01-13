@@ -43,7 +43,6 @@ __RCSID("$NetBSD: show.c,v 1.26 2003/11/14 10:46:13 dsl Exp $");
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdlib.h>
-#include <assert.h>
 
 #include "shell.h"
 #include "parser.h"
@@ -292,24 +291,29 @@ trace_flush(shinstance *psh)
 
 	if (pos > sizeof(psh->tracebuf)) {
 		char *end;
-		assert(0);
+		kHlpAssert(0);
 		end = memchr(psh->tracebuf, '\0', sizeof(psh->tracebuf));
 		pos = end ? end - &psh->tracebuf[0] : 0;
 	}
 
 	if (pos) {
-        int     s = errno;
+		int     s = errno;
 		char 	prefix[40];
 		size_t 	len;
 
-		len = sprintf(prefix, "[%d] ", sh_getpid(psh));
+#ifdef SH_FORKED_MODE
+		len = sprintf(prefix, "[%" SHPID_PRI "] ", sh_getpid(psh));
+#else
+		shpid pid = sh_getpid(psh);
+		len = sprintf(prefix, "[%d/%d] ", SHPID_GET_PID(pid), SHPID_GET_TID(pid));
+#endif
 		shfile_write(&psh->fdtab, psh->tracefd, prefix, len);
 		shfile_write(&psh->fdtab, psh->tracefd, psh->tracebuf, pos);
 
 		psh->tracepos = 0;
 		psh->tracebuf[0] = '\0';
 
-        errno = s;
+		errno = s;
 	}
 }
 
@@ -358,12 +362,12 @@ trace_string(shinstance *psh, const char *str)
 				trace_flush(psh);
 		} else {
 			/* it's too big for some reason... */
-            int s = errno;
+			int s = errno;
 			trace_flush(psh);
 			shfile_write(&psh->fdtab, psh->tracefd, str, len);
 			if (!flush_it)
 				shfile_write(&psh->fdtab, psh->tracefd, "[too long]\n", sizeof( "[too long]\n") - 1);
-            errno = s;
+			errno = s;
 		}
 
 		/* advance */
@@ -516,6 +520,7 @@ opentrace(shinstance *psh)
 			want_fd = ((want_fd + 1) / 2) - 1;
 		}
 		shfile_cloexec(&psh->fdtab, psh->tracefd, 1 /* close it */);
+		shfile_set_trace(&psh->fdtab, psh->tracefd);
 	}
 	if (psh->tracefd == -1) {
 		fprintf(stderr, "Can't open %s\n", s);

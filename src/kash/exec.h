@@ -46,7 +46,11 @@
 
 
 union param {
-        int index;
+        struct
+        {
+            int index;
+            int suffix; /* PC suffix index */
+        } n;
         int (*bltin)(struct shinstance*, int, char**);
         union node *func;
 };
@@ -70,6 +74,9 @@ struct cmdentry {
 # define __attribute__(a)
 #endif
 
+#ifndef SH_FORKED_MODE
+void subshellinitexec(shinstance *, shinstance *);
+#endif
 SH_NORETURN_1 void shellexec(struct shinstance *, char **, char **, const char *, int, int) SH_NORETURN_2;
 char *padvance(struct shinstance *, const char **, const char *);
 int hashcmd(struct shinstance *, int, char **);

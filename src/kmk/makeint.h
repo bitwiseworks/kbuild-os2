@@ -661,6 +661,8 @@ void fatal (const floc *flocp, size_t length, const char *fmt, ...)
 #define OUT_OF_MEM() O (fatal, NILF, _("virtual memory exhausted"))
 
 void die (int) __attribute__ ((noreturn));
+struct output;
+void die_with_job_output (int, struct output *) __attribute__ ((noreturn));
 void pfatal_with_name (const char *) __attribute__ ((noreturn));
 void perror_with_name (const char *, const char *);
 #define xstrlen(_s) ((_s)==NULL ? 0 : strlen (_s))
@@ -677,6 +679,7 @@ char *next_token (const char *);
 char *end_of_token (const char *);
 #ifdef KMK
 char *find_next_token_eos (const char **ptr, const char *eos, unsigned int *lengthptr);
+char *find_next_file_token (const char **ptr, const char *eos, unsigned int *lengthptr);
 #endif
 #ifndef CONFIG_WITH_VALUE_LENGTH
 void collapse_continuations (char *);
@@ -1173,6 +1176,7 @@ extern char *func_breakpoint(char *o, char **argv, const char *funcname);
 # ifdef KBUILD_OS_WINDOWS
 extern void dir_cache_invalid_after_job (void);
 extern void dir_cache_invalid_all (void);
+extern void dir_cache_invalid_all_and_close_dirs (int including_root);
 extern void dir_cache_invalid_missing (void);
 extern int dir_cache_volatile_dir (const char *dir);
 extern int dir_cache_deleted_directory(const char *pszDir);
@@ -1185,3 +1189,7 @@ extern big_int nano_timestamp (void);
 extern int format_elapsed_nano (char *buf, size_t size, big_int ts);
 #endif
 
+#ifdef KMK
+/* main.c */
+extern mode_t g_fUMask;
+#endif

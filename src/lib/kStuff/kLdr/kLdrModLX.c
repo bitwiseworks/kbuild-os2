@@ -1,4 +1,4 @@
-/* $Id: kLdrModLX.c 114 2018-10-28 13:36:48Z bird $ */
+/* $Id: kLdrModLX.c 117 2020-03-15 15:23:36Z bird $ */
 /** @file
  * kLdr - The Module Interpreter for the Linear eXecutable (LX) Format.
  */
@@ -131,7 +131,6 @@ static int kldrModLXDoCallDLL(PKLDRMODLX pModLX, void *pvMapping, unsigned uOp, 
 static int kldrModLXDoForwarderQuery(PKLDRMODLX pModLX, const struct e32_entry *pEntry,
                                      PFNKLDRMODGETIMPORT pfnGetForwarder, void *pvUser, PKLDRADDR puValue, KU32 *pfKind);
 static int kldrModLXDoLoadFixupSection(PKLDRMODLX pModLX);
-static KI32 kldrModLXDoCall(KUPTR uEntrypoint, KUPTR uHandle, KU32 uOp, void *pvReserved);
 static int kldrModLXDoReloc(KU8 *pbPage, int off, KLDRADDR PageAddress, const struct r32_rlc *prlc,
                             int iSelector, KLDRADDR uValue, KU32 fKind);
 
@@ -2104,7 +2103,7 @@ static int kldrModLXDoCallDLL(PKLDRMODLX pModLX, void *pvMapping, unsigned uOp, 
  * @param   uOp             The second argumnet, the reason we're calling.
  * @param   pvReserved      The third argument, reserved argument. (figure this one out)
  */
-static KI32 kldrModLXDoCall(KUPTR uEntrypoint, KUPTR uHandle, KU32 uOp, void *pvReserved)
+KI32 kldrModLXDoCall(KUPTR uEntrypoint, KUPTR uHandle, KU32 uOp, void *pvReserved)
 {
 #if defined(__X86__) || defined(__i386__) || defined(_M_IX86)
     KI32 rc;

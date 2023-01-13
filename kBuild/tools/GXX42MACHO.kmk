@@ -1,4 +1,4 @@
-# $Id: GXX42MACHO.kmk 3258 2019-01-03 05:34:09Z bird $
+# $Id: GXX42MACHO.kmk 3567 2022-06-26 20:00:02Z bird $
 ## @file
 # kBuild Tool Config - GCC v4.2.x targeting Darwin (Mac OS X) Mach-O, for building C++ code.
 #
@@ -34,31 +34,32 @@
 TOOL_GXX42MACHO := GCC v4.2.x targeting Darwin (Mac OS X) Mach-O, for building C++ code.
 
 # Tool Specific Properties
-TOOL_GXX42MACHO_PREFIX    ?=
-TOOL_GXX42MACHO_SUFFIX    ?= -4.2$(HOSTSUFF_EXE)
+ifndef TOOL_GXX42MACHO_PREFIX
+ TOOL_GXX42MACHO_PREFIX   :=
+endif
+ifndef TOOL_GXX42MACHO_SUFFIX
+ TOOL_GXX42MACHO_SUFFIX   := -4.2$(HOSTSUFF_EXE)
+endif
+TOOL_GXX42MACHO_PREFIX2   ?=
+TOOL_GXX42MACHO_SUFFIX2   ?= $(HOSTSUFF_EXE)
 TOOL_GXX42MACHO_CC        ?= $(TOOL_GXX42MACHO_PREFIX)gcc$(TOOL_GXX42MACHO_SUFFIX)
 TOOL_GXX42MACHO_CXX       ?= $(TOOL_GXX42MACHO_PREFIX)g++$(TOOL_GXX42MACHO_SUFFIX)
-TOOL_GXX42MACHO_PCH ?= $(TOOL_GXX42MACHO_CXX)
+TOOL_GXX42MACHO_PCH       ?= $(TOOL_GXX42MACHO_CXX)
 TOOL_GXX42MACHO_OBJC      ?= $(TOOL_GXX42MACHO_PREFIX)gcc$(TOOL_GXX42MACHO_SUFFIX)
 TOOL_GXX42MACHO_OBJCXX    ?= $(TOOL_GXX42MACHO_PREFIX)gcc$(TOOL_GXX42MACHO_SUFFIX)
 TOOL_GXX42MACHO_AS        ?= $(TOOL_GXX42MACHO_PREFIX)gcc$(TOOL_GXX42MACHO_SUFFIX)
 TOOL_GXX42MACHO_LD        ?= $(TOOL_GXX42MACHO_PREFIX)g++$(TOOL_GXX42MACHO_SUFFIX)
 TOOL_GXX42MACHO_LD_SYSMOD ?= $(TOOL_GXX42MACHO_PREFIX)g++$(TOOL_GXX42MACHO_SUFFIX)
-ifndef TOOL_GXX42MACHO_LDFLAGS.$(KBUILD_TARGET)
 TOOL_GXX42MACHO_LDFLAGS.dll ?= -dynamiclib
-else
-TOOL_GXX42MACHO_LDFLAGS.dll ?= $(TOOL_GXX42MACHO_LDFLAGS.$(KBUILD_TARGET))
-endif
 TOOL_GXX42MACHO_LDFLAGS.sysmod ?= -r
 #TOOL_GXX42MACHO_LD_SONAME = -Wl,-dylib_install_name $(firstword $($(1)_SONAME.$(KBUILD_TARGET).$(KBUILD_TYPE)) $($(1)_SONAME.$(KBUILD_TARGET)) $($(1)_SONAME.$(KBUILD_TYPE)) $($(1)_SONAME) $(notdir $(2)))
-TOOL_GXX42MACHO_DSYMUTIL  ?= dsymutil
 
-ifdef SLKRUNS
-TOOL_GXX42MACHO_CC     += -fmessage-length=0
-TOOL_GXX42MACHO_CXX    += -fmessage-length=0
-TOOL_GXX42MACHO_OBJC   += -fmessage-length=0
-TOOL_GXX42MACHO_OBJCXX += -fmessage-length=0
-endif
+TOOL_GXX42MACHO_AR        ?= $(TOOL_GXX42MACHO_PREFIX2)ar$(TOOL_GXX42MACHO_SUFFIX2)
+TOOL_GXX42MACHO_DSYMUTIL  ?= $(TOOL_GXX42MACHO_PREFIX2)dsymutil$(TOOL_GXX42MACHO_SUFFIX2)
+TOOL_GXX42MACHO_STRIP     ?= $(TOOL_GXX42MACHO_PREFIX2)strip$(TOOL_GXX42MACHO_SUFFIX2)
+TOOL_GXX42MACHO_STRIP_PROGRAM    ?= $(TOOL_GXX42MACHO_STRIP) -SXxru
+TOOL_GXX42MACHO_STRIP_DLL        ?= $(TOOL_GXX42MACHO_STRIP) -Sxru
+TOOL_GXX42MACHO_STRIP_SYSMOD     ?= $(TOOL_GXX42MACHO_STRIP) -Sru
 
 # General Properties used by kBuild
 TOOL_GXX42MACHO_COBJSUFF         ?= .o
@@ -106,17 +107,12 @@ TOOL_GXX42MACHO_ASFLAGS.debug    ?= -g
 TOOL_GXX42MACHO_ASFLAGS.profile  ?= -g
 TOOL_GXX42MACHO_ASOBJSUFF        ?= .o
 
-TOOL_GXX42MACHO_AR               ?= ar$(HOSTSUFF_EXE)
 TOOL_GXX42MACHO_ARFLAGS          ?= -c -rs
 TOOL_GXX42MACHO_ARLIBSUFF        ?= .a
 
 TOOL_GXX42MACHO_LDFLAGS          ?=
 TOOL_GXX42MACHO_LDFLAGS.debug    ?= -g
 TOOL_GXX42MACHO_LDFLAGS.profile  ?= -g
-
-TOOL_GXX42MACHO_STRIP_PROGRAM    ?= strip -SXxru
-TOOL_GXX42MACHO_STRIP_DLL        ?= strip -Sxru
-TOOL_GXX42MACHO_STRIP_SYSMOD     ?= strip -Sru
 
 
 ##
@@ -170,7 +166,7 @@ if "$(use_objcache)" != ""
 	$(QUIET)$(KOBJCACHE) -f $(outbase).koc -d $(PATH_OBJCACHE) -t $(bld_trg).$(bld_trg_arch) -p\
 		--kObjCache-cpp $(outbase).i\
 		$(TOOL_GXX42MACHO_CC) -E -o -\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		$(abspath $(source))\
 		--kObjCache-cc $(obj)\
@@ -180,7 +176,7 @@ if "$(use_objcache)" != ""
 		-
 else
 	$(QUIET)$(TOOL_GXX42MACHO_CC) -c\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		-o $(obj)\
 		$(abspath $(source))
@@ -211,7 +207,7 @@ if "$(use_objcache)" != ""
 		--kObjCache-cpp $(outbase).ii\
 		$(TOOL_GXX42MACHO_CXX) -E -o - $(if-expr defined($(target)_PCH_HDR)\
 		,-fpch-preprocess -Winvalid-pch -I$($(target)_1_GCC_PCH_DIR) -include $(basename $($(target)_1_GCC_PCH_FILE)),)\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		$(abspath $(source))\
 		--kObjCache-cc $(obj)\
@@ -221,7 +217,7 @@ if "$(use_objcache)" != ""
 		-
 else
 	$(QUIET)$(TOOL_GXX42MACHO_CXX) -c\
-		$(flags) $(addprefix -I, $($(target)_1_GCC_PCH_DIR) $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $($(target)_1_GCC_PCH_DIR) $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		-o $(obj) $(if-expr defined($(target)_PCH_HDR) \
 		,-Winvalid-pch -include $(basename $($(target)_1_GCC_PCH_FILE)),) \
@@ -248,7 +244,7 @@ TOOL_GXX42MACHO_COMPILE_PCH_DEPEND =
 TOOL_GXX42MACHO_COMPILE_PCH_DEPORD = $($(target)_1_GCC_PCH_DIR)
 define TOOL_GXX42MACHO_COMPILE_PCH_CMDS
 	$(QUIET)$(TOOL_GXX42MACHO_PCH) -c\
-		$(flags) $(addprefix -I, $($(target)_1_GCC_PCH_DIR) $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $($(target)_1_GCC_PCH_DIR) $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		-o $(obj)\
 		$(abspath $(source))
@@ -278,7 +274,7 @@ define TOOL_GXX42MACHO_COMPILE_OBJC_CMDS
 	$(QUIET)$(KOBJCACHE) -f $(outbase).koc -d $(PATH_OBJCACHE) -t $(bld_trg).$(bld_trg_arch) -p\
 		--kObjCache-cpp $(outbase).ii\
 		$(TOOL_GXX42MACHO_OBJC) -E -o -\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		$(abspath $(source))\
 		--kObjCache-cc $(obj)\
@@ -292,7 +288,7 @@ else  # !KBUILD_USE_KOBJCACHE
 TOOL_GXX42MACHO_COMPILE_OBJC_OUTPUT =
 define TOOL_GXX42MACHO_COMPILE_OBJC_CMDS
 	$(QUIET)$(TOOL_GXX42MACHO_OBJC) -c\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		-o $(obj)\
 		$(abspath $(source))
@@ -322,7 +318,7 @@ define TOOL_GXX42MACHO_COMPILE_OBJCXX_CMDS
 	$(QUIET)$(KOBJCACHE) -f $(outbase).koc -d $(PATH_OBJCACHE) -t $(bld_trg).$(bld_trg_arch) -p\
 		--kObjCache-cpp $(outbase).mii\
 		$(TOOL_GXX42MACHO_OBJCXX) -E -o -\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		$(abspath $(source))\
 		--kObjCache-cc $(obj)\
@@ -336,7 +332,7 @@ else  # !KBUILD_USE_KOBJCACHE
 TOOL_GXX42MACHO_COMPILE_OBJCXX_OUTPUT =
 define TOOL_GXX42MACHO_COMPILE_OBJCXX_CMDS
 	$(QUIET)$(TOOL_GXX42MACHO_OBJCXX) -c\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		-o $(obj)\
 		$(abspath $(source))
@@ -363,7 +359,7 @@ TOOL_GXX42MACHO_COMPILE_AS_DEPEND =
 TOOL_GXX42MACHO_COMPILE_AS_DEPORD =
 define TOOL_GXX42MACHO_COMPILE_AS_CMDS
 	$(QUIET)$(TOOL_GXX42MACHO_AS) -c\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		-o $(obj)\
 		$(abspath $(source))

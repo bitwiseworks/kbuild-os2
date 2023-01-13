@@ -44,6 +44,7 @@ __RCSID("$NetBSD: redir.c,v 1.29 2004/07/08 03:57:33 christos Exp $");
 #include <limits.h>         /* PIPE_BUF */
 #include <string.h>
 #include <errno.h>
+#include <stddef.h>
 #include <stdlib.h>
 
 /*
@@ -64,18 +65,7 @@ __RCSID("$NetBSD: redir.c,v 1.29 2004/07/08 03:57:33 christos Exp $");
 
 
 #define EMPTY -2		/* marks an unused slot in redirtab */
-#ifndef PIPE_BUF
-# define PIPESIZE 4096		/* amount of buffering in a pipe */
-#else
-# define PIPESIZE PIPE_BUF
-#endif
-
-
-MKINIT
-struct redirtab {
-	struct redirtab *next;
-	short renamed[10];
-};
+#define PIPESIZE SHFILE_PIPE_SIZE
 
 
 //MKINIT struct redirtab *redirlist;
@@ -87,8 +77,50 @@ struct redirtab {
 */
 //int fd0_redirected = 0;
 
-STATIC void openredirect(shinstance *, union node *, char[10], int);
+STATIC void openredirect(shinstance *, union node *, char[10], int, const char *);
 STATIC int openhere(shinstance *, union node *);
+
+
+#ifndef SH_FORKED_MODE
+void
+subshellinitredir(shinstance *psh, shinstance *inherit)
+{
+    /* We can have a redirlist here if we're handling backtick while expanding
+       arguments, just copy it even if the subshell probably doesn't need it. */
+    struct redirtab *src = inherit->redirlist;
+    if (src)
+    {
+        struct redirtab **dstp = &psh->redirlist;
+	do
+	{
+	    struct redirtab *dst = ckmalloc(psh, sizeof(*dst));
+	    memcpy(dst->renamed, src->renamed, sizeof(dst->renamed));
+	    *dstp = dst;
+	    dstp = &dst->next;
+	    src = src->next;
+	} while (src);
+	*dstp = NULL;
+
+        psh->fd0_redirected = inherit->fd0_redirected;
+    }
+
+    /* Copy the expanded redirection filenames (stack), but only the last entry
+       as the subshell does not have the ability to unwind stack in the parent
+       and therefore cannot get to the earlier redirection stuff: */
+    if (inherit->expfnames)
+    {
+	redirexpfnames * const expfnamesrc = inherit->expfnames;
+	unsigned i = expfnamesrc->count;
+	redirexpfnames *dst = stalloc(psh, offsetof(redirexpfnames, names) + sizeof(dst->names[0]) * i);
+	dst->count = i;
+	dst->depth = 1;
+	dst->prev = NULL;
+	while (i-- > 0)
+	    dst->names[i] = stsavestr(psh, expfnamesrc->names[i]);
+	psh->expfnames = dst;
+    }
+}
+#endif /* !SH_FORKED_MODE */
 
 
 /*
@@ -108,21 +140,21 @@ redirect(shinstance *psh, union node *redir, int flags)
 	int fd;
 	int try;
 	char memory[10];	/* file descriptors to write to memory */
+	unsigned idxexpfname;
 
 	for (i = 10 ; --i >= 0 ; )
 		memory[i] = 0;
 	memory[1] = flags & REDIR_BACKQ;
 	if (flags & REDIR_PUSH) {
-		/* We don't have to worry about REDIR_VFORK here, as
-		 * flags & REDIR_PUSH is never true if REDIR_VFORK is set.
-		 */
 		sv = ckmalloc(psh, sizeof (struct redirtab));
 		for (i = 0 ; i < 10 ; i++)
 			sv->renamed[i] = EMPTY;
 		sv->next = psh->redirlist;
 		psh->redirlist = sv;
 	}
-	for (n = redir ; n ; n = n->nfile.next) {
+	idxexpfname = 0;
+	for (n = redir, idxexpfname = 0 ; n ; n = n->nfile.next, idxexpfname++) {
+		kHlpAssert(idxexpfname < psh->expfnames->count);
 		fd = n->nfile.fd;
 		try = 0;
 		if ((n->nfile.type == NTOFD || n->nfile.type == NFROMFD) &&
@@ -136,7 +168,7 @@ again:
 				switch (errno) {
 				case EBADF:
 					if (!try) {
-						openredirect(psh, n, memory, flags);
+						openredirect(psh, n, memory, flags, psh->expfnames->names[idxexpfname]);
 						try++;
 						goto again;
 					}
@@ -158,8 +190,9 @@ again:
                 if (fd == 0)
                         psh->fd0_redirected++;
 		if (!try)
-			openredirect(psh, n, memory, flags);
+			openredirect(psh, n, memory, flags, psh->expfnames->names[idxexpfname]);
 	}
+	kHlpAssert(!redir || idxexpfname == psh->expfnames->count);
 	if (memory[1])
 		psh->out1 = &psh->memout;
 	if (memory[2])
@@ -168,12 +201,11 @@ again:
 
 
 STATIC void
-openredirect(shinstance *psh, union node *redir, char memory[10], int flags)
+openredirect(shinstance *psh, union node *redir, char memory[10], int flags, const char *fname)
 {
 	int fd = redir->nfile.fd;
-	char *fname;
 	int f;
-	int oflags = O_WRONLY|O_CREAT|O_TRUNC, eflags;
+	int oflags = O_WRONLY|O_CREAT|O_TRUNC;
 
 	/*
 	 * We suppress interrupts so that we won't leave open file
@@ -184,18 +216,10 @@ openredirect(shinstance *psh, union node *redir, char memory[10], int flags)
 	memory[fd] = 0;
 	switch (redir->nfile.type) {
 	case NFROM:
-		fname = redir->nfile.expfname;
-		if (flags & REDIR_VFORK)
-			eflags = O_NONBLOCK;
-		else
-			eflags = 0;
-		if ((f = shfile_open(&psh->fdtab, fname, O_RDONLY|eflags, 0)) < 0)
+		if ((f = shfile_open(&psh->fdtab, fname, O_RDONLY, 0)) < 0)
 			goto eopen;
-		if (eflags)
-			(void)shfile_fcntl(&psh->fdtab, f, F_SETFL, shfile_fcntl(&psh->fdtab, f, F_GETFL, 0) & ~eflags);
 		break;
 	case NFROMTO:
-		fname = redir->nfile.expfname;
 		if ((f = shfile_open(&psh->fdtab, fname, O_RDWR|O_CREAT|O_TRUNC, 0666)) < 0)
 			goto ecreate;
 		break;
@@ -204,12 +228,10 @@ openredirect(shinstance *psh, union node *redir, char memory[10], int flags)
 			oflags |= O_EXCL;
 		/* FALLTHROUGH */
 	case NCLOBBER:
-		fname = redir->nfile.expfname;
 		if ((f = shfile_open(&psh->fdtab, fname, oflags, 0666)) < 0)
 			goto ecreate;
 		break;
 	case NAPPEND:
-		fname = redir->nfile.expfname;
 		if ((f = shfile_open(&psh->fdtab, fname, O_WRONLY|O_CREAT|O_APPEND, 0666)) < 0)
 			goto ecreate;
 		break;
@@ -242,6 +264,32 @@ eopen:
 	error(psh, "cannot open %s: %s", fname, errmsg(psh, errno, E_OPEN));
 }
 
+#ifdef KASH_USE_FORKSHELL2
+struct openherechild
+{
+	int pip[2];
+	size_t len;
+};
+static int openhere_child(shinstance *psh, union node *n, void *argp)
+{
+	struct openherechild args = *(struct openherechild *)argp;
+
+	shfile_close(&psh->fdtab, args.pip[0]);
+	sh_signal(psh, SIGINT, SH_SIG_IGN);
+	sh_signal(psh, SIGQUIT, SH_SIG_IGN);
+	sh_signal(psh, SIGHUP, SH_SIG_IGN);
+# ifdef SIGTSTP
+	sh_signal(psh, SIGTSTP, SH_SIG_IGN);
+# endif
+	sh_signal(psh, SIGPIPE, SH_SIG_DFL);
+	if (n->type == NHERE)
+		xwrite(psh, args.pip[1], n->nhere.doc->narg.text, args.len);
+	else
+		expandhere(psh, n->nhere.doc, args.pip[1]);
+	return 0;
+}
+
+#endif /* KASH_USE_FORKSHELL2*/
 
 /*
  * Handle here documents.  Normally we fork off a process to write the
@@ -264,6 +312,17 @@ openhere(shinstance *psh, union node *redir)
 			goto out;
 		}
 	}
+#ifdef KASH_USE_FORKSHELL2
+	{
+		struct openherechild args;
+		args.pip[0] = pip[0];
+		args.pip[1] = pip[1];
+		args.len = len;
+		forkshell2(psh, (struct job *)NULL, redir,
+			   FORK_NOJOB | FORK_JUST_IO,
+			   openhere_child, redir, &args, sizeof(args), NULL);
+	}
+#else
 	if (forkshell(psh, (struct job *)NULL, (union node *)NULL, FORK_NOJOB) == 0) {
 		shfile_close(&psh->fdtab, pip[0]);
 		sh_signal(psh, SIGINT, SH_SIG_IGN);
@@ -279,6 +338,7 @@ openhere(shinstance *psh, union node *redir)
 			expandhere(psh, redir->nhere.doc, pip[1]);
 		sh__exit(psh, 0);
 	}
+#endif
 out:
 	shfile_close(&psh->fdtab, pip[1]);
 	return pip[0];
@@ -298,8 +358,8 @@ popredir(shinstance *psh)
 
 	for (i = 0 ; i < 10 ; i++) {
 		if (rp->renamed[i] != EMPTY) {
-                        if (i == 0)
-                                psh->fd0_redirected--;
+			if (i == 0)
+				psh->fd0_redirected--;
 			if (rp->renamed[i] >= 0) {
 				movefd(psh, rp->renamed[i], i);
 			} else {
@@ -327,7 +387,7 @@ RESET {
 }
 
 SHELLPROC {
-	clearredir(psh, 0);
+	clearredir(psh);
 }
 
 #endif
@@ -343,7 +403,7 @@ fd0_redirected_p(shinstance *psh) {
  */
 
 void
-clearredir(shinstance *psh, int vforked)
+clearredir(shinstance *psh)
 {
 	struct redirtab *rp;
 	int i;
@@ -353,8 +413,7 @@ clearredir(shinstance *psh, int vforked)
 			if (rp->renamed[i] >= 0) {
 				shfile_close(&psh->fdtab, rp->renamed[i]);
 			}
-			if (!vforked)
-				rp->renamed[i] = EMPTY;
+			rp->renamed[i] = EMPTY;
 		}
 	}
 }

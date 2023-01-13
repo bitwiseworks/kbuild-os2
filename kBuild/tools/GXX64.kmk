@@ -1,4 +1,4 @@
-# $Id: GXX64.kmk 3258 2019-01-03 05:34:09Z bird $
+# $Id: GXX64.kmk 3567 2022-06-26 20:00:02Z bird $
 ## @file
 # kBuild Tool Config - Generic 64-bit GCC v3.2.x or later using the system GCC, for building C++ code.
 #
@@ -35,40 +35,49 @@ TOOL_GXX64 := Generic 64-bit GCC v3.2.x or later using the system GCC, for build
 	More or less Linux/ELF specfic.
 
 # Tool Specific Properties
-TOOL_GXX64_CC  ?= gcc$(HOSTSUFF_EXE) -m64
-TOOL_GXX64_CXX ?= g++$(HOSTSUFF_EXE) -m64
-TOOL_GXX64_PCH ?= $(TOOL_GXX64_CXX)
-TOOL_GXX64_AS  ?= gcc$(HOSTSUFF_EXE) -m64
-TOOL_GXX64_AR  ?= ar$(HOSTSUFF_EXE)
-TOOL_GXX64_LD  ?= g++$(HOSTSUFF_EXE) -m64
-TOOL_GXX64_LD_SYSMOD ?= ld$(HOSTSUFF_EXE)
-ifndef TOOL_GXX64_LDFLAGS.$(KBUILD_TARGET)
-TOOL_GXX64_LDFLAGS.dll ?= -shared
+ifndef TOOL_GXX64_PREFIX
+ TOOL_GXX64_PREFIX  :=
+endif
+ifndef TOOL_GXX64_SUFFIX
+ TOOL_GXX64_SUFFIX  := $(HOSTSUFF_EXE)
+endif
+if1of ($(KBUILD_HOST), solaris)
+ TOOL_GXX64_PREFIX2 ?= g
 else
-TOOL_GXX64_LDFLAGS.dll ?= $(TOOL_GXX64_LDFLAGS.$(KBUILD_TARGET))
+ TOOL_GXX64_PREFIX2 ?=
+endif
+TOOL_GXX64_SUFFIX2  ?= $(HOSTSUFF_EXE)
+TOOL_GXX64_PREFIX3  ?=
+TOOL_GXX64_SUFFIX3  ?= $(HOSTSUFF_EXE)
+TOOL_GXX64_CC       ?= $(TOOL_GXX64_PREFIX)gcc$(TOOL_GXX64_SUFFIX) -m64
+TOOL_GXX64_CXX      ?= $(TOOL_GXX64_PREFIX)g++$(TOOL_GXX64_SUFFIX) -m64
+TOOL_GXX64_PCH      ?= $(TOOL_GXX64_CXX)
+TOOL_GXX64_AS       ?= $(TOOL_GXX64_PREFIX)gcc$(TOOL_GXX64_SUFFIX) -m64
+TOOL_GXX64_AR       ?= $(TOOL_GXX64_PREFIX2)ar$(TOOL_GXX64_SUFFIX2)
+TOOL_GXX64_LD       ?= $(TOOL_GXX64_PREFIX)g++$(TOOL_GXX64_SUFFIX) -m64
+if1of ($(KBUILD_HOST), solaris)
+ TOOL_GXX64_LD_SYSMOD ?= $(TOOL_GXX64_PREFIX3)ld$(TOOL_GXX64_SUFFIX3)
+else
+ TOOL_GXX64_LD_SYSMOD ?= $(TOOL_GXX64_PREFIX2)ld$(TOOL_GXX64_SUFFIX2)
+endif
+ifndef TOOL_GXX64_LDFLAGS.$(KBUILD_TARGET)
+ TOOL_GXX64_LDFLAGS.dll ?= -shared
+else
+ TOOL_GXX64_LDFLAGS.dll ?= $(TOOL_GXX64_LDFLAGS.$(KBUILD_TARGET))
 endif
 TOOL_GXX64_LDFLAGS.sysmod ?= -r -m elf_x86_64$(if-expr "$(KBUILD_TARGET)" == "freebsd" || "$(KBUILD_TARGET)" == "gnukfbsd",_fbsd,)
 TOOL_GXX64_LD_SONAME ?= -Wl,-soname=$(firstword $($(1)_SONAME.$(KBUILD_TARGET).$(KBUILD_TYPE)) $($(1)_SONAME.$(KBUILD_TARGET)) $($(1)_SONAME.$(KBUILD_TYPE)) $($(1)_SONAME) $(notdir $(2)))
 ifeq ($(KBUILD_TARGET),os2)
-TOOL_GXX64_LD_MAP ?= -Zmap=$(1)
+ TOOL_GXX64_LD_MAP ?= -Zmap=$(1)
 else
-TOOL_GXX64_LD_MAP ?=
+ TOOL_GXX64_LD_MAP ?=
 endif
 ifeq ($(KBUILD_TARGET),os2)
-TOOL_GXX64_LD_SYSMOD_MAP ?= -Zmap=$(1)
+ TOOL_GXX64_LD_SYSMOD_MAP ?= -Zmap=$(1)
 else
-TOOL_GXX64_LD_SYSMOD_MAP ?=
+ TOOL_GXX64_LD_SYSMOD_MAP ?=
 endif
-if1of ($(KBUILD_HOST), solaris)
- TOOL_GXX64_OBJCOPY ?= gobjcopy$(HOSTSUFF_EXE)
-else
- TOOL_GXX64_OBJCOPY ?= objcopy$(HOSTSUFF_EXE)
-endif
-
-ifdef SLKRUNS
- TOOL_GXX64_CC  += -fmessage-length=0
- TOOL_GXX64_CXX += -fmessage-length=0
-endif
+TOOL_GXX64_OBJCOPY ?= $(TOOL_GXX64_PREFIX2)objcopy$(TOOL_GXX64_SUFFIX2)
 
 # General Properties used by kBuild
 TOOL_GXX64_COBJSUFF         ?= .o
@@ -130,7 +139,7 @@ if "$(use_objcache)" != ""
 	$(QUIET)$(KOBJCACHE) -f $(outbase).koc -d $(PATH_OBJCACHE) -t $(bld_trg).$(bld_trg_arch) -p\
 		--kObjCache-cpp $(outbase).i\
 		$(TOOL_GXX64_CC) -E -o -\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		$(abspath $(source))\
 		--kObjCache-cc $(obj)\
@@ -140,7 +149,7 @@ if "$(use_objcache)" != ""
 		-
 else
 	$(QUIET)$(TOOL_GXX64_CC) -c\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		-o $(obj)\
 		$(abspath $(source))
@@ -171,7 +180,7 @@ if "$(use_objcache)" != ""
 		--kObjCache-cpp $(outbase).ii\
 		$(TOOL_GXX64_CXX) -E -o - $(if-expr defined($(target)_PCH_HDR)\
 		,-fpch-preprocess -Winvalid-pch -I$($(target)_1_GCC_PCH_DIR) -include $(basename $($(target)_1_GCC_PCH_FILE)),)\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		$(abspath $(source))\
 		--kObjCache-cc $(obj)\
@@ -181,7 +190,7 @@ if "$(use_objcache)" != ""
 		-
 else
 	$(QUIET)$(TOOL_GXX64_CXX) -c\
-		$(flags) $(addprefix -I, $($(target)_1_GCC_PCH_DIR) $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $($(target)_1_GCC_PCH_DIR) $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		-o $(obj) $(if-expr defined($(target)_PCH_HDR) \
 		,-Winvalid-pch -include $(basename $($(target)_1_GCC_PCH_FILE)),) \
@@ -208,7 +217,7 @@ TOOL_GXX64_COMPILE_PCH_DEPEND =
 TOOL_GXX64_COMPILE_PCH_DEPORD = $($(target)_1_GCC_PCH_DIR)
 define TOOL_GXX64_COMPILE_PCH_CMDS
 	$(QUIET)$(TOOL_GXX64_PCH) -c\
-		$(flags) $(addprefix -I, $($(target)_1_GCC_PCH_DIR) $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $($(target)_1_GCC_PCH_DIR) $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		-o $(obj)\
 		$(abspath $(source))
@@ -235,7 +244,7 @@ TOOL_GXX64_COMPILE_AS_DEPEND =
 TOOL_GXX64_COMPILE_AS_DEPORD =
 define TOOL_GXX64_COMPILE_AS_CMDS
 	$(QUIET)$(TOOL_GXX64_AS) -c\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		-o $(obj)\
 		$(abspath $(source))

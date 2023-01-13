@@ -1,4 +1,4 @@
-/* $Id: kFsCache.c 3184 2018-03-23 22:36:43Z bird $ */
+/* $Id: kFsCache.c 3381 2020-06-12 11:36:10Z bird $ */
 /** @file
  * ntdircache.c - NT directory content cache.
  */
@@ -63,6 +63,19 @@
 #else
 # define KFSCACHE_LOG2(a) do { } while (0)
 #endif
+
+/** The minimum time between a directory last populated time and its
+ * modification time for the cache to consider it up-to-date.
+ *
+ * This helps work around races between us reading a directory and someone else
+ * adding / removing files and directories to /from it.  Given that the
+ * effective time resolution typically is around 2000Hz these days, unless you
+ * use the new *TimePrecise API variants, there is plenty of room for a race
+ * here.
+ *
+ * The current value is 20ms in NT time units (100ns each), which translates
+ * to a 50Hz time update frequency. */
+#define KFSCACHE_MIN_LAST_POPULATED_VS_WRITE (20*1000*10)
 
 
 /*********************************************************************************************************************************
@@ -428,7 +441,7 @@ static PKFSHASHA kFsCacheCreatePathHashTabEntryA(PKFSCACHE pCache, PKFSOBJ pFsOb
             pHashEntry->uCacheGen   = pFsObj->bObjType != KFSOBJ_TYPE_MISSING
                                     ? pCache->auGenerations[       pFsObj->fFlags & KFSOBJ_F_USE_CUSTOM_GEN]
                                     : pCache->auGenerationsMissing[pFsObj->fFlags & KFSOBJ_F_USE_CUSTOM_GEN];
-            pFsObj->abUnused[0] += 1; // for debugging
+            pFsObj->cPathHashRefs += 1; // for debugging
         }
         else
         {
@@ -485,7 +498,7 @@ static PKFSHASHW kFsCacheCreatePathHashTabEntryW(PKFSCACHE pCache, PKFSOBJ pFsOb
             pHashEntry->uCacheGen   = pFsObj->bObjType != KFSOBJ_TYPE_MISSING
                                     ? pCache->auGenerations[       pFsObj->fFlags & KFSOBJ_F_USE_CUSTOM_GEN]
                                     : pCache->auGenerationsMissing[pFsObj->fFlags & KFSOBJ_F_USE_CUSTOM_GEN];
-            pFsObj->abUnused[0] += 1; // for debugging
+            pFsObj->cPathHashRefs += 1; // for debugging
         }
         else
         {
@@ -592,8 +605,8 @@ PKFSOBJ kFsCacheCreateObject(PKFSCACHE pCache, PKFSDIR pParent,
                             : pCache->auGenerationsMissing[pParent->Obj.fFlags & KFSOBJ_F_USE_CUSTOM_GEN];
         pObj->bObjType      = bObjType;
         pObj->fHaveStats    = K_FALSE;
-        pObj->abUnused[0]   = K_FALSE;
-        pObj->abUnused[1]   = K_FALSE;
+        pObj->cPathHashRefs = 0;
+        pObj->idxUserDataLock = KU8_MAX;
         pObj->fFlags        = pParent->Obj.fFlags & KFSOBJ_F_INHERITED_MASK;
         pObj->pParent       = pParent;
         pObj->uNameHash     = 0;
@@ -661,6 +674,7 @@ PKFSOBJ kFsCacheCreateObject(PKFSCACHE pCache, PKFSDIR pParent,
             pDirObj->hDir               = INVALID_HANDLE_VALUE;
             pDirObj->uDevNo             = pParent->uDevNo;
             pDirObj->iLastWrite         = 0;
+            pDirObj->iLastPopulated     = 0;
             pDirObj->fPopulated         = K_FALSE;
         }
 
@@ -911,7 +925,7 @@ static PKFSOBJ kFsCacheRefreshGrowNames(PKFSCACHE pCache, PKFSOBJ pCur,
 
     pCur->pszName = pch;
     pCur->cchName = cchName;
-    pch = kHlpMemPCopy(pch, pchName, cchShortName);
+    pch = kHlpMemPCopy(pch, pchName, cchName);
     *pch++ = '\0';
 
 #ifdef KFSCACHE_CFG_SHORT_NAMES
@@ -1315,6 +1329,7 @@ static KBOOL kFsCachePopuplateOrRefreshDir(PKFSCACHE pCache, PKFSDIR pDir, KFSLO
     KBOOL                       fRefreshing = K_FALSE;
     KFSDIRREPOP                 DirRePop    = { NULL, 0, 0, 0, NULL };
     MY_UNICODE_STRING           UniStrStar  = { 1 * sizeof(wchar_t), 2 * sizeof(wchar_t), L"*" };
+    FILETIME                    Now;
 
     /** @todo May have to make this more flexible wrt information classes since
      *        older windows versions (XP, w2K) might not correctly support the
@@ -1436,6 +1451,8 @@ static KBOOL kFsCachePopuplateOrRefreshDir(PKFSCACHE pCache, PKFSDIR pDir, KFSLO
      *       previously quried a single file name and just passing NULL would
      *       restart that single file name query.
      */
+    GetSystemTimeAsFileTime(&Now);
+    pDir->iLastPopulated = ((KI64)Now.dwHighDateTime << 32) | Now.dwLowDateTime;
     Ios.Information = -1;
     Ios.u.Status    = -1;
     rcNt = g_pfnNtQueryDirectoryFile(pDir->hDir,
@@ -1525,7 +1542,9 @@ static KBOOL kFsCachePopuplateOrRefreshDir(PKFSCACHE pCache, PKFSDIR pDir, KFSLO
                                 PKFSDIR pCurDir = (PKFSDIR)pCur;
                                 if (   !pCurDir->fPopulated
                                     ||  (   pCurDir->iLastWrite == uPtr.pWithId->LastWriteTime.QuadPart
-                                         && (pCur->fFlags & KFSOBJ_F_WORKING_DIR_MTIME) ) )
+                                         && (pCur->fFlags & KFSOBJ_F_WORKING_DIR_MTIME)
+                                         &&    pCurDir->iLastPopulated - pCurDir->iLastWrite
+                                            >= KFSCACHE_MIN_LAST_POPULATED_VS_WRITE ))
                                 { /* kind of likely */ }
                                 else
                                 {
@@ -1534,12 +1553,16 @@ static KBOOL kFsCachePopuplateOrRefreshDir(PKFSCACHE pCache, PKFSDIR pDir, KFSLO
                                     pCurDir->fNeedRePopulating = K_TRUE;
                                 }
                             }
+                            if (pCur->uCacheGen != KFSOBJ_CACHE_GEN_IGNORE)
+                                pCur->uCacheGen = pCache->auGenerations[pCur->fFlags & KFSOBJ_F_USE_CUSTOM_GEN];
                         }
                         else if (pCur->bObjType == KFSOBJ_TYPE_MISSING)
                         {
                             KFSCACHE_LOG(("Refreshing %s/%s/ - %s appeared as %u, was missing.\n",
                                           pDir->Obj.pParent->Obj.pszName, pDir->Obj.pszName, pCur->pszName, bObjType));
                             pCur->bObjType = bObjType;
+                            if (pCur->uCacheGen != KFSOBJ_CACHE_GEN_IGNORE)
+                                pCur->uCacheGen = pCache->auGenerations[pCur->fFlags & KFSOBJ_F_USE_CUSTOM_GEN];
                         }
                         else
                         {
@@ -1770,7 +1793,8 @@ static KBOOL kFsCacheDirIsModified(PKFSDIR pDir)
             rcNt = g_pfnNtQueryInformationFile(pDir->hDir, &Ios, &BasicInfo, sizeof(BasicInfo), MyFileBasicInformation);
             if (MY_NT_SUCCESS(rcNt))
             {
-                if (BasicInfo.LastWriteTime.QuadPart != pDir->iLastWrite)
+                if (   BasicInfo.LastWriteTime.QuadPart != pDir->iLastWrite
+                    || pDir->iLastPopulated - pDir->iLastWrite < KFSCACHE_MIN_LAST_POPULATED_VS_WRITE)
                 {
                     pDir->fNeedRePopulating = K_TRUE;
                     return K_TRUE;
@@ -1836,7 +1860,11 @@ static KBOOL kFsCacheRefreshMissing(PKFSCACHE pCache, PKFSOBJ pMissing, KFSLOOKU
             KFSCACHE_LOG(("Birth of %s/%s as %d with attribs %#x...\n",
                           pMissing->pParent->Obj.pszName, pMissing->pszName, bObjType, BasicInfo.FileAttributes));
             pMissing->bObjType  = bObjType;
-            pMissing->uCacheGen = pCache->auGenerations[pMissing->fFlags & KFSOBJ_F_USE_CUSTOM_GEN];
+            /* (auGenerations[] - 1): make sure it's not considered up to date */
+            pMissing->uCacheGen = pCache->auGenerations[pMissing->fFlags & KFSOBJ_F_USE_CUSTOM_GEN] - 1;
+            /* Trigger parent directory repopulation. */
+            if (pMissing->pParent->fPopulated)
+                pMissing->pParent->fNeedRePopulating = K_TRUE;
 /**
  * @todo refresh missing object names when it appears.
  */
@@ -2050,7 +2078,8 @@ static KBOOL kFsCacheRefreshObj(PKFSCACHE pCache, PKFSOBJ pObj, KFSLOOKUPERROR *
                                              / BIRD_STAT_BLOCK_SIZE;
 
                 if (   pDir->iLastWrite == uBuf.FullInfo.LastWriteTime.QuadPart
-                    && (pObj->fFlags & KFSOBJ_F_WORKING_DIR_MTIME) )
+                    && (pObj->fFlags & KFSOBJ_F_WORKING_DIR_MTIME)
+                    && pDir->iLastPopulated - pDir->iLastWrite >= KFSCACHE_MIN_LAST_POPULATED_VS_WRITE)
                     KFSCACHE_LOG(("Refreshing %s/%s/ - no re-populating necessary.\n",
                                   pObj->pParent->Obj.pszName, pObj->pszName));
                 else
@@ -2801,7 +2830,7 @@ PKFSOBJ kFsCacheLookupRelativeToDirA(PKFSCACHE pCache, PKFSDIR pParent, const ch
             && (   pParent->Obj.uCacheGen == KFSOBJ_CACHE_GEN_IGNORE
                 || pParent->Obj.uCacheGen == pCache->auGenerations[pParent->Obj.fFlags & KFSOBJ_F_USE_CUSTOM_GEN]) )
         { /* likely */ }
-        else if (   (fFlags & (KFSCACHE_LOOKUP_F_NO_INSERT | fFlags & KFSCACHE_LOOKUP_F_NO_REFRESH))
+        else if (   (fFlags & (KFSCACHE_LOOKUP_F_NO_INSERT | KFSCACHE_LOOKUP_F_NO_REFRESH))
                  || kFsCachePopuplateOrRefreshDir(pCache, pParent, penmError))
         { /* likely */ }
         else
@@ -2969,7 +2998,7 @@ PKFSOBJ kFsCacheLookupRelativeToDirW(PKFSCACHE pCache, PKFSDIR pParent, const wc
             && (   pParent->Obj.uCacheGen == KFSOBJ_CACHE_GEN_IGNORE
                 || pParent->Obj.uCacheGen == pCache->auGenerations[pParent->Obj.fFlags & KFSOBJ_F_USE_CUSTOM_GEN]) )
         { /* likely */ }
-        else if (   (fFlags & (KFSCACHE_LOOKUP_F_NO_INSERT | fFlags & KFSCACHE_LOOKUP_F_NO_REFRESH))
+        else if (   (fFlags & (KFSCACHE_LOOKUP_F_NO_INSERT | KFSCACHE_LOOKUP_F_NO_REFRESH))
                  || kFsCachePopuplateOrRefreshDir(pCache, pParent, penmError))
         { /* likely */ }
         else
@@ -3310,7 +3339,7 @@ static PKFSOBJ kFsCacheLookupSlowA(PKFSCACHE pCache, const char *pszPath, KU32 c
 
     /* The path is too long! */
     kHlpAssertMsgFailed(("'%s' -> cchFull=%u\n", pszPath, cchFull));
-    *penmError = KFSLOOKUPERROR_PATH_TOO_LONG;
+    *penmError = cchFull >= 3 ? KFSLOOKUPERROR_PATH_TOO_LONG : KFSLOOKUPERROR_PATH_TOO_SHORT;
     return NULL;
 }
 
@@ -3350,7 +3379,7 @@ static PKFSOBJ kFsCacheLookupSlowW(PKFSCACHE pCache, const wchar_t *pwszPath, KU
 
     /* The path is too long! */
     kHlpAssertMsgFailed(("'%ls' -> cwcFull=%u\n", pwszPath, cwcFull));
-    *penmError = KFSLOOKUPERROR_PATH_TOO_LONG;
+    *penmError = cwcFull >= 3 ? KFSLOOKUPERROR_PATH_TOO_LONG : KFSLOOKUPERROR_PATH_TOO_SHORT;
     return NULL;
 }
 
@@ -3385,6 +3414,7 @@ static PKFSHASHA kFsCacheRefreshPathA(PKFSCACHE pCache, PKFSHASHA pHashEntry, KU
             { }
             else
             {
+                pHashEntry->pFsObj->cPathHashRefs -= 1;
                 kFsCacheObjRelease(pCache, pHashEntry->pFsObj);
                 if (pHashEntry->fAbsolute)
                     pHashEntry->pFsObj = kFsCacheLookupAbsoluteA(pCache, pHashEntry->pszPath, pHashEntry->cchPath, 0 /*fFlags*/,
@@ -3446,6 +3476,7 @@ static PKFSHASHW kFsCacheRefreshPathW(PKFSCACHE pCache, PKFSHASHW pHashEntry, KU
             { }
             else
             {
+                pHashEntry->pFsObj->cPathHashRefs -= 1;
                 kFsCacheObjRelease(pCache, pHashEntry->pFsObj);
                 if (pHashEntry->fAbsolute)
                     pHashEntry->pFsObj = kFsCacheLookupAbsoluteW(pCache, pHashEntry->pwszPath, pHashEntry->cwcPath, 0 /*fFlags*/,
@@ -3580,7 +3611,7 @@ static PKFSOBJ kFsCacheLookupHashedA(PKFSCACHE pCache, const char *pchPath, KU32
         return pFsObj;
     }
 
-    *penmError = KFSLOOKUPERROR_PATH_TOO_LONG;
+    *penmError = cchPath > 0 ? KFSLOOKUPERROR_PATH_TOO_LONG : KFSLOOKUPERROR_PATH_TOO_SHORT;
     return NULL;
 }
 
@@ -3688,7 +3719,7 @@ static PKFSOBJ kFsCacheLookupHashedW(PKFSCACHE pCache, const wchar_t *pwcPath, K
         return pFsObj;
     }
 
-    *penmError = KFSLOOKUPERROR_PATH_TOO_LONG;
+    *penmError = cwcPath > 0 ? KFSLOOKUPERROR_PATH_TOO_LONG : KFSLOOKUPERROR_PATH_TOO_SHORT;
     return NULL;
 }
 
@@ -3899,10 +3930,10 @@ KU32 kFsCacheObjDestroy(PKFSCACHE pCache, PKFSOBJ pObj, const char *pszWhere)
 
     KFSCACHE_LOG(("Destroying %s/%s, type=%d, pObj=%p, pszWhere=%s\n",
                   pObj->pParent ? pObj->pParent->Obj.pszName : "", pObj->pszName, pObj->bObjType, pObj, pszWhere));
-    if (pObj->abUnused[1] != 0)
+    if (pObj->cPathHashRefs != 0)
     {
         fprintf(stderr, "Destroying %s/%s, type=%d, path hash entries: %d!\n", pObj->pParent ? pObj->pParent->Obj.pszName : "",
-                pObj->pszName, pObj->bObjType, pObj->abUnused[0]);
+                pObj->pszName, pObj->bObjType, pObj->cPathHashRefs);
         fflush(stderr);
         __debugbreak();
     }
@@ -4079,7 +4110,7 @@ KU32 kFsCacheObjRetain(PKFSOBJ pObj)
 PKFSUSERDATA kFsCacheObjAddUserData(PKFSCACHE pCache, PKFSOBJ pObj, KUPTR uKey, KSIZE cbUserData)
 {
     kHlpAssert(cbUserData >= sizeof(*pNew));
-    KFSCACHE_LOCK(pCache);
+    KFSCACHE_OBJUSERDATA_LOCK(pCache, pObj);
 
     if (kFsCacheObjGetUserData(pCache, pObj, uKey) == NULL)
     {
@@ -4090,12 +4121,12 @@ PKFSUSERDATA kFsCacheObjAddUserData(PKFSCACHE pCache, PKFSOBJ pObj, KUPTR uKey, 
             pNew->pfnDestructor = NULL;
             pNew->pNext         = pObj->pUserDataHead;
             pObj->pUserDataHead = pNew;
-            KFSCACHE_UNLOCK(pCache);
+            KFSCACHE_OBJUSERDATA_UNLOCK(pCache, pObj);
             return pNew;
         }
     }
 
-    KFSCACHE_UNLOCK(pCache);
+    KFSCACHE_OBJUSERDATA_UNLOCK(pCache, pObj);
     return NULL;
 }
 
@@ -4114,19 +4145,46 @@ PKFSUSERDATA kFsCacheObjGetUserData(PKFSCACHE pCache, PKFSOBJ pObj, KUPTR uKey)
 
     kHlpAssert(pCache->u32Magic == KFSCACHE_MAGIC);
     kHlpAssert(pObj->u32Magic == KFSOBJ_MAGIC);
-    KFSCACHE_LOCK(pCache);
+    KFSCACHE_OBJUSERDATA_LOCK(pCache, pObj);
 
     for (pCur = pObj->pUserDataHead; pCur; pCur = pCur->pNext)
         if (pCur->uKey == uKey)
         {
-            KFSCACHE_UNLOCK(pCache);
+            KFSCACHE_OBJUSERDATA_UNLOCK(pCache, pObj);
             return pCur;
         }
 
-    KFSCACHE_UNLOCK(pCache);
+    KFSCACHE_OBJUSERDATA_UNLOCK(pCache, pObj);
     return NULL;
 }
 
+
+/**
+ * Determins the idxUserDataLock value.
+ *
+ * Called by KFSCACHE_OBJUSERDATA_LOCK when idxUserDataLock is set to KU8_MAX.
+ *
+ * @returns The proper idxUserDataLock value.
+ * @param   pCache              The cache.
+ * @param   pObj                The object.
+ */
+KU8 kFsCacheObjGetUserDataLockIndex(PKFSCACHE pCache, PKFSOBJ pObj)
+{
+    KU8 idxUserDataLock = pObj->idxUserDataLock;
+    if (idxUserDataLock == KU8_MAX)
+    {
+        KFSCACHE_LOCK(pCache);
+        idxUserDataLock = pObj->idxUserDataLock;
+        if (idxUserDataLock == KU8_MAX)
+        {
+            idxUserDataLock = pCache->idxUserDataNext++;
+            idxUserDataLock %= K_ELEMENTS(pCache->auUserDataLocks);
+            pObj->idxUserDataLock = idxUserDataLock;
+        }
+        KFSCACHE_UNLOCK(pCache);
+    }
+    return idxUserDataLock;
+}
 
 /**
  * Gets the full path to @a pObj, ANSI version.
@@ -4454,12 +4512,31 @@ void kFsCacheInvalidateMissing(PKFSCACHE pCache)
 }
 
 
+/** 
+ * Recursively close directories. 
+ */ 
+static void kFsCacheCloseDirs(PKFSOBJ *papChildren, KU32 cChildren)
+{
+    while (cChildren-- > 0)
+    {
+        PKFSDIR pDir = (PKFSDIR)papChildren[cChildren];
+        if (pDir && pDir->Obj.bObjType == KFSOBJ_TYPE_DIR)
+        {
+            if (pDir->hDir != INVALID_HANDLE_VALUE)
+            {
+                g_pfnNtClose(pDir->hDir);
+                pDir->hDir = INVALID_HANDLE_VALUE;
+            }
+            kFsCacheCloseDirs(pDir->papChildren, pDir->cChildren);
+        }
+    }
+}
+
+
 /**
- * Invalidate all cache entries (regular, custom & missing).
- *
- * @param   pCache      The cache.
+ * Worker for kFsCacheInvalidateAll and kFsCacheInvalidateAllAndCloseDirs
  */
-void kFsCacheInvalidateAll(PKFSCACHE pCache)
+static void kFsCacheInvalidateAllWorker(PKFSCACHE pCache, KBOOL fCloseDirs, KBOOL fIncludingRoot)
 {
     kHlpAssert(pCache->u32Magic == KFSOBJ_MAGIC);
     KFSCACHE_LOCK(pCache);
@@ -4474,10 +4551,46 @@ void kFsCacheInvalidateAll(PKFSCACHE pCache)
     pCache->auGenerations[1]++;
     kHlpAssert(pCache->auGenerations[1] < KU32_MAX);
 
+    if (fCloseDirs)
+    {
+        kFsCacheCloseDirs(pCache->RootDir.papChildren, pCache->RootDir.cChildren);
+        if (fCloseDirs && pCache->RootDir.hDir != INVALID_HANDLE_VALUE)
+        {
+            g_pfnNtClose(pCache->RootDir.hDir);
+            pCache->RootDir.hDir = INVALID_HANDLE_VALUE;
+        }
+    }
+
     KFSCACHE_LOG(("Invalidate all - default: %#x/%#x,  custom: %#x/%#x\n",
                   pCache->auGenerationsMissing[0], pCache->auGenerations[0],
                   pCache->auGenerationsMissing[1], pCache->auGenerations[1]));
     KFSCACHE_UNLOCK(pCache);
+}
+
+
+/**
+ * Invalidate all cache entries (regular, custom & missing).
+ *
+ * @param   pCache      The cache.
+ */
+void kFsCacheInvalidateAll(PKFSCACHE pCache)
+{
+    kHlpAssert(pCache->u32Magic == KFSOBJ_MAGIC);
+    kFsCacheInvalidateAllWorker(pCache, K_FALSE, K_FALSE);
+}
+
+
+/**
+ * Invalidate all cache entries (regular, custom & missing) and close all the
+ * directory handles.
+ *
+ * @param   pCache          The cache.
+ * @param   fIncludingRoot  Close the root directory handle too.
+ */
+void kFsCacheInvalidateAllAndCloseDirs(PKFSCACHE pCache, KBOOL fIncludingRoot)
+{
+    kHlpAssert(pCache->u32Magic == KFSOBJ_MAGIC);
+    kFsCacheInvalidateAllWorker(pCache, K_TRUE, fIncludingRoot);
 }
 
 
@@ -4710,7 +4823,12 @@ PKFSCACHE kFsCacheCreate(KU32 fFlags)
 #endif
 
 #ifdef KFSCACHE_CFG_LOCKING
-            InitializeCriticalSection(&pCache->u.CritSect);
+            {
+                KSIZE idx = K_ELEMENTS(pCache->auUserDataLocks);
+                while (idx-- > 0)
+                    InitializeCriticalSection(&pCache->auUserDataLocks[idx].CritSect);
+                InitializeCriticalSection(&pCache->u.CritSect);
+            }
 #endif
             return pCache;
         }
