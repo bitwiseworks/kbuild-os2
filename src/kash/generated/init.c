@@ -135,11 +135,6 @@ extern void rmaliases(shinstance *psh);
 extern void deletefuncs(struct shinstance *);
 extern void hash_special_builtins(struct shinstance *);
 
-struct redirtab {
-	struct redirtab *next;
-	short renamed[10];
-};
-
 
 
 /*
@@ -208,6 +203,7 @@ reset(shinstance *psh) {
 	      if (psh->memout.buf != NULL) {
 		      ckfree(psh, psh->memout.buf);
 		      psh->memout.buf = NULL;
+		      psh->memout.nextc = NULL;
 	      }
       }
 
@@ -275,14 +271,14 @@ initshellproc(shinstance *psh) {
 
       /* from /Volumes/ScratchHFS/bird/kBuild/svn/trunk/src/kash/redir.c: */
       {
-	      clearredir(psh, 0);
+	      clearredir(psh);
       }
 
       /* from /Volumes/ScratchHFS/bird/kBuild/svn/trunk/src/kash/trap.c: */
       {
 	      char *sm;
 
-	      clear_traps(psh, 0);
+	      clear_traps(psh);
 	      for (sm = psh->sigmode ; sm < psh->sigmode + NSIG ; sm++) {
 		      if (*sm == S_IGN)
 			      *sm = S_HARD_IGN;

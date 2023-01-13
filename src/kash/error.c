@@ -164,9 +164,9 @@ exverror(shinstance *psh, int cond, const char *msg, va_list ap)
 # endif
 		TRACEV((psh, msg, va2));
 		va_end(va2);
-		TRACE((psh, "\") pid=%d\n", sh_getpid(psh)));
+		TRACE((psh, "\") pid=%" SHPID_PRI "\n", sh_getpid(psh)));
 	} else
-		TRACE((psh, "exverror(%d, NULL) pid=%d\n", cond, sh_getpid(psh)));
+		TRACE((psh, "exverror(%d, NULL) pid=%" SHPID_PRI "\n", cond, sh_getpid(psh)));
 #endif
 	if (msg)
 		exvwarning(psh, -1, msg, ap);
@@ -370,3 +370,25 @@ errmsg(shinstance *psh, int e, int action)
 	fmtstr(psh->errmsg_buf, sizeof psh->errmsg_buf, "error %d", e);
 	return psh->errmsg_buf;
 }
+
+
+#ifdef K_STRICT
+
+KHLP_DECL(void) kHlpAssertMsg1(const char *pszExpr, const char *pszFile, unsigned iLine, const char *pszFunction)
+{
+	shinstance *psh = shthread_get_shell();
+
+	TRACE((psh,  "Assertion failed in %s --- %s --- %s(%u)\n", pszFunction, pszExpr, pszFile, iLine));
+	dprintf(psh, "Assertion failed in %s --- %s --- %s(%u)\n", pszFunction, pszExpr, pszFile, iLine);
+}
+
+KHLP_DECL(void) kHlpAssertMsg2(const char *pszFormat, ...)
+{
+	shinstance *psh = shthread_get_shell();
+	va_list va;
+	va_start(va, pszFormat);
+	doformat(psh->out2, pszFormat, va);
+	va_end(va);
+}
+
+#endif /* K_STRICT */

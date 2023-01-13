@@ -1,4 +1,4 @@
-# $Id: Config.kmk 3175 2018-03-21 21:38:50Z bird $
+# $Id: Config.kmk 3572M 2023-01-13 17:41:30Z (local) $
 ## @file
 # Build Configuration.
 #
@@ -144,6 +144,13 @@ endif
 if1of ($(KBUILD_TARGET), openbsd)
  TOOL_FLEX_LEX = gflex
 endif
+# Not all compiler tools currently do the same quoting of DEFS, so here's a
+# temporary workaround.
+ifn1of ($(KBUILD_TARGET), win)
+ TMP_QUOTE_SLASH :=
+else
+ TMP_QUOTE_SLASH := \$(NO_SUCH_VARIABLE)
+endif
 
 #
 # The OS and Architecture indicators.
@@ -203,8 +210,8 @@ ifdef NIX_INSTALL_DIR
  endif
 
 DEFS += \
-	KBUILD_PATH=\"/$(patsubst %/,%,$(MY_INST_DATA))\" \
-	KBUILD_BIN_PATH=\"/$(patsubst %/,%,$(MY_INST_BIN))\"
+	KBUILD_PATH=$(TMP_QUOTE_SLASH)"/$(patsubst %/,%,$(MY_INST_DATA))$(TMP_QUOTE_SLASH)" \
+	KBUILD_BIN_PATH=$(TMP_QUOTE_SLASH)"/$(patsubst %/,%,$(MY_INST_BIN))$(TMP_QUOTE_SLASH)"
 endif
 
 
@@ -252,9 +259,15 @@ ifeq ($(KBUILD_TARGET),os2)
  TEMPLATE_BIN_LDFLAGS           = -Zhigh-mem -Zstack 1024 -g
 
 else if1of ($(KBUILD_TARGET), win nt)
- TEMPLATE_BIN_TOOL              = VCC100
- TEMPLATE_BIN_TOOL.x86          = VCC100X86
- TEMPLATE_BIN_TOOL.amd64        = VCC100AMD64
+ ifdef KBUILD_NEW_VCC
+  TEMPLATE_BIN_TOOL             = VCC142
+  TEMPLATE_BIN_TOOL.x86         = VCC142X86
+  TEMPLATE_BIN_TOOL.amd64       = VCC142AMD64
+ else
+  TEMPLATE_BIN_TOOL             = VCC100
+  TEMPLATE_BIN_TOOL.x86         = VCC100X86
+  TEMPLATE_BIN_TOOL.amd64       = VCC100AMD64
+ endif
  TEMPLATE_BIN_DEFS              = WINDOWS32 _CONSOLE __WIN__ _CRT_SECURE_NO_DEPRECATE _CRT_NONSTDC_NO_WARNINGS
  TEMPLATE_BIN_DEFS.x86          = WIN32 __WIN32__
  TEMPLATE_BIN_DEFS.amd64        = WIN32 __WIN32__ __WIN64__ WIN64
@@ -266,10 +279,27 @@ else if1of ($(KBUILD_TARGET), win nt)
 	$(PATH_GNUMAKE_SRC)/w32/include \
 	$(PATH_GNUMAKE_SRC)/glob
  TEMPLATE_BIN_LDFLAGS           = /SUBSYSTEM:console /INCREMENTAL:no /NOD /DEBUG /OPT:REF /OPT:ICF /LargeAddressAware
- ifeq ($(KBUILD_TYPE),profile)
-  TEMPLATE_BIN_SDKS             = WINPSDKINCS
-  TEMPLATE_BIN_CFLAGS          += -MT
-  TEMPLATE_BIN_LIBS             = \
+ ifdef KBUILD_NEW_VCC
+  ifdef KBUILD_WITH_STATIC_MSVCRT
+   TEMPLATE_BIN_SDKS            = WINPSDK71 WINSDK10-UCRT-STATIC
+   TEMPLATE_BIN_CFLAGS         += -MT
+   TEMPLATE_BIN_LIBS            = \
+   	$(PATH_TOOL_$(TEMPLATE_BIN_TOOL)_LIB)/vcruntime.lib \
+   	$(PATH_TOOL_$(TEMPLATE_BIN_TOOL)_LIB)/oldnames.lib \
+   	$(PATH_TOOL_$(TEMPLATE_BIN_TOOL)_LIB)/libcmt.lib \
+   	$(PATH_TOOL_$(TEMPLATE_BIN_TOOL)_LIB)/libcpmt.lib
+  else
+   TEMPLATE_BIN_SDKS            = WINPSDK71 WINSDK10-UCRT
+   TEMPLATE_BIN_CFLAGS         += -MD
+   TEMPLATE_BIN_LIBS            = \
+   	$(PATH_TOOL_$(TEMPLATE_BIN_TOOL)_LIB)/vcruntime.lib \
+   	$(PATH_TOOL_$(TEMPLATE_BIN_TOOL)_LIB)/oldnames.lib \
+   	$(PATH_TOOL_$(TEMPLATE_BIN_TOOL)_LIB)/msvcrt.lib
+  endif
+ else ifeq ($(KBUILD_TYPE),profile)
+   TEMPLATE_BIN_SDKS             = WINPSDKINCS
+   TEMPLATE_BIN_CFLAGS          += -MT
+   TEMPLATE_BIN_LIBS             = \
 	D:/coding/kStuff/svn/trunk/out/win.$(KBUILD_TARGET_ARCH)/release/kStuff/lib/kPrf2.lib \
 	D:/coding/kStuff/svn/trunk/out/win.$(KBUILD_TARGET_ARCH)/release/kStuff/lib/kPrf2WinApiWrappersImp.lib \
   	$(PATH_TOOL_$(TEMPLATE_BIN_TOOL)_LIB)/oldnames.lib \
@@ -288,10 +318,31 @@ else if1of ($(KBUILD_TARGET), win nt)
    	$(PATH_TOOL_$(TEMPLATE_BIN_TOOL)_LIB)/libcpmt.lib
   else
    TEMPLATE_BIN_CFLAGS         += -MD
-   TEMPLATE_BIN_LIBS            = \
-   	$(PATH_TOOL_$(TEMPLATE_BIN_TOOL)_LIB)/oldnames.lib \
-   	$(PATH_TOOL_$(TEMPLATE_BIN_TOOL)_LIB)/msvcrt.lib
+   TEMPLATE_BIN_LIBS.amd64      = \
+   	$(PATH_TOOL_$(TEMPLATE_BIN_TOOL.amd64)_LIB)/oldnames.lib \
+   	$(PATH_TOOL_$(TEMPLATE_BIN_TOOL.amd64)_LIB)/msvcrt.lib
+   TEMPLATE_BIN_LIBS.x86        = \
+   	$(PATH_TOOL_$(TEMPLATE_BIN_TOOL.x86)_LIB)/oldnames.lib \
+   	$(PATH_TOOL_$(TEMPLATE_BIN_TOOL.x86)_LIB)/msvcrt.lib
   endif
+ endif
+ # HACK ALERT! Using kmk_builting_redirect here to bypass some shell quoting issue.
+ ifdef KBUILD_NEW_VCC # The OLD CRT will use the codepage default to the locale rather than UTF-8, so APC and CRT ends
+                      # up using different code pages when a locale other than "C" is used.  Thus, only enable for new compiler.
+  TEMPLATE_BIN_POST_CMDS.win = \
+	$(QUIET)$(APPEND) -tn "$(out).manifest" \
+		'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' \
+		'<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">' \
+		'  <assemblyIdentity type="win32" name="$(notdir $(out))" version="$(KBUILD_VERSION_MAJOR).$(KBUILD_VERSION_MINOR).$(KBUILD_VERSION_PATCH).$(KBUILD_SVN_REV)"/>' \
+		'  <application>' \
+		'    <windowsSettings>' \
+		'      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>' \
+		'    </windowsSettings>' \
+		'  </application>' \
+		'</assembly>' \
+	$(NLTAB)$(QUIET)$(REDIRECT) -- $(requote sh,$(PATH_SDK_$(firstword $(TEMPLATE_$($(target)_TEMPLATE)_SDKS))_BIN)/mt.exe) \
+		-nologo -manifest '$(subst /,\,$(out).manifest)' '-outputresource:$(subst /,\,$(out));$(HASH)1' \
+	$(NLTAB)$(QUIET)$(RM) -f -- "$(out).manifest"
  endif
 
 else # !os2, !win, !nt
@@ -306,22 +357,31 @@ else # !os2, !win, !nt
   ifndef KBUILD_MACOSX_TARGET_VERSION
    if $(KBUILD_TARGET_ARCH) == amd64
      KBUILD_MACOSX_TARGET_VERSION = 6
+   else if $(KBUILD_TARGET_ARCH) == arm64
+     KBUILD_MACOSX_TARGET_VERSION      := 0
+     KBUILD_MACOSX_TARGET_MAJOR_VERSION := 11
    else
      KBUILD_MACOSX_TARGET_VERSION = 5
    endif
   endif
+  ifndef KBUILD_MACOSX_TARGET_MAJOR_VERSION
+   KBUILD_MACOSX_TARGET_MAJOR_VERSION := 10
+  endif
   ifndef KBUILD_MACOSX_WHATEVER_MODE
-   if $(KBUILD_MACOSX_TARGET_VERSION) == 4
+   if $(KBUILD_MACOSX_TARGET_VERSION) <= 4 && $(KBUILD_MACOSX_TARGET_MAJOR_VERSION) == 10
     TOOL_GCC4MACHO_SUFFIX	        = -4.0
     TOOL_GXX4MACHO_SUFFIX		= -4.0
-   else if $(KBUILD_MACOSX_TARGET_VERSION) >= 5
+   else if $(KBUILD_MACOSX_TARGET_VERSION) <= 9 && $(KBUILD_MACOSX_TARGET_MAJOR_VERSION) == 10 # dunno which exactly.
     TOOL_GCC4MACHO_SUFFIX	        = -4.2
     TOOL_GXX4MACHO_SUFFIX		= -4.2
    endif
    ifndef KBUILD_MACOSX_SDK
-    KBUILD_MACOSX_SDK            := /Developer/SDKs/MacOSX10.$(KBUILD_MACOSX_TARGET_VERSION)$(if-expr $(KBUILD_MACOSX_TARGET_VERSION)==4,u,).sdk
+    KBUILD_MACOSX_SDK            := /Developer/SDKs/MacOSX$(KBUILD_MACOSX_TARGET_MAJOR_VERSION).$(KBUILD_MACOSX_TARGET_VERSION)$(if-expr $(KBUILD_MACOSX_TARGET_MAJOR_VERSION).$(KBUILD_MACOSX_TARGET_VERSION)==10.4,u,).sdk
     ifeq ($(wildcard $(KBUILD_MACOSX_SDK)),)
      KBUILD_MACOSX_SDK           := /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform$(KBUILD_MACOSX_SDK)
+    endif
+    ifeq ($(wildcard $(KBUILD_MACOSX_SDK)),)
+     KBUILD_MACOSX_SDK           := /Library/Developer/CommandLineTools/SDKs/MacOSX$(KBUILD_MACOSX_TARGET_MAJOR_VERSION).$(KBUILD_MACOSX_TARGET_VERSION)$(if-expr $(KBUILD_MACOSX_TARGET_MAJOR_VERSION).$(KBUILD_MACOSX_TARGET_VERSION)==10.4,u,).sdk
     endif
    endif
    ifeq ($(wildcard $(KBUILD_MACOSX_SDK)),)
@@ -329,15 +389,15 @@ else # !os2, !win, !nt
    endif
   endif # !KBUILD_MACOSX_WHATEVER_MODE
   TEMPLATE_BIN_TOOL              = GCC4MACHO
-  TEMPLATE_BIN_CFLAGS            = -g -mmacosx-version-min=10.$(KBUILD_MACOSX_TARGET_VERSION) $(if $(KBUILD_MACOSX_WHATEVER_MODE),,-isysroot $(KBUILD_MACOSX_SDK))
+  TEMPLATE_BIN_CFLAGS            = -g -mmacosx-version-min=$(KBUILD_MACOSX_TARGET_MAJOR_VERSION).$(KBUILD_MACOSX_TARGET_VERSION) $(if $(KBUILD_MACOSX_WHATEVER_MODE),,-isysroot $(KBUILD_MACOSX_SDK))
   ifeq ($(USER),bird)
    TEMPLATE_BIN_CFLAGS          += -Wall $(GCC_Wextra) -pedantic -Wno-unused-parameter -Wno-long-long -Wshadow
    TEMPLATE_BIN_DEFS            += NO_ENUM_BITFIELDS
   endif
   TEMPLATE_BIN_CFLAGS.profile    = -O3 -pg
   TEMPLATE_BIN_CFLAGS.release    = -O3
-  TEMPLATE_BIN_LDFLAGS           = -g -mmacosx-version-min=10.$(KBUILD_MACOSX_TARGET_VERSION) $(if $(KBUILD_MACOSX_WHATEVER_MODE),,-Wl,-syslibroot,$(KBUILD_MACOSX_SDK))
-  if $(KBUILD_MACOSX_TARGET_VERSION) == 4 && $(KBUILD_MACOSX_VERSION) >= 5
+  TEMPLATE_BIN_LDFLAGS           = -g -mmacosx-version-min=$(KBUILD_MACOSX_TARGET_MAJOR_VERSION).$(KBUILD_MACOSX_TARGET_VERSION) $(if $(KBUILD_MACOSX_WHATEVER_MODE),,-Wl,-syslibroot,$(KBUILD_MACOSX_SDK))
+  if $(KBUILD_MACOSX_TARGET_VERSION) == 4 && $(KBUILD_MACOSX_VERSION) >= 5 && $(KBUILD_MACOSX_TARGET_MAJOR_VERSION) == 10
    TEMPLATE_BIN_LDFLAGS         += -classic_ld
   endif
   TEMPLATE_BIN_LDFLAGS.profile   = -pg
@@ -416,7 +476,9 @@ TEMPLATE_LIB_EXTENDS = BIN
 TEMPLATE_LIB_INST    = lib/
 # for LIB_KDEP
 TEMPLATE_LIB_TOOL    = $(TEMPLATE_BIN_TOOL)
-
+TEMPLATE_LIB_CLEAN.win     = $(NO_SUCH_VARIABLE)
+TEMPLATE_LIB_LNK_DEPS.win  = $(NO_SUCH_VARIABLE)
+TEMPLATE_LIB_POST_CMDS.win = $(NO_SUCH_VARIABLE)
 
 #
 # Template for static threaded binaries (windows).
@@ -425,9 +487,12 @@ TEMPLATE_BIN-STATIC-THREADED = Threaded command line binary
 TEMPLATE_BIN-STATIC-THREADED_EXTENDS  = BIN-THREADED
 ifeq ($(filter-out win nt,$(KBUILD_TARGET)),)
  TEMPLATE_BIN-STATIC-THREADED_CFLAGS  = $(filter-out -MD,$(TEMPLATE_BIN-THREADED_CFLAGS)) -MT
- TEMPLATE_BIN-STATIC-THREADED_LIBS    = $(filter-out %/msvcrt.lib,$(TEMPLATE_BIN-THREADED_LIBS)) \
- 	$(PATH_TOOL_$(TEMPLATE_BIN_TOOL)_LIB)/libcmt.lib \
- 	$(PATH_TOOL_$(TEMPLATE_BIN_TOOL)_LIB)/libcpmt.lib
+ TEMPLATE_BIN-STATIC-THREADED_LIBS.amd64 = $(filter-out %/msvcrt.lib,$(TEMPLATE_BIN-THREADED_LIBS.amd64)) \
+ 	$(PATH_TOOL_$(TEMPLATE_BIN_TOOL.amd64)_LIB)/libcmt.lib \
+ 	$(PATH_TOOL_$(TEMPLATE_BIN_TOOL.amd64)_LIB)/libcpmt.lib
+ TEMPLATE_BIN-STATIC-THREADED_LIBS.x86 = $(filter-out %/msvcrt.lib,$(TEMPLATE_BIN-THREADED_LIBS.x86)) \
+ 	$(PATH_TOOL_$(TEMPLATE_BIN_TOOL.x86)_LIB)/libcmt.lib \
+ 	$(PATH_TOOL_$(TEMPLATE_BIN_TOOL.x86)_LIB)/libcpmt.lib
 else
  TEMPLATE_BIN-STATIC-THREADED_CFLAGS  = $(TEMPLATE_BIN-THREADED_CFLAGS) -static
  TEMPLATE_BIN-STATIC-THREADED_LDFLAGS = $(TEMPLATE_BIN-THREADED_LDFLAGS) -static
@@ -439,6 +504,14 @@ endif
 TEMPLATE_LIB-STATIC-THREADED = Threaded command line library
 TEMPLATE_LIB-STATIC-THREADED_EXTENDS  = BIN-STATIC-THREADED
 TEMPLATE_LIB-STATIC-THREADED_INST     = lib/
+TEMPLATE_LIB-STATIC-THREADED_POST_CMDS.win = $(NO_SUCH_VARIABLE)
+
+#
+# Template for build programs.
+# This currently does not do cross compilation, sorry.
+#
+TEMPLATE_BLD = Build program to be executed during the build but not installed.
+TEMPLATE_BLD_EXTENDS = BIN
 
 
 #

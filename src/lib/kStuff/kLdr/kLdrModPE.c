@@ -1,4 +1,4 @@
-/* $Id: kLdrModPE.c 89 2016-09-07 13:32:53Z bird $ */
+/* $Id: kLdrModPE.c 117 2020-03-15 15:23:36Z bird $ */
 /** @file
  * kLdr - The Module Interpreter for the Portable Executable (PE) Format.
  */
@@ -122,7 +122,6 @@ static int  kldrModPEDoImports64Bit(PKLDRMODPE pModPE, void *pvMapping, const IM
 static int  kldrModPEDoImports(PKLDRMODPE pModPE, void *pvMapping, PFNKLDRMODGETIMPORT pfnGetImport, void *pvUser);
 static int  kldrModPEDoCallDLL(PKLDRMODPE pModPE, void *pvMapping, unsigned uOp, KUPTR uHandle);
 static int  kldrModPEDoCallTLS(PKLDRMODPE pModPE, void *pvMapping, unsigned uOp, KUPTR uHandle);
-static KI32 kldrModPEDoCall(KUPTR uEntrypoint, KUPTR uHandle, KU32 uOp, void *pvReserved);
 
 
 /**
@@ -1818,7 +1817,7 @@ static int  kldrModPEDoCallTLS(PKLDRMODPE pModPE, void *pvMapping, unsigned uOp,
  * @param   uOp             The second argumnet, the reason we're calling.
  * @param   pvReserved      The third argument, reserved argument. (figure this one out)
  */
-static KI32 kldrModPEDoCall(KUPTR uEntrypoint, KUPTR uHandle, KU32 uOp, void *pvReserved)
+KI32 kldrModPEDoCall(KUPTR uEntrypoint, KUPTR uHandle, KU32 uOp, void *pvReserved)
 {
     KI32 rc;
 

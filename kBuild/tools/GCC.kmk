@@ -1,4 +1,4 @@
-# $Id: GCC.kmk 3121 2017-10-31 10:58:59Z bird $
+# $Id: GCC.kmk 3566 2022-06-13 15:37:08Z bird $
 ## @file
 # kBuild Tool Config - Generic GCC Using The System GCC.
 #
@@ -34,18 +34,26 @@
 TOOL_GCC := Generic GCC Using The System GCC.
 
 # Tool Specific Properties
-TOOL_GCC_CC  ?= gcc$(HOSTSUFF_EXE)
-TOOL_GCC_CXX ?= g++$(HOSTSUFF_EXE)
-TOOL_GCC_AS  ?= gcc$(HOSTSUFF_EXE)
-TOOL_GCC_AR  ?= ar$(HOSTSUFF_EXE)
-TOOL_GCC_RANLIB ?= ranlib$(HOSTSUFF_EXE)
-TOOL_GCC_LD  ?= gcc$(HOSTSUFF_EXE)
-TOOL_GCC_LDFLAGS.dll.os2 ?= -Zdll
+ifndef TOOL_GCC_PREFIX
+ TOOL_GCC_PREFIX :=
+endif
+ifndef TOOL_GCC_SUFFIX
+ TOOL_GCC_SUFFIX := $(HOSTSUFF_EXE)
+endif
+TOOL_GCC_PREFIX2 ?= $(TOOL_GCC_PREFIX)
+TOOL_GCC_SUFFIX2 ?= $(TOOL_GCC_SUFFIX)
+TOOL_GCC_CC      ?= $(TOOL_GCC_PREFIX)gcc$(TOOL_GCC_SUFFIX)
+TOOL_GCC_CXX     ?= $(TOOL_GCC_PREFIX)g++$(TOOL_GCC_SUFFIX)
+TOOL_GCC_AS      ?= $(TOOL_GCC_PREFIX)gcc$(TOOL_GCC_SUFFIX)
+TOOL_GCC_AR      ?= $(TOOL_GCC_PREFIX2)ar$(TOOL_GCC_SUFFIX2)
+TOOL_GCC_RANLIB  ?= $(TOOL_GCC_PREFIX2)ranlib$(TOOL_GCC_SUFFIX2)
+TOOL_GCC_LD      ?= $(TOOL_GCC_PREFIX)gcc$(TOOL_GCC_SUFFIX)
+TOOL_GCC_LDFLAGS.dll.os2    ?= -Zdll
 TOOL_GCC_LDFLAGS.dll.darwin ?= -dynamiclib
 ifndef TOOL_GCC_LDFLAGS.$(KBUILD_TARGET)
-TOOL_GCC_LDFLAGS.dll ?= -shared
+ TOOL_GCC_LDFLAGS.dll       ?= -shared
 else
-TOOL_GCC_LDFLAGS.dll ?= $(TOOL_GCC_LDFLAGS.$(KBUILD_TARGET))
+ TOOL_GCC_LDFLAGS.dll       ?= $(TOOL_GCC_LDFLAGS.$(KBUILD_TARGET))
 endif
 
 # General Properties used by kBuild
@@ -97,7 +105,7 @@ TOOL_GCC_COMPILE_C_DEPEND =
 TOOL_GCC_COMPILE_C_DEPORD =
 define TOOL_GCC_COMPILE_C_CMDS
 	$(QUIET)$(TOOL_GCC_CC) -c\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) \
 		-o $(obj)\
 		$(abspath $(source))
@@ -123,7 +131,7 @@ TOOL_GCC_COMPILE_CXX_DEPEND =
 TOOL_GCC_COMPILE_CXX_DEPORD =
 define TOOL_GCC_COMPILE_CXX_CMDS
 	$(QUIET)$(TOOL_GCC_CXX) -c\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) \
 		-o $(obj)\
 		$(abspath $(source))
@@ -149,7 +157,7 @@ TOOL_GCC_COMPILE_AS_DEPEND =
 TOOL_GCC_COMPILE_AS_DEPORD =
 define TOOL_GCC_COMPILE_AS_CMDS
 	$(QUIET)$(TOOL_GCC_AS) -c\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) \
 		-o $(obj)\
 		$(abspath $(source))

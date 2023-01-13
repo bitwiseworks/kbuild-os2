@@ -1,4 +1,4 @@
-# $Id: GXX.kmk 3257 2019-01-03 02:46:05Z bird $
+# $Id: GXX.kmk 3566 2022-06-13 15:37:08Z bird $
 ## @file
 # kBuild Tool Config - Generic GCC using the system GCC, for building C++ code.
 #
@@ -34,19 +34,33 @@
 TOOL_GXX := Generic GCC using the system GCC, for building C++ code.
 
 # Tool Specific Properties
-TOOL_GXX_CC  ?= gcc$(HOSTSUFF_EXE)
-TOOL_GXX_CXX ?= g++$(HOSTSUFF_EXE)
-TOOL_GXX_PCH ?= $(TOOL_GXX_CXX)
-TOOL_GXX_AS  ?= gcc$(HOSTSUFF_EXE)
-TOOL_GXX_AR  ?= ar$(HOSTSUFF_EXE)
-TOOL_GXX_RANLIB ?= ranlib$(HOSTSUFF_EXE)
-TOOL_GXX_LD  ?= g++$(HOSTSUFF_EXE)
-TOOL_GXX_LDFLAGS.dll.os2 ?= -Zdll
+ifndef TOOL_GXX_PREFIX
+ TOOL_GXX_PREFIX  :=
+endif
+ifndef TOOL_GXX_SUFFIX
+ TOOL_GXX_SUFFIX  := $(HOSTSUFF_EXE)
+endif
+if1of ($(KBUILD_HOST), solaris)
+ TOOL_GXX_PREFIX2 ?= g
+else
+ TOOL_GXX_PREFIX2 ?=
+endif
+TOOL_GXX_SUFFIX2  ?= $(HOSTSUFF_EXE)
+TOOL_GXX_PREFIX3  ?=
+TOOL_GXX_SUFFIX3  ?= $(HOSTSUFF_EXE)
+TOOL_GXX_CC       ?= $(TOOL_GXX_PREFIX)gcc$(TOOL_GXX_SUFFIX)
+TOOL_GXX_CXX      ?= $(TOOL_GXX_PREFIX)g++$(TOOL_GXX_SUFFIX)
+TOOL_GXX_PCH      ?= $(TOOL_GXX_CXX)
+TOOL_GXX_AS       ?= $(TOOL_GXX_PREFIX)gcc$(TOOL_GXX_SUFFIX)
+TOOL_GXX_AR       ?= $(TOOL_GXX_PREFIX2)ar$(TOOL_GXX_SUFFIX2)
+TOOL_GXX_RANLIB   ?= $(TOOL_GXX_PREFIX2)ranlib$(TOOL_GXX_SUFFIX2)
+TOOL_GXX_LD       ?= $(TOOL_GXX_PREFIX)g++$(TOOL_GXX_SUFFIX)
+TOOL_GXX_LDFLAGS.dll.os2    ?= -Zdll
 TOOL_GXX_LDFLAGS.dll.darwin ?= -dynamiclib
 ifndef TOOL_GXX_LDFLAGS.$(KBUILD_TARGET)
-TOOL_GXX_LDFLAGS.dll ?= -shared
+ TOOL_GXX_LDFLAGS.dll       ?= -shared
 else
-TOOL_GXX_LDFLAGS.dll ?= $(TOOL_GXX_LDFLAGS.$(KBUILD_TARGET))
+ TOOL_GXX_LDFLAGS.dll       ?= $(TOOL_GXX_LDFLAGS.$(KBUILD_TARGET))
 endif
 
 # General Properties used by kBuild
@@ -106,7 +120,7 @@ TOOL_GXX_COMPILE_C_DEPEND =
 TOOL_GXX_COMPILE_C_DEPORD =
 define TOOL_GXX_COMPILE_C_CMDS
 	$(QUIET)$(TOOL_GXX_CC) -c\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) \
 		-o $(obj)\
 		$(abspath $(source))
@@ -132,7 +146,7 @@ TOOL_GXX_COMPILE_CXX_DEPEND = $($(target)_1_GCC_PCH_FILE)
 TOOL_GXX_COMPILE_CXX_DEPORD =
 define TOOL_GXX_COMPILE_CXX_CMDS
 	$(QUIET)$(TOOL_GXX_CXX) -c\
-		$(flags) $(addprefix -I, $($(target)_1_GCC_PCH_DIR) $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $($(target)_1_GCC_PCH_DIR) $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		-o $(obj) $(if-expr defined($(target)_PCH_HDR) \
 		,-Winvalid-pch -include $(basename $($(target)_1_GCC_PCH_FILE)),) \
@@ -158,7 +172,7 @@ TOOL_GXX_COMPILE_PCH_DEPEND =
 TOOL_GXX_COMPILE_PCH_DEPORD = $($(target)_1_GCC_PCH_DIR)
 define TOOL_GXX_COMPILE_PCH_CMDS
 	$(QUIET)$(TOOL_GXX_PCH) -c\
-		$(flags) $(addprefix -I, $($(target)_1_GCC_PCH_DIR) $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $($(target)_1_GCC_PCH_DIR) $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		-o $(obj)\
 		$(abspath $(source))
@@ -185,7 +199,7 @@ TOOL_GXX_COMPILE_AS_DEPEND =
 TOOL_GXX_COMPILE_AS_DEPORD =
 define TOOL_GXX_COMPILE_AS_CMDS
 	$(QUIET)$(TOOL_GXX_AS) -c\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) \
 		-o $(obj)\
 		$(abspath $(source))

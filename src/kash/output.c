@@ -90,6 +90,7 @@ RESET {
 	if (psh->memout.buf != NULL) {
 		ckfree(psh, psh->memout.buf);
 		psh->memout.buf = NULL;
+		psh->memout.nextc = NULL;
 	}
 }
 
@@ -199,6 +200,7 @@ freestdout(shinstance *psh)
 	if (psh->output.buf) {
 		ckfree(psh, psh->output.buf);
 		psh->output.buf = NULL;
+		psh->output.nextc = NULL;
 		psh->output.nleft = 0;
 	}
 	INTON;
@@ -355,6 +357,12 @@ doformat(struct output *dest, const char *f, va_list ap)
 			isquad++;
 			f++;
 		}
+#ifdef _MSC_VER  /* for SHPID_PRI / KI64_PRI */
+		else if (*f == 'I' && f[1] == '6' && f[2] == '4') {
+			isquad++;
+			f += 3;
+		}
+#endif
 		digit = digit_upper;
 		switch (*f) {
 		case 'd':
@@ -385,6 +393,7 @@ doformat(struct output *dest, const char *f, va_list ap)
 		case 'x':
 			/* we don't implement 'x'; treat like 'X' */
 			digit = digit_lower;
+			/*FALLTHROUGH*/
 		case 'X':
 			base = 16;
 uns_number:	  /* an unsigned number */

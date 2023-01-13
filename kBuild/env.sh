@@ -1,5 +1,5 @@
 #!/bin/sh
-# $Id: env.sh 3295 2019-01-10 16:35:56Z bird $
+# $Id: env.sh 3556 2022-02-18 02:02:07Z bird $
 ## @file
 # Environment setup script.
 #
@@ -365,7 +365,7 @@ if test -z "$KBUILD_HOST_ARCH"; then
         aarch32|arm|arm1|arm2|arm3|arm6|armv1|armv2|armv3*|armv4*|armv5*|armv6*|armv7*|armv8*)
             KBUILD_HOST_ARCH='arm32'
             ;;
-        aarch64*)
+        aarch64*|arm64) # (Apple M1 is arm64.)
             KBUILD_HOST_ARCH='arm64'
             ;;
         hppa32|parisc32|parisc)
@@ -377,12 +377,6 @@ if test -z "$KBUILD_HOST_ARCH"; then
         ia64)
             KBUILD_HOST_ARCH='ia64'
             ;;
-        ppc32|ppc|powerpc)
-            KBUILD_HOST_ARCH='ppc32'
-            ;;
-        ppc64|ppc64le|powerpc64|powerpc64le)
-            KBUILD_HOST_ARCH='ppc64'
-            ;;
         m68k)
             KBUILD_HOST_ARCH='m68k'
             ;;
@@ -391,6 +385,18 @@ if test -z "$KBUILD_HOST_ARCH"; then
             ;;
         mips64)
             KBUILD_HOST_ARCH='mips64'
+            ;;
+        ppc32|ppc|powerpc)
+            KBUILD_HOST_ARCH='ppc32'
+            ;;
+        ppc64|ppc64le|powerpc64|powerpc64le)
+            KBUILD_HOST_ARCH='ppc64'
+            ;;
+        riscv64*)
+            KBUILD_HOST_ARCH='riscv64'
+            ;;
+        riscv32*|riscv)
+            KBUILD_HOST_ARCH='riscv32'
             ;;
         s390)
             KBUILD_HOST_ARCH='s390'

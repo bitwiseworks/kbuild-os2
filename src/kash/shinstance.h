@@ -1,4 +1,4 @@
-/* $Id: shinstance.h 3240 2018-12-25 20:47:49Z bird $ */
+/* $Id: shinstance.h 3480 2020-09-21 11:20:56Z bird $ */
 /** @file
  * The shell instance and it's methods.
  */
@@ -59,14 +59,40 @@
 # define strncasecmp strnicmp
 #endif
 
+#ifndef SH_FORKED_MODE
+extern shmtx g_sh_exec_inherit_mtx;
+#endif
+
+#ifndef SH_FORKED_MODE
+/**
+ * Subshell status.
+ */
+typedef struct shsubshellstatus
+{
+    unsigned volatile   refs;           /**< Reference counter. */
+    int volatile        status;         /**< The exit code. */
+    KBOOL volatile      done;           /**< Set if done (valid exit code). */
+    void               *towaiton;       /**< Event semaphore / whatever to wait on. */
+# if K_OS == K_OS_WINDOWS
+    uintptr_t volatile  hThread;        /**< The thread handle (child closes this). */
+# endif
+    struct shsubshellstatus *next;      /**< Next free one on the free chain. */
+} shsubshellstatus;
+#else
+struct shsubshellstatus;
+#endif
+
 /**
  * A child process.
  */
 typedef struct shchild
 {
-    pid_t       pid;                    /**< The pid. */
+    shpid               pid;            /**< The pid. */
 #if K_OS == K_OS_WINDOWS
-    void       *hChild;                 /**< The process handle. */
+    void               *hChild;         /**< The handle to wait on. */
+#endif
+#ifndef SH_FORKED_MODE
+    shsubshellstatus   *subshellstatus; /**< Pointer to the subshell status structure.  NULL if child process. */
 #endif
 } shchild;
 
@@ -76,6 +102,42 @@ struct stack_block {
 	struct stack_block *prev;
 	char space[MINSIZE];
 };
+
+#ifdef KASH_SEPARATE_PARSER_ALLOCATOR
+/** Parser stack allocator block.
+ * These are reference counted so they can be shared between the parent and
+ * child shells.  They are also using as an alternative to copying function
+ * definitions, here the final goal is to automatically emit separate
+ * pstack_blocks for function while parsing to make it more flexible. */
+typedef struct pstack_block {
+    /** Pointer to the next unallocated byte (= stacknxt). */
+    char               *nextbyte;
+    /** Number of bytes available in the current stack block (= stacknleft). */
+    size_t              avail;
+    /* Number of chars left for string data (PSTPUTC, PSTUPUTC, et al) (= sstrnleft). */
+    size_t              strleft;
+    /** Top of the allocation stack (nextbyte points within this). */
+    struct stack_block *top;
+    /** Size of the top stack element (user space only). */
+    size_t              topsize;
+    /** @name statistics
+     * @{ */
+    size_t              allocations;
+    size_t              bytesalloced;
+    size_t              nodesalloced;
+    size_t              entriesalloced;
+    size_t              strbytesalloced;
+    size_t              blocks;
+    size_t              fragmentation;
+    /** @} */
+    /** Reference counter. */
+    unsigned volatile   refs;
+    /** Whether to make it current when is restored to the top of the stack. */
+    KBOOL               done;
+    /** The first stack block. */
+    struct stack_block  first;
+} pstack_block;
+#endif
 
 /* input.c */
 struct strpush {
@@ -126,6 +188,25 @@ struct ifsregion {
 	int inquotes;		/* search for nul bytes only */
 };
 
+/* redir.c */
+struct redirtab {
+	struct redirtab *next;
+	short renamed[10];
+};
+
+/**
+ * This is a replacement for temporary node field nfile.expfname.
+ * Uses stack allocator, created by expredir(), duplicated by
+ * subshellinitredir() and popped (but not freed) by expredircleanup().
+ */
+typedef struct redirexpfnames
+{
+    struct redirexpfnames *prev;        /**< Previous record. */
+    unsigned            depth;          /**< Nesting depth. */
+    unsigned            count;          /**< Number of expanded filenames in the array. */
+    char               *names[1];       /**< Variable size. */
+} redirexpfnames;
+
 
 /**
  * A shell instance.
@@ -139,23 +220,32 @@ struct shinstance
     struct shinstance  *next;           /**< The next shell instance. */
     struct shinstance  *prev;           /**< The previous shell instance. */
     struct shinstance  *parent;         /**< The parent shell instance. */
-    pid_t               pid;            /**< The (fake) process id of this shell instance. */
+    shpid               pid;            /**< The (fake) process id of this shell instance. */
     shtid               tid;            /**< The thread identifier of the thread for this shell. */
+    shpid               pgid;           /**< Process group ID. */
     shfdtab             fdtab;          /**< The file descriptor table. */
     shsigaction_t       sigactions[NSIG]; /**< The signal actions registered with this shell instance. */
     shsigset_t          sigmask;        /**< Our signal mask. */
     char              **shenviron;      /**< The environment vector. */
-    int                 num_children;   /**< Number of children in the array. */
+    int                 linked;         /**< Set if we're still linked. */
+    unsigned            num_children;   /**< Number of children in the array. */
     shchild            *children;       /**< The child array. */
+#ifndef SH_FORKED_MODE
+    int (*thread)(struct shinstance *, void *); /**< The thread procedure. */
+    void               *threadarg;      /**< The thread argument. */
+    struct jmploc      *exitjmp;        /**< Long jump target in sh_thread_wrapper for use by sh__exit. */
+    shsubshellstatus   *subshellstatus; /**< Pointer to the subshell status structure (NULL if root). */
+#endif
 
     /* alias.c */
 #define ATABSIZE 39
     struct alias       *atab[ATABSIZE];
+    unsigned            aliases;        /**< Number of active aliases. */
 
     /* cd.c */
     char               *curdir;         /**< current working directory */
     char               *prevdir;        /**< previous working directory */
-    char               *cdcomppath;
+    char               *cdcomppath;     /**< (stalloc) */
     int                 getpwd_first;   /**< static in getpwd. (initialized to 1!) */
 
     /* error.h */
@@ -172,21 +262,19 @@ struct shinstance
     char               *commandname;    /**< currently executing command */
     int                 exitstatus;     /**< exit status of last command */
     int                 back_exitstatus;/**< exit status of backquoted command */
-    struct strlist     *cmdenviron;     /**< environment for builtin command */
+    struct strlist     *cmdenviron;     /**< environment for builtin command (varlist from evalcommand()) */
     int                 funcnest;       /**< depth of function calls */
     int                 evalskip;       /**< set if we are skipping commands */
     int                 skipcount;      /**< number of levels to skip */
     int                 loopnest;       /**< current loop nesting level */
-
-    /* eval.c */
-    int                 vforked;
+    int                 commandnamemalloc; /**< Set if commandname is malloc'ed (only subshells). */
 
     /* expand.c */
-    char               *expdest;        /**< output of current string */
+    char               *expdest;        /**< output of current string (stack) */
     struct nodelist    *argbackq;       /**< list of back quote expressions */
     struct ifsregion    ifsfirst;       /**< first struct in list of ifs regions */
     struct ifsregion   *ifslastp;       /**< last struct in list */
-    struct arglist      exparg;         /**< holds expanded arg list */
+    struct arglist      exparg;         /**< holds expanded arg list (stack) */
     char               *expdir;         /**< Used by expandmeta. */
 
     /* exec.h */
@@ -212,14 +300,14 @@ struct shinstance
 #endif
 
     /* jobs.h */
-    pid_t               backgndpid/* = -1 */;   /**< pid of last background process */
+    shpid               backgndpid/* = -1 */;   /**< pid of last background process */
     int                 job_warning;    /**< user was warned about stopped jobs */
 
     /* jobs.c */
     struct job         *jobtab;         /**< array of jobs */
     int                 njobs;          /**< size of array */
     int                 jobs_invalid;   /**< set in child */
-    int                 initialpgrp;    /**< pgrp of shell on invocation */
+    shpid               initialpgrp;    /**< pgrp of shell on invocation */
     int                 curjob/* = -1*/;/**< current job */
     int                 ttyfd/* = -1*/;
     int                 jobctl;         /**< job control enabled / disabled */
@@ -233,7 +321,7 @@ struct shinstance
     time_t              mailtime[MAXMBOXES]; /**< times of mailboxes */
 
     /* main.h */
-    int                 rootpid;        /**< pid of main shell. */
+    shpid               rootpid;        /**< pid of main shell. */
     int                 rootshell;      /**< true if we aren't a child of the main shell. */
     struct shinstance  *psh_rootshell;  /**< The root shell pointer. (!rootshell) */
 
@@ -247,6 +335,14 @@ struct shinstance
     struct stack_block  stackbase;
     struct stack_block *stackp/* = &stackbase*/;
     struct stackmark   *markp;
+
+#ifdef KASH_SEPARATE_PARSER_ALLOCATOR
+    pstack_block       *curpstack;      /**< The pstack entry we're currently allocating from (NULL when not in parse.c). */
+    pstack_block      **pstack;         /**< Stack of parsed stuff. */
+    unsigned            pstacksize;     /**< Number of entries in pstack. */
+    unsigned            pstackalloced;  /**< The allocated size of pstack. */
+    pstack_block       *freepstack;     /**< One cached pstack entry (lots of parsecmd calls). */
+#endif
 
     /* myhistedit.h */
     int                 displayhist;
@@ -274,6 +370,8 @@ struct shinstance
     char              **argptr;         /**< argument list for builtin commands */
     char               *optionarg;      /**< set by nextopt */
     char               *optptr;         /**< used by nextopt */
+    char              **orgargv;        /**< The original argument vector (for cleanup). */
+    int                 arg0malloc;     /**< Indicates whether arg0 was allocated or is part of orgargv. */
 
     /* parse.h */
     int                 tokpushback;
@@ -297,6 +395,7 @@ struct shinstance
     /* redir.c */
     struct redirtab    *redirlist;
     int                 fd0_redirected/* = 0*/;
+    redirexpfnames     *expfnames;      /**< Expanded filenames for current redirection setup. */
 
     /* show.c */
     char                tracebuf[1024];
@@ -344,11 +443,11 @@ struct shinstance
     /* bltin/test.c */
     char              **t_wp;
     struct t_op const  *t_wp_op;
-
 };
 
-
-extern shinstance *sh_create_root_shell(shinstance *, int, char **, char **);
+extern void sh_init_globals(void);
+extern shinstance *sh_create_root_shell(char **, char **);
+extern shinstance *sh_create_child_shell(shinstance *);
 
 /* environment & pwd.h */
 char *sh_getenv(shinstance *, const char *);
@@ -380,14 +479,10 @@ const char *sh_gethomedir(shinstance *, const char *);
 #   define SIGCONT          20
 /*# define SIGBREAK         21 */
 /*# define SIGABRT          22 */
-
-#   define sys_siglist      sys_signame
+const char *strsignal(int iSig);
 #endif /* _MSC_VER */
-#ifdef __sun__
-#   define sys_siglist      _sys_siglist
-#endif
 #ifndef HAVE_SYS_SIGNAME
-extern char sys_signame[NSIG][16];
+extern const char * const sys_signame[NSIG];
 #endif
 
 int sh_sigaction(shinstance *, int, const struct shsigaction *, struct shsigaction *);
@@ -401,8 +496,8 @@ int sh_sigismember(shsigset_t const *, int);
 int sh_sigprocmask(shinstance *, int, shsigset_t const *, shsigset_t *);
 SH_NORETURN_1 void sh_abort(shinstance *) SH_NORETURN_2;
 void sh_raise_sigint(shinstance *);
-int sh_kill(shinstance *, pid_t, int);
-int sh_killpg(shinstance *, pid_t, int);
+int sh_kill(shinstance *, shpid, int);
+int sh_killpg(shinstance *, shpid, int);
 
 /* times */
 #include <time.h>
@@ -422,7 +517,7 @@ clock_t sh_times(shinstance *, shtms *);
 int sh_sysconf_clk_tck(void);
 
 /* wait / process */
-int sh_add_child(shinstance *psh, pid_t pid, void *hChild);
+int sh_add_child(shinstance *psh, shpid pid, void *hChild, struct shsubshellstatus *sts);
 #ifdef _MSC_VER
 #   include <process.h>
 #   define WNOHANG         1       /* Don't hang in wait. */
@@ -448,22 +543,26 @@ int sh_add_child(shinstance *psh, pid_t pid, void *hChild);
 #       define WCOREDUMP(x) WIFCORED(x)
 #   endif
 #endif
-pid_t sh_fork(shinstance *);
-pid_t sh_waitpid(shinstance *, pid_t, int *, int);
+#ifdef SH_FORKED_MODE
+shpid sh_fork(shinstance *);
+#else
+shpid sh_thread_start(shinstance *pshparent, shinstance *pshchild, int (*thread)(shinstance *, void *), void *arg);
+#endif
+shpid sh_waitpid(shinstance *, shpid, int *, int);
 SH_NORETURN_1 void sh__exit(shinstance *, int) SH_NORETURN_2;
 int sh_execve(shinstance *, const char *, const char * const*, const char * const *);
 uid_t sh_getuid(shinstance *);
 uid_t sh_geteuid(shinstance *);
 gid_t sh_getgid(shinstance *);
 gid_t sh_getegid(shinstance *);
-pid_t sh_getpid(shinstance *);
-pid_t sh_getpgrp(shinstance *);
-pid_t sh_getpgid(shinstance *, pid_t);
-int sh_setpgid(shinstance *, pid_t, pid_t);
+shpid sh_getpid(shinstance *);
+shpid sh_getpgrp(shinstance *);
+shpid sh_getpgid(shinstance *, shpid);
+int sh_setpgid(shinstance *, shpid, shpid);
 
 /* tc* */
-pid_t sh_tcgetpgrp(shinstance *, int);
-int sh_tcsetpgrp(shinstance *, int, pid_t);
+shpid sh_tcgetpgrp(shinstance *, int);
+int sh_tcsetpgrp(shinstance *, int, shpid);
 
 /* sys/resource.h */
 #ifdef _MSC_VER

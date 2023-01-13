@@ -58,10 +58,6 @@ __RCSID("$NetBSD: trap.c,v 1.31 2005/01/11 19:38:57 christos Exp $");
 #include "var.h"
 #include "shinstance.h"
 
-#ifndef HAVE_SYS_SIGNAME
-extern void init_sys_signame(void);
-extern char sys_signame[NSIG][16];
-#endif
 
 /*
  * Sigmode records the current value of the signal handlers for the various
@@ -83,6 +79,24 @@ extern char sys_signame[NSIG][16];
 
 static int getsigaction(shinstance *, int, shsig_t *);
 
+#ifndef SH_FORKED_MODE
+void
+subshellinittrap(shinstance *psh, shinstance *inherit)
+{
+	/* The forkchild calls clear_traps(), we have to emulate that here. */
+	unsigned i;
+	memcpy(psh->sigmode, inherit->sigmode, sizeof(psh->sigmode));
+	for (i = 0; i < K_ELEMENTS(inherit->trap); i++) {
+		const char *src = inherit->trap[i];
+		if (!src) {
+		} else if (i > 0) {
+			setsignal(psh, i);
+		}
+	}
+}
+#endif
+
+
 /*
  * return the signal number described by `p' (as a number or a name)
  * or -1 if it isn't one
@@ -102,9 +116,6 @@ signame_to_signum(shinstance *psh, const char *p)
 	if (strncasecmp(p, "sig", 3) == 0)
 		p += 3;
 
-#ifndef HAVE_SYS_SIGNAME
-	init_sys_signame();
-#endif
 	for (i = 0; i < NSIG; ++i)
 		if (strcasecmp(p, sys_signame[i]) == 0)
 			return i;
@@ -120,9 +131,6 @@ printsignals(shinstance *psh)
 	int n;
 
 	out1str(psh, "EXIT ");
-#ifndef HAVE_SYS_SIGNAME
-	init_sys_signame();
-#endif
 
 	for (n = 1; n < NSIG; n++) {
 		out1fmt(psh, "%s", sys_signame[n]);
@@ -143,9 +151,6 @@ trapcmd(shinstance *psh, int argc, char **argv)
 	char *action;
 	char **ap;
 	int signo;
-#ifndef HAVE_SYS_SIGNAME
-	init_sys_signame();
-#endif
 
 	if (argc <= 1) {
 		for (signo = 0 ; signo <= NSIG ; signo++)
@@ -199,7 +204,7 @@ trapcmd(shinstance *psh, int argc, char **argv)
 		psh->trap[signo] = action;
 
 		if (signo != 0)
-			setsignal(psh, signo, 0);
+			setsignal(psh, signo);
 		INTON;
 		ap++;
 	}
@@ -215,19 +220,17 @@ trapcmd(shinstance *psh, int argc, char **argv)
  */
 
 void
-clear_traps(shinstance *psh, int vforked)
+clear_traps(shinstance *psh)
 {
 	char **tp;
 
 	for (tp = psh->trap ; tp <= &psh->trap[NSIG] ; tp++) {
 		if (*tp && **tp) {	/* trap not NULL or SIG_IGN */
 			INTOFF;
-			if (!vforked) {
-				ckfree(psh, *tp);
-				*tp = NULL;
-			}
+			ckfree(psh, *tp);
+			*tp = NULL;
 			if (tp != &psh->trap[0])
-				setsignal(psh, (int)(tp - psh->trap), vforked);
+				setsignal(psh, (int)(tp - psh->trap));
 			INTON;
 		}
 	}
@@ -241,7 +244,7 @@ clear_traps(shinstance *psh, int vforked)
  */
 
 void
-setsignal(shinstance *psh, int signo, int vforked)
+setsignal(shinstance *psh, int signo)
 {
 	int action;
 	shsig_t sigact = SH_SIG_DFL;
@@ -253,7 +256,7 @@ setsignal(shinstance *psh, int signo, int vforked)
 		action = S_CATCH;
 	else
 		action = S_IGN;
-	if (psh->rootshell && !vforked && action == S_DFL) {
+	if (psh->rootshell && action == S_DFL) {
 		switch (signo) {
 		case SIGINT:
 			if (iflag(psh) || psh->minusc || sflag(psh) == 0)
@@ -310,8 +313,7 @@ setsignal(shinstance *psh, int signo, int vforked)
 		case S_CATCH:  	sigact = onsig;		break;
 		case S_IGN:	sigact = SH_SIG_IGN;	break;
 	}
-	if (!vforked)
-		*t = action;
+        *t = action;
 	sh_siginterrupt(psh, signo, 1);
 	sh_signal(psh, signo, sigact);
 }
@@ -335,13 +337,12 @@ getsigaction(shinstance *psh, int signo, shsig_t *sigact)
  */
 
 void
-ignoresig(shinstance *psh, int signo, int vforked)
+ignoresig(shinstance *psh, int signo)
 {
 	if (psh->sigmode[signo - 1] != S_IGN && psh->sigmode[signo - 1] != S_HARD_IGN) {
 		sh_signal(psh, signo, SH_SIG_IGN);
 	}
-	if (!vforked)
-		psh->sigmode[signo - 1] = S_HARD_IGN;
+	psh->sigmode[signo - 1] = S_HARD_IGN;
 }
 
 
@@ -352,7 +353,7 @@ INCLUDE "trap.h"
 SHELLPROC {
 	char *sm;
 
-	clear_traps(psh, 0);
+	clear_traps(psh);
 	for (sm = psh->sigmode ; sm < psh->sigmode + NSIG ; sm++) {
 		if (*sm == S_IGN)
 			*sm = S_HARD_IGN;
@@ -421,9 +422,9 @@ setinteractive(shinstance *psh, int on)
 
 	if (on == is_interactive)
 		return;
-	setsignal(psh, SIGINT, 0);
-	setsignal(psh, SIGQUIT, 0);
-	setsignal(psh, SIGTERM, 0);
+	setsignal(psh, SIGINT);
+	setsignal(psh, SIGQUIT);
+	setsignal(psh, SIGTERM);
 	is_interactive = on;
 }
 
@@ -433,13 +434,13 @@ setinteractive(shinstance *psh, int on)
  * Called to exit the shell.
  */
 
-SH_NORETURN_1 void
-exitshell(shinstance *psh, int status)
+int
+exitshell2(shinstance *psh, int status)
 {
 	struct jmploc loc1, loc2;
 	char *p;
 
-	TRACE((psh, "pid %d, exitshell(%d)\n", sh_getpid(psh), status));
+	TRACE((psh, "pid %" SHPID_PRI ", exitshell(%d)\n", sh_getpid(psh), status));
 	if (setjmp(loc1.loc)) {
 		goto l1;
 	}
@@ -451,11 +452,20 @@ exitshell(shinstance *psh, int status)
 		psh->trap[0] = NULL;
 		evalstring(psh, p, 0);
 	}
-l1:   psh->handler = &loc2;			/* probably unnecessary */
+l1:
+	psh->handler = &loc2;			/* probably unnecessary */
 	output_flushall(psh);
 #if JOBS
 	setjobctl(psh, 0);
 #endif
-l2: sh__exit(psh, status);
+l2:
+	return status;
+}
+
+SH_NORETURN_1 void
+exitshell(shinstance *psh, int status)
+{
+	sh__exit(psh, exitshell2(psh, status));
 	/* NOTREACHED */
 }
+

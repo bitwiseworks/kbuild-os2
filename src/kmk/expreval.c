@@ -1,5 +1,5 @@
 #ifdef CONFIG_WITH_IF_CONDITIONALS
-/* $Id: expreval.c 3141 2018-03-14 21:58:32Z bird $ */
+/* $Id: expreval.c 3544 2022-01-29 02:22:03Z bird $ */
 /** @file
  * expreval - Expressions evaluator, C / BSD make / nmake style.
  */
@@ -40,6 +40,7 @@
 #include "rule.h"
 #include "debug.h"
 #include "hash.h"
+#include "version_compare.h"
 #include <ctype.h>
 #ifndef _MSC_VER
 # include <stdint.h>
@@ -57,6 +58,15 @@
 #define EXPR_MAX_OPERATORS  72
 /** The max operand depth. */
 #define EXPR_MAX_OPERANDS   128
+
+/** Check if @a a_ch is a valid separator for a alphabetical binary
+ *  operator, omitting isspace. */
+#define EXPR_IS_OP_SEPARATOR_NO_SPACE(a_ch) \
+    (ispunct((a_ch)) && (a_ch) != '@' && (a_ch) != '_')
+
+/** Check if @a a_ch is a valid separator for a alphabetical binary operator. */
+#define EXPR_IS_OP_SEPARATOR(a_ch) \
+    (isspace((a_ch)) || EXPR_IS_OP_SEPARATOR_NO_SPACE(a_ch))
 
 
 /*******************************************************************************
@@ -179,8 +189,16 @@ typedef struct EXPR
 *   Global Variables                                                           *
 *******************************************************************************/
 /** Operator start character map.
- * This indicates which characters that are starting operators and which aren't. */
-static char g_auchOpStartCharMap[256];
+ * This indicates which characters that are starting operators and which aren't.
+ *
+ * Bit 0: Indicates that this char is used in operators.
+ * Bit 1: When bit 0 is clear, this indicates whitespace.
+ *        When bit 1 is set, this indicates whether the operator can be used
+ *        immediately next to an operand without any clear separation.
+ * Bits 2 thru 7: Index into g_aExprOps of the first operator starting with
+ *        this character.
+ */
+static unsigned char g_auchOpStartCharMap[256];
 /** Whether we've initialized the map. */
 static int g_fExprInitializedMap = 0;
 
@@ -300,11 +318,11 @@ static EXPRRET expr_string_to_num(PEXPR pThis, EXPRINT64 *piDst, const char *psz
         psz++;
 
     /*
-     * Determin base                                                        .
-     *                                                                      .
+     * Determin base.
+     *
      * Recognize some exsotic prefixes here in addition to the two standard ones.
      */
-    if (*psz != '0' || psz[1] == '\0' || ISBLANK(psz[1]))
+    if (*psz != '0')
         uBase = 10;
     else if (psz[1] == 'x' || psz[1] == 'X')
     {
@@ -976,6 +994,23 @@ static EXPRRET expr_op_num(PEXPR pThis)
 
 
 /**
+ * Performs a strlen() on the simplified/converted string argument.
+ *
+ * @returns Status code.
+ * @param   pThis       The instance.
+ */
+static EXPRRET expr_op_strlen(PEXPR pThis)
+{
+    PEXPRVAR pVar = &pThis->aVars[pThis->iVar];
+
+    expr_var_make_simple_string(pVar);
+    expr_var_assign_num(pVar, strlen(pVar->uVal.psz));
+
+    return kExprRet_Ok;
+}
+
+
+/**
  * Convert to string (simplified and quoted)
  *
  * @returns Status code.
@@ -1238,7 +1273,33 @@ static EXPRRET expr_op_shift_right(PEXPR pThis)
 
 
 /**
- * Less than or equal
+ * Less than or equal, version string.
+ *
+ * @returns Status code.
+ * @param   pThis       The instance.
+ */
+static EXPRRET expr_op_ver_less_or_equal_than(PEXPR pThis)
+{
+    EXPRRET     rc = kExprRet_Ok;
+    PEXPRVAR    pVar1 = &pThis->aVars[pThis->iVar - 1];
+    PEXPRVAR    pVar2 = &pThis->aVars[pThis->iVar];
+
+    rc = expr_var_unify_types(pThis, pVar1, pVar2, "vle");
+    if (rc >= kExprRet_Ok)
+    {
+        if (!expr_var_is_string(pVar1))
+            expr_var_assign_bool(pVar1, pVar1->uVal.i <= pVar2->uVal.i);
+        else
+            expr_var_assign_bool(pVar1, version_compare(pVar1->uVal.psz, pVar2->uVal.psz) <= 0);
+    }
+
+    expr_pop_and_delete_var(pThis);
+    return rc;
+}
+
+
+/**
+ * Less than or equal.
  *
  * @returns Status code.
  * @param   pThis       The instance.
@@ -1256,6 +1317,32 @@ static EXPRRET expr_op_less_or_equal_than(PEXPR pThis)
             expr_var_assign_bool(pVar1, pVar1->uVal.i <= pVar2->uVal.i);
         else
             expr_var_assign_bool(pVar1, strcmp(pVar1->uVal.psz, pVar2->uVal.psz) <= 0);
+    }
+
+    expr_pop_and_delete_var(pThis);
+    return rc;
+}
+
+
+/**
+ * Less than, version string.
+ *
+ * @returns Status code.
+ * @param   pThis       The instance.
+ */
+static EXPRRET expr_op_ver_less_than(PEXPR pThis)
+{
+    EXPRRET     rc = kExprRet_Ok;
+    PEXPRVAR    pVar1 = &pThis->aVars[pThis->iVar - 1];
+    PEXPRVAR    pVar2 = &pThis->aVars[pThis->iVar];
+
+    rc = expr_var_unify_types(pThis, pVar1, pVar2, "vlt");
+    if (rc >= kExprRet_Ok)
+    {
+        if (!expr_var_is_string(pVar1))
+            expr_var_assign_bool(pVar1, pVar1->uVal.i < pVar2->uVal.i);
+        else
+            expr_var_assign_bool(pVar1, version_compare(pVar1->uVal.psz, pVar2->uVal.psz) < 0);
     }
 
     expr_pop_and_delete_var(pThis);
@@ -1290,7 +1377,33 @@ static EXPRRET expr_op_less_than(PEXPR pThis)
 
 
 /**
- * Greater or equal than
+ * Greater or equal than, version string.
+ *
+ * @returns Status code.
+ * @param   pThis       The instance.
+ */
+static EXPRRET expr_op_ver_greater_or_equal_than(PEXPR pThis)
+{
+    EXPRRET     rc = kExprRet_Ok;
+    PEXPRVAR    pVar1 = &pThis->aVars[pThis->iVar - 1];
+    PEXPRVAR    pVar2 = &pThis->aVars[pThis->iVar];
+
+    rc = expr_var_unify_types(pThis, pVar1, pVar2, "vge");
+    if (rc >= kExprRet_Ok)
+    {
+        if (!expr_var_is_string(pVar1))
+            expr_var_assign_bool(pVar1, pVar1->uVal.i >= pVar2->uVal.i);
+        else
+            expr_var_assign_bool(pVar1, version_compare(pVar1->uVal.psz, pVar2->uVal.psz) >= 0);
+    }
+
+    expr_pop_and_delete_var(pThis);
+    return rc;
+}
+
+
+/**
+ * Greater or equal than.
  *
  * @returns Status code.
  * @param   pThis       The instance.
@@ -1308,6 +1421,32 @@ static EXPRRET expr_op_greater_or_equal_than(PEXPR pThis)
             expr_var_assign_bool(pVar1, pVar1->uVal.i >= pVar2->uVal.i);
         else
             expr_var_assign_bool(pVar1, strcmp(pVar1->uVal.psz, pVar2->uVal.psz) >= 0);
+    }
+
+    expr_pop_and_delete_var(pThis);
+    return rc;
+}
+
+
+/**
+ * Greater than, version string.
+ *
+ * @returns Status code.
+ * @param   pThis       The instance.
+ */
+static EXPRRET expr_op_ver_greater_than(PEXPR pThis)
+{
+    EXPRRET     rc = kExprRet_Ok;
+    PEXPRVAR    pVar1 = &pThis->aVars[pThis->iVar - 1];
+    PEXPRVAR    pVar2 = &pThis->aVars[pThis->iVar];
+
+    rc = expr_var_unify_types(pThis, pVar1, pVar2, "vgt");
+    if (rc >= kExprRet_Ok)
+    {
+        if (!expr_var_is_string(pVar1))
+            expr_var_assign_bool(pVar1, pVar1->uVal.i > pVar2->uVal.i);
+        else
+            expr_var_assign_bool(pVar1, version_compare(pVar1->uVal.psz, pVar2->uVal.psz) > 0);
     }
 
     expr_pop_and_delete_var(pThis);
@@ -1342,6 +1481,81 @@ static EXPRRET expr_op_greater_than(PEXPR pThis)
 
 
 /**
+ * Equal, version strings.
+ *
+ * @returns Status code.
+ * @param   pThis       The instance.
+ */
+static EXPRRET expr_op_ver_equal(PEXPR pThis)
+{
+    EXPRRET     rc = kExprRet_Ok;
+    PEXPRVAR    pVar1 = &pThis->aVars[pThis->iVar - 1];
+    PEXPRVAR    pVar2 = &pThis->aVars[pThis->iVar];
+    int const   fIsString1 = expr_var_is_string(pVar1);
+
+    /*
+     * The same type?
+     */
+    if (fIsString1 == expr_var_is_string(pVar2))
+    {
+        if (!fIsString1)
+            /* numbers are simple */
+            expr_var_assign_bool(pVar1, pVar1->uVal.i == pVar2->uVal.i);
+        else
+        {
+            /* try a normal string compare. */
+            expr_var_make_simple_string(pVar1);
+            expr_var_make_simple_string(pVar2);
+            if (!version_compare(pVar1->uVal.psz, pVar2->uVal.psz))
+                expr_var_assign_bool(pVar1, 1);
+            /* try convert and compare as number instead. */
+            else if (   expr_var_try_make_num(pVar1) >= kExprRet_Ok
+                     && expr_var_try_make_num(pVar2) >= kExprRet_Ok)
+                expr_var_assign_bool(pVar1, pVar1->uVal.i == pVar2->uVal.i);
+            /* ok, they really aren't equal. */
+            else
+                expr_var_assign_bool(pVar1, 0);
+        }
+    }
+    else
+    {
+        /*
+         * If the type differs, there are now two options:
+         *  1. Try convert the string to a valid number and compare the numbers.
+         *  2. Convert the non-string to a number and compare the strings.
+         */
+        if (   expr_var_try_make_num(pVar1) >= kExprRet_Ok
+            && expr_var_try_make_num(pVar2) >= kExprRet_Ok)
+            expr_var_assign_bool(pVar1, pVar1->uVal.i == pVar2->uVal.i);
+        else
+        {
+            expr_var_make_simple_string(pVar1);
+            expr_var_make_simple_string(pVar2);
+            expr_var_assign_bool(pVar1, version_compare(pVar1->uVal.psz, pVar2->uVal.psz) == 0);
+        }
+    }
+
+    expr_pop_and_delete_var(pThis);
+    return rc;
+}
+
+
+/**
+ * Not equal, version string.
+ *
+ * @returns Status code.
+ * @param   pThis       The instance.
+ */
+static EXPRRET expr_op_ver_not_equal(PEXPR pThis)
+{
+    EXPRRET rc = expr_op_ver_equal(pThis);
+    if (rc >= kExprRet_Ok)
+        rc = expr_op_logical_not(pThis);
+    return rc;
+}
+
+
+/**
  * Equal.
  *
  * @returns Status code.
@@ -1352,13 +1566,14 @@ static EXPRRET expr_op_equal(PEXPR pThis)
     EXPRRET     rc = kExprRet_Ok;
     PEXPRVAR    pVar1 = &pThis->aVars[pThis->iVar - 1];
     PEXPRVAR    pVar2 = &pThis->aVars[pThis->iVar];
+    int const   fIsString1 = expr_var_is_string(pVar1);
 
     /*
      * The same type?
      */
-    if (expr_var_is_string(pVar1) == expr_var_is_string(pVar2))
+    if (fIsString1 == expr_var_is_string(pVar2))
     {
-        if (!expr_var_is_string(pVar1))
+        if (!fIsString1)
             /* numbers are simple */
             expr_var_assign_bool(pVar1, pVar1->uVal.i == pVar2->uVal.i);
         else
@@ -1599,6 +1814,7 @@ static const EXPROP g_aExprOps[] =
     EXPR_OP("target",      90,      1,    expr_op_target),
     EXPR_OP("bool",        90,      1,    expr_op_bool),
     EXPR_OP("num",         90,      1,    expr_op_num),
+    EXPR_OP("strlen",      90,      1,    expr_op_strlen),
     EXPR_OP("str",         90,      1,    expr_op_str),
     EXPR_OP("+",           80,      1,    expr_op_pluss),
     EXPR_OP("-",           80,      1,    expr_op_minus),
@@ -1614,25 +1830,31 @@ static const EXPROP g_aExprOps[] =
     EXPR_OP("<",           60,      2,    expr_op_less_than),
     EXPR_OP(">=",          60,      2,    expr_op_greater_or_equal_than),
     EXPR_OP(">",           60,      2,    expr_op_greater_than),
+    EXPR_OP("vle",         60,      2,    expr_op_ver_less_or_equal_than),
+    EXPR_OP("vlt",         60,      2,    expr_op_ver_less_than),
+    EXPR_OP("vge",         60,      2,    expr_op_ver_greater_or_equal_than),
+    EXPR_OP("vgt",         60,      2,    expr_op_ver_greater_than),
     EXPR_OP("==",          55,      2,    expr_op_equal),
+    EXPR_OP("veq",         55,      2,    expr_op_ver_equal),
     EXPR_OP("!=",          55,      2,    expr_op_not_equal),
+    EXPR_OP("vne",         55,      2,    expr_op_ver_not_equal),
     EXPR_OP("!",           80,      1,    expr_op_logical_not),
     EXPR_OP("^",           45,      2,    expr_op_bitwise_xor),
     EXPR_OP("&&",          35,      2,    expr_op_logical_and),
     EXPR_OP("&",           50,      2,    expr_op_bitwise_and),
     EXPR_OP("||",          30,      2,    expr_op_logical_or),
     EXPR_OP("|",           40,      2,    expr_op_bitwise_or),
-            { "(", 1, ')',   10,      1,    expr_op_left_parenthesis },
-            { ")", 1, '(',   10,      0,    expr_op_right_parenthesis },
- /*         { "?", 1, ':',    5,      2,    expr_op_question },
-            { ":", 1, '?',    5,      2,    expr_op_colon }, -- too weird for now. */
+          { "(", 1, ')',   10,      1,    expr_op_left_parenthesis },
+          { ")", 1, '(',   10,      0,    expr_op_right_parenthesis },
+ /*       { "?", 1, ':',    5,      2,    expr_op_question },
+          { ":", 1, '?',    5,      2,    expr_op_colon }, -- too weird for now. */
 #undef EXPR_OP
 };
 
 /** Dummy end of expression fake. */
 static const EXPROP g_ExprEndOfExpOp =
 {
-              "", 0, '\0',    0,      0,    NULL
+            "", 0, '\0',    0,      0,    NULL
 };
 
 
@@ -1653,8 +1875,24 @@ static void expr_map_init(void)
     {
         unsigned int ch = (unsigned int)g_aExprOps[i].szOp[0];
         if (!g_auchOpStartCharMap[ch])
-            g_auchOpStartCharMap[ch] = (i << 1) | 1;
+        {
+            g_auchOpStartCharMap[ch] = (i << 2) | 1;
+            if (!isalpha(ch))
+                g_auchOpStartCharMap[ch] |= 2; /* Need no clear separation from operands. */
+        }
     }
+
+    /* whitespace (assumes C-like locale because I'm lazy): */
+#define SET_WHITESPACE(a_ch) do {  \
+        assert(g_auchOpStartCharMap[(unsigned char)(a_ch)] == 0); \
+        g_auchOpStartCharMap[(unsigned char)(a_ch)] |= 2; \
+    } while (0)
+    SET_WHITESPACE(' ');
+    SET_WHITESPACE('\t');
+    SET_WHITESPACE('\n');
+    SET_WHITESPACE('\r');
+    SET_WHITESPACE('\v');
+    SET_WHITESPACE('\f');
 
     g_fExprInitializedMap = 1;
 }
@@ -1663,17 +1901,12 @@ static void expr_map_init(void)
 /**
  * Looks up a character in the map.
  *
- * @returns the value for that char.
- * @retval  0 if not a potential opcode start char.
- * @retval  non-zero if it's a potential operator. The low bit is always set
- *          while the remaining 7 bits is the index into the operator table
- *          of the first match.
- *
+ * @returns the value for that char, see g_auchOpStartCharMap for details.
  * @param   ch      The character.
  */
 static unsigned char expr_map_get(char ch)
 {
-    return g_auchOpStartCharMap[(unsigned int)ch];
+    return g_auchOpStartCharMap[(unsigned char)ch];
 }
 
 
@@ -1689,24 +1922,23 @@ static PCEXPROP expr_lookup_op(char const *psz, unsigned char uchVal, int fUnary
 {
     char ch = *psz;
     unsigned i;
+    assert((uchVal & 2) == (isalpha(ch) ? 0 : 2));
 
-    for (i = uchVal >> 1; i < sizeof(g_aExprOps) / sizeof(g_aExprOps[0]); i++)
+    for (i = uchVal >> 2; i < sizeof(g_aExprOps) / sizeof(g_aExprOps[0]); i++)
     {
         /* compare the string... */
+        if (g_aExprOps[i].szOp[0] != ch)
+            continue;
         switch (g_aExprOps[i].cchOp)
         {
             case 1:
-                if (g_aExprOps[i].szOp[0] != ch)
-                    continue;
                 break;
             case 2:
-                if (    g_aExprOps[i].szOp[0] != ch
-                    ||  g_aExprOps[i].szOp[1] != psz[1])
+                if (g_aExprOps[i].szOp[1] != psz[1])
                     continue;
                 break;
             default:
-                if (    g_aExprOps[i].szOp[0] != ch
-                    ||  strncmp(&g_aExprOps[i].szOp[1], psz + 1, g_aExprOps[i].cchOp - 1))
+                if (strncmp(&g_aExprOps[i].szOp[1], psz + 1, g_aExprOps[i].cchOp - 1))
                     continue;
                 break;
         }
@@ -1714,8 +1946,13 @@ static PCEXPROP expr_lookup_op(char const *psz, unsigned char uchVal, int fUnary
         /* ... and the operator type. */
         if (fUnary == (g_aExprOps[i].cArgs == 1))
         {
-            /* got a match! */
-            return &g_aExprOps[i];
+            /* Check if we've got the needed operand separation: */
+            if (   (uchVal & 2)
+                || EXPR_IS_OP_SEPARATOR(psz[g_aExprOps[i].cchOp]))
+            {
+                /* got a match! */
+                return &g_aExprOps[i];
+            }
         }
     }
 
@@ -1772,13 +2009,15 @@ static EXPRRET expr_get_binary_or_eoe_or_rparen(PEXPR pThis)
         char const *psz = pThis->psz;
 
         /* spaces */
-        while (ISSPACE(*psz))
+        unsigned char uchVal;
+        char ch;
+        while (((uchVal = expr_map_get((ch = *psz))) & 3) == 2)
             psz++;
+
         /* see what we've got. */
-        if (*psz)
+        if (ch)
         {
-            unsigned char uchVal = expr_map_get(*psz);
-            if (uchVal)
+            if (uchVal & 1)
                 pOp = expr_lookup_op(psz, uchVal, 0 /* fUnary */);
             if (!pOp)
             {
@@ -1832,13 +2071,14 @@ static EXPRRET expr_get_unary_or_operand(PEXPR pThis)
     unsigned char uchVal;
     PCEXPROP      pOp;
     char const   *psz = pThis->psz;
+    char          ch;
 
     /*
      * Eat white space and make sure there is something after it.
      */
-    while (ISSPACE(*psz))
+    while (((uchVal = expr_map_get((ch = *psz))) & 3) == 2)
         psz++;
-    if (!*psz)
+    if (ch == '\0')
     {
         expr_error(pThis, "Unexpected end of expression");
         return kExprRet_Error;
@@ -1848,8 +2088,7 @@ static EXPRRET expr_get_unary_or_operand(PEXPR pThis)
      * Is it an operator?
      */
     pOp = NULL;
-    uchVal = expr_map_get(*psz);
-    if (uchVal)
+    if (uchVal & 1)
         pOp = expr_lookup_op(psz, uchVal, 1 /* fUnary */);
     if (pOp)
     {
@@ -1877,22 +2116,22 @@ static EXPRRET expr_get_unary_or_operand(PEXPR pThis)
         const char *pszStart;
 
         rc = kExprRet_Ok;
-        if (*psz == '"')
+        if (ch == '"')
         {
             pszStart = ++psz;
-            while (*psz && *psz != '"')
+            while ((ch = *psz) != '\0' && ch != '"')
                 psz++;
             expr_var_init_substring(&pThis->aVars[++pThis->iVar], pszStart, psz - pszStart, kExprVar_QuotedString);
-            if (*psz)
+            if (ch != '\0')
                 psz++;
         }
-        else if (*psz == '\'')
+        else if (ch == '\'')
         {
             pszStart = ++psz;
-            while (*psz && *psz != '\'')
+            while ((ch = *psz) != '\0' && ch != '\'')
                 psz++;
             expr_var_init_substring(&pThis->aVars[++pThis->iVar], pszStart, psz - pszStart, kExprVar_QuotedSimpleString);
-            if (*psz)
+            if (ch != '\0')
                 psz++;
         }
         else
@@ -1900,11 +2139,12 @@ static EXPRRET expr_get_unary_or_operand(PEXPR pThis)
             char    achPars[20];
             int     iPar = -1;
             char    chEndPar = '\0';
-            char    ch, ch2;
 
             pszStart = psz;
             while ((ch = *psz) != '\0')
             {
+                char ch2;
+
                 /* $(adsf) or ${asdf} needs special handling. */
                 if (    ch == '$'
                     &&  (   (ch2 = psz[1]) == '('
@@ -1926,16 +2166,20 @@ static EXPRRET expr_get_unary_or_operand(PEXPR pThis)
                 }
                 else if (!chEndPar)
                 {
-                    /** @todo combine isspace and expr_map_get! */
-                    unsigned chVal = expr_map_get(ch);
-                    if (chVal)
+                    uchVal = expr_map_get(ch);
+                    if (uchVal == 0)
+                    { /*likely*/ }
+                    else if ((uchVal & 3) == 2 /*isspace*/)
+                        break;
+                    else if (   (uchVal & 1)
+                             && psz != pszStart  /* not at the start */
+                             && (   (uchVal & 2) /* operator without separator needs */
+                                 || EXPR_IS_OP_SEPARATOR_NO_SPACE(psz[-1])))
                     {
                         pOp = expr_lookup_op(psz, uchVal, 0 /* fUnary */);
                         if (pOp)
                             break;
                     }
-                    if (ISSPACE(ch))
-                        break;
                 }
 
                 /* next */

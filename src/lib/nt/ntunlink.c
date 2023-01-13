@@ -1,4 +1,4 @@
-/* $Id: ntunlink.c 3126 2017-11-16 16:05:25Z bird $ */
+/* $Id: ntunlink.c 3504 2021-12-15 22:50:14Z bird $ */
 /** @file
  * MSC + NT unlink and variations.
  */
@@ -38,12 +38,12 @@
 #include "nthlp.h"
 
 
-static MY_NTSTATUS birdMakeWritable(MY_UNICODE_STRING *pNtPath)
+static MY_NTSTATUS birdMakeWritable(HANDLE hRoot, MY_UNICODE_STRING *pNtPath)
 {
     MY_NTSTATUS rcNt;
     HANDLE      hFile;
 
-    rcNt = birdOpenFileUniStr(NULL /*hRoot*/,
+    rcNt = birdOpenFileUniStr(hRoot,
                               pNtPath,
                               FILE_WRITE_ATTRIBUTES | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
                               FILE_ATTRIBUTE_NORMAL,
@@ -60,9 +60,10 @@ static MY_NTSTATUS birdMakeWritable(MY_UNICODE_STRING *pNtPath)
 
         Ios.Information = -1;
         Ios.u.Status    = -1;
+        memset(&BasicInfo, 0, sizeof(BasicInfo));
         rcNt = g_pfnNtQueryInformationFile(hFile, &Ios, &BasicInfo, sizeof(BasicInfo), MyFileBasicInformation);
 
-        if (MY_NT_SUCCESS(rcNt) && MY_NT_SUCCESS(Ios.u.Status))
+        if (MY_NT_SUCCESS(rcNt) && MY_NT_SUCCESS(Ios.u.Status) && BasicInfo.FileAttributes != FILE_ATTRIBUTE_READONLY)
             dwAttr = BasicInfo.FileAttributes & ~FILE_ATTRIBUTE_READONLY;
         else
             dwAttr = FILE_ATTRIBUTE_NORMAL;
@@ -112,9 +113,9 @@ static int birdUnlinkInternal(HANDLE hRoot, const char *pszFile, const wchar_t *
             rcNt = g_pfnNtDeleteFile(&ObjAttr);
 
             /* In case some file system does things differently than NTFS. */
-            if (rcNt == STATUS_CANNOT_DELETE)
+            if (rcNt == STATUS_CANNOT_DELETE && fReadOnlyToo)
             {
-                birdMakeWritable(&NtPath);
+                birdMakeWritable(hRoot, &NtPath);
                 rcNt = g_pfnNtDeleteFile(&ObjAttr);
             }
         }
@@ -122,7 +123,6 @@ static int birdUnlinkInternal(HANDLE hRoot, const char *pszFile, const wchar_t *
         {
             /* Use the set information stuff. Probably more reliable. */
             HANDLE hFile;
-            int    fMayTryAgain = 1;
             for (;;)
             {
                 rcNt = birdOpenFileUniStr(hRoot,
@@ -148,11 +148,11 @@ static int birdUnlinkInternal(HANDLE hRoot, const char *pszFile, const wchar_t *
 
                     birdCloseFile(hFile);
                 }
-                if (rcNt != STATUS_CANNOT_DELETE || !fMayTryAgain)
+                if (rcNt != STATUS_CANNOT_DELETE || !fReadOnlyToo)
                     break;
 
-                fMayTryAgain = 0;
-                birdMakeWritable(&NtPath);
+                fReadOnlyToo = 0;
+                birdMakeWritable(hRoot, &NtPath);
             }
         }
 

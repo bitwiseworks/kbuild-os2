@@ -36,11 +36,16 @@
 
 /*extern int pendingsigs;*/
 
+#ifndef SH_FORKED_MODE
+void subshellinittrap(shinstance *, shinstance *);
+#endif
 int trapcmd(struct shinstance *, int, char **);
-void clear_traps(struct shinstance *, int);
-void setsignal(struct shinstance *, int, int);
-void ignoresig(struct shinstance *, int, int);
+void clear_traps(struct shinstance *);
+void setsignal(struct shinstance *, int);
+void ignoresig(struct shinstance *, int);
 void onsig(struct shinstance *, int);
 void dotrap(struct shinstance *);
 void setinteractive(struct shinstance *, int);
+int exitshell2(struct shinstance *, int);
 SH_NORETURN_1 void exitshell(struct shinstance *, int) SH_NORETURN_2;
+

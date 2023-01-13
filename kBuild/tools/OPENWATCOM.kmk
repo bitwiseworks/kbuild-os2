@@ -1,4 +1,4 @@
-# $Id: OPENWATCOM.kmk 3121 2017-10-31 10:58:59Z bird $
+# $Id: OPENWATCOM.kmk 3578 2023-01-05 00:42:25Z bird $
 ## @file
 # kBuild Tool Config - Open Watcom v1.4 and later.
 #
@@ -222,7 +222,7 @@ define TOOL_OPENWATCOM_COMPILE_AS_CMDS
 		$(TOOL_OPENWATCOM_AS) \
 		$(flags) \
 		$(addsuffix , $(addprefix -i=, $(call TOOL_OPENWATCOM_FIX_SLASHES,$(incs)))) \
-		$(addprefix -d, $(defs)) \
+		$(qaddprefix sh,-d, $(defs)) \
 		-fo=$(call TOOL_OPENWATCOM_FIX_SLASHES,$(obj)) \
 		-fr=$(call TOOL_OPENWATCOM_FIX_SLASHES,$(obj)).err \
 		$(call TOOL_OPENWATCOM_FIX_SLASHES,$(abspath $(source)))
@@ -232,7 +232,7 @@ define TOOL_OPENWATCOM_COMPILE_AS_CMDS
 	$(QUIET)$(call TOOL_OPENWATCOM_ENV_SETUP_BD) $(TOOL_OPENWATCOM_AS) \
 		$(flags) \
 		$(addsuffix , $(addprefix -i=, $(call TOOL_OPENWATCOM_FIX_SLASHES,$(incs)))) \
-		$(addprefix -d, $(defs)) \
+		$(qaddprefix sh,-d, $(defs)) \
 		-fo=$(call TOOL_OPENWATCOM_FIX_SLASHES,$(obj)) \
 		-fr=$(call TOOL_OPENWATCOM_FIX_SLASHES,$(obj)).err \
 		$(call TOOL_OPENWATCOM_FIX_SLASHES,$(abspath $(source)))
@@ -251,7 +251,7 @@ define TOOL_OPENWATCOM_COMPILE_C_CMDS
 		$(TOOL_OPENWATCOM_CC) \
 		$(flags) \
 		$(addsuffix , $(addprefix -i=, $(call TOOL_OPENWATCOM_FIX_SLASHES,$(incs)))) \
-		$(addprefix -d, $(defs)) \
+		$(qaddprefix sh,-d, $(defs)) \
 		-fo=$(call TOOL_OPENWATCOM_FIX_SLASHES,$(obj)) \
 		-fr=$(call TOOL_OPENWATCOM_FIX_SLASHES,$(obj)).err \
 		$(call TOOL_OPENWATCOM_FIX_SLASHES,$(abspath $(source)))
@@ -261,7 +261,7 @@ define TOOL_OPENWATCOM_COMPILE_C_CMDS
 	$(QUIET) $(call TOOL_OPENWATCOM_ENV_SETUP_BD) $(TOOL_OPENWATCOM_CC) \
 		$(flags) \
 		$(addsuffix , $(addprefix -i=, $(call TOOL_OPENWATCOM_FIX_SLASHES,$(incs)))) \
-		$(addprefix -d, $(defs)) \
+		$(qaddprefix sh,-d, $(defs)) \
 		-fo=$(call TOOL_OPENWATCOM_FIX_SLASHES,$(obj)) \
 		-fr=$(call TOOL_OPENWATCOM_FIX_SLASHES,$(obj)).err \
 		$(call TOOL_OPENWATCOM_FIX_SLASHES,$(abspath $(source)))
@@ -279,7 +279,7 @@ define TOOL_OPENWATCOM_COMPILE_CXX_CMDS
 		$(TOOL_OPENWATCOM_CXX) \
 		$(flags) \
 		$(addsuffix , $(addprefix -i=, $(call TOOL_OPENWATCOM_FIX_SLASHES,$(incs)))) \
-		$(addprefix -d, $(defs)) \
+		$(qaddprefix sh,-d, $(defs)) \
 		-fo=$(call TOOL_OPENWATCOM_FIX_SLASHES,$(obj)) \
 		-fr=$(call TOOL_OPENWATCOM_FIX_SLASHES,$(obj)).err \
 		$(call TOOL_OPENWATCOM_FIX_SLASHES,$(abspath $(source)))
@@ -289,7 +289,7 @@ define TOOL_OPENWATCOM_COMPILE_CXX_CMDS
 	$(QUIET)$(call TOOL_OPENWATCOM_ENV_SETUP_BD) $(TOOL_OPENWATCOM_CXX) \
 		$(flags) \
 		$(addsuffix , $(addprefix -i=, $(call TOOL_OPENWATCOM_FIX_SLASHES,$(incs)))) \
-		$(addprefix -d, $(defs)) \
+		$(qaddprefix sh,-d, $(defs)) \
 		-fo=$(call TOOL_OPENWATCOM_FIX_SLASHES,$(obj)) \
 		-fr=$(call TOOL_OPENWATCOM_FIX_SLASHES,$(obj)).err \
 		$(call TOOL_OPENWATCOM_FIX_SLASHES,$(abspath $(source)))
@@ -305,12 +305,12 @@ define TOOL_OPENWATCOM_COMPILE_RC_CMDS
 		$(TOOL_OPENWATCOM_RC) -r\
 		$(flags) \
 		$(addprefix -i=, $(call TOOL_OPENWATCOM_FIX_SLASHES,$(dir $(abspath $(source))) $(incs))) \
-		$(addprefix -d, $(defs))\
+		$(qaddprefix sh,-d, $(defs)) \
 		-fo=$(call TOOL_OPENWATCOM_FIX_SLASHES,$(obj)) \
 		$(call TOOL_OPENWATCOM_FIX_SLASHES,$(abspath $(source)))
 endef
 
-TOOL_OPENWATCOM_LINK_LIBRARY_OUTPUT = ## @todo $(outbase).rsp
+TOOL_OPENWATCOM_LINK_LIBRARY_OUTPUT_MAYBE_PRECIOUS = $(outbase).rsp
 TOOL_OPENWATCOM_LINK_LIBRARY_DEPEND = $(othersrc)
 TOOL_OPENWATCOM_LINK_LIBRARY_DEPORD =
 define TOOL_OPENWATCOM_LINK_LIBRARY_CMDS
@@ -328,7 +328,7 @@ define TOOL_OPENWATCOM_LINK_LIBRARY_CMDS
 	$(QUIET)$(TOOL_OPENWATCOM_ENV_SETUP_BD) $(TOOL_OPENWATCOM_AR) $(flags) $(call TOOL_OPENWATCOM_FIX_SLASHES,$(out)) @$(outbase).rsp
 endef
 
-TOOL_OPENWATCOM_LINK_PROGRAM_OUTPUT = $(outbase).map
+TOOL_OPENWATCOM_LINK_PROGRAM_OUTPUT_MAYBE_PRECIOUS = $(outbase).map
 TOOL_OPENWATCOM_LINK_PROGRAM_DEPEND = $(foreach lib,$(libs),$(if $(findstring $(lib),$(subst /,x,$(lib))),, $(lib))) $(othersrc)
 TOOL_OPENWATCOM_LINK_PROGRAM_DEPORD =
 define TOOL_OPENWATCOM_LINK_PROGRAM_CMDS
@@ -347,7 +347,7 @@ define TOOL_OPENWATCOM_LINK_PROGRAM_CMDS
 			$(call TOOL_OPENWATCOM_FIX_SLASHES,$(filter %.res,$(objs))))
 endef
 
-TOOL_OPENWATCOM_LINK_DLL_OUTPUT = $(outbase).map
+TOOL_OPENWATCOM_LINK_DLL_OUTPUT_MAYBE_PRECIOUS = $(outbase).map
 TOOL_OPENWATCOM_LINK_DLL_DEPEND = $(foreach lib,$(libs),$(if $(findstring $(lib),$(subst /,x,$(lib))),, $(lib))) $(othersrc)
 TOOL_OPENWATCOM_LINK_DLL_DEPORD =
 define TOOL_OPENWATCOM_LINK_DLL_CMDS
@@ -366,7 +366,7 @@ define TOOL_OPENWATCOM_LINK_DLL_CMDS
 			$(call TOOL_OPENWATCOM_FIX_SLASHES,$(filter %.res,$(objs))))
 endef
 
-TOOL_OPENWATCOM_LINK_SYSMOD_OUTPUT = $(outbase).map
+TOOL_OPENWATCOM_LINK_SYSMOD_OUTPUT_MAYBE_PRECIOUS = $(outbase).map
 TOOL_OPENWATCOM_LINK_SYSMOD_DEPEND = $(foreach lib,$(libs),$(if $(findstring $(lib),$(subst /,x,$(lib))),, $(lib))) $(othersrc)
 TOOL_OPENWATCOM_LINK_SYSMOD_DEPORD =
 define TOOL_OPENWATCOM_LINK_SYSMOD_CMDS

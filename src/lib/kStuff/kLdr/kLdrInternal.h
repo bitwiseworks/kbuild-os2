@@ -1,4 +1,4 @@
-/* $Id: kLdrInternal.h 29 2009-07-01 20:30:29Z bird $ */
+/* $Id: kLdrInternal.h 117 2020-03-15 15:23:36Z bird $ */
 /** @file
  * kLdr - The Dynamic Loader, internal header.
  */
@@ -85,6 +85,8 @@ extern "C" {
  * @{
  */
 
+KI32 kldrModLXDoCall(KUPTR uEntrypoint, KUPTR uHandle, KU32 uOp, void *pvReserved);
+KI32 kldrModPEDoCall(KUPTR uEntrypoint, KUPTR uHandle, KU32 uOp, void *pvReserved);
 
 /**
  * The state of a dynamic loader module.

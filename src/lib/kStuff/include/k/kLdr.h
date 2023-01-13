@@ -1,4 +1,4 @@
-/* $Id: kLdr.h 81 2016-08-18 22:10:38Z bird $ */
+/* $Id: kLdr.h 117 2020-03-15 15:23:36Z bird $ */
 /** @file
  * kLdr - The Dynamic Loader.
  */
@@ -396,7 +396,7 @@ typedef struct KLDRMOD
     KCPU                enmCpu;
     /** The endian used by the module. */
     KLDRENDIAN          enmEndian;
-    /** Module falgs. */
+    /** Module open flags, KLDRMOD_OPEN_FLAGS_XXX. */
     KU32                fFlags;
     /** The filename length (bytes). */
     KU32                cchFilename;
@@ -597,19 +597,21 @@ typedef FNKLDRENUMRSRC *PFNKLDRENUMRSRC;
 #define KLDR_LANG_ID_UI_CUSTOM_DEFAULT  ( ~(KU32)7 )
 /** @} */
 
-/** @name Module Open Flags
+/** @name KLDRMOD_OPEN_FLAGS_XXX - Module Open Flags
  * @{ */
 /** Indicates that we won't be loading the module, we're just getting
  *  information (like symbols and line numbers) out of it. */
-#define KLDRMOD_OPEN_FLAGS_FOR_INFO     K_BIT32(0)
-/** Mask of valid flags.    */
-#define KLDRMOD_OPEN_FLAGS_VALID_MASK   KU32_C(0x00000001)
+#define KLDRMOD_OPEN_FLAGS_FOR_INFO                 K_BIT32(0)
+/** Native: Non-stub kLdrModCallInit & kLdrModCallTerm. */
+#define KLDRMOD_OPEN_FLAGS_NATIVE_ALLOW_INIT_TERM   K_BIT32(1)
+/** Mask of valid flags. */
+#define KLDRMOD_OPEN_FLAGS_VALID_MASK               KU32_C(0x00000003)
 /** @} */
 
 int     kLdrModOpen(const char *pszFilename, KU32 fFlags, KCPUARCH enmCpuArch, PPKLDRMOD ppMod);
 int     kLdrModOpenFromRdr(PKRDR pRdr, KU32 fFlags, KCPUARCH enmCpuArch, PPKLDRMOD ppMod);
-int     kLdrModOpenNative(const char *pszFilename, PPKLDRMOD ppMod);
-int     kLdrModOpenNativeByHandle(KUPTR uHandle, PPKLDRMOD ppMod);
+int     kLdrModOpenNative(const char *pszFilename, KU32 fFlags, PPKLDRMOD ppMod);
+int     kLdrModOpenNativeByHandle(KUPTR uHandle, KU32 fFlags, PPKLDRMOD ppMod);
 int     kLdrModClose(PKLDRMOD pMod);
 
 int     kLdrModQuerySymbol(PKLDRMOD pMod, const void *pvBits, KLDRADDR BaseAddress, KU32 iSymbol,

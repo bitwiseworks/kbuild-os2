@@ -1,4 +1,4 @@
-/* $Id: shthread.c 2498 2011-07-22 12:05:57Z bird $ */
+/* $Id: shthread.c 3505 2021-12-15 22:53:57Z bird $ */
 /** @file
  *
  * Shell Thread Management.
@@ -26,7 +26,6 @@
 
 #include "shthread.h"
 #include "shinstance.h"
-#include <assert.h>
 
 #if K_OS == K_OS_WINDOWS
 # include <Windows.h>
@@ -65,28 +64,28 @@ void shthread_set_shell(struct shinstance *psh)
     if (sh_tls == TLS_OUT_OF_INDEXES)
     {
         sh_tls = TlsAlloc();
-        assert(sh_tls != TLS_OUT_OF_INDEXES);
+        kHlpAssert(sh_tls != TLS_OUT_OF_INDEXES);
     }
     if (!TlsSetValue(sh_tls, psh))
-        assert(0);
+        kHlpAssert(0);
 
 #elif K_OS == K_OS_OS2
     if (sh_tls == -1)
     {
         sh_tls = __libc_TLSAlloc();
-        assert(sh_tls != -1);
+        kHlpAssert(sh_tls != -1);
     }
     if (__libc_TLSSet(sh_tls, psh) == -1)
-        assert(0);
+        kHlpAssert(0);
 #else
     if (!sh_tls_inited)
     {
         if (pthread_key_create(&sh_tls, NULL) != 0)
-            assert(0);
+            kHlpAssert(0);
         sh_tls_inited = 1;
     }
     if (pthread_setspecific(sh_tls, psh) != 0)
-        assert(0);
+        kHlpAssert(0);
 #endif
 }
 
@@ -106,5 +105,47 @@ struct shinstance *shthread_get_shell(void)
     psh = (shinstance *)pthread_getspecific(sh_tls);
 #endif
     return psh;
+}
+
+
+/**
+ * Sets the name of the current thread if supported by the OS.
+ */
+void shthread_set_name(const char *name)
+{
+#if K_OS == K_OS_WINDOWS
+    typedef BOOL (WINAPI * PFNSETTHREADDESCRIPTION)(HANDLE, WCHAR *);
+    static KBOOL volatile                   s_initialized             = K_FALSE;
+    static PFNSETTHREADDESCRIPTION volatile s_pfnSetThreadDescription = NULL;
+    PFNSETTHREADDESCRIPTION                 pfnSetThreadDescription   = s_pfnSetThreadDescription;
+    WCHAR                                   wszName[32];
+    size_t                                  i;
+
+    /* Get the function pointer, return if not available. */
+    if (pfnSetThreadDescription)
+    { }
+    else if (s_initialized)
+        return;
+    else
+    {
+        pfnSetThreadDescription = (PFNSETTHREADDESCRIPTION)GetProcAddress(GetModuleHandleW(L"KERNEL32.DLL"),
+                                                                          "SetThreadDescription");
+        s_pfnSetThreadDescription = pfnSetThreadDescription;
+        s_initialized = K_TRUE;
+        if (!pfnSetThreadDescription)
+            return;
+    }
+
+    /* Convert the name to UTF-16 and call the API. */
+    i = strlen(name);
+    kHlpAssertStmt(i < K_ELEMENTS(wszName), i = K_ELEMENTS(wszName));
+    wszName[i] = '\0';
+    while (i-- > 0)
+        wszName[i] = name[i];
+
+    pfnSetThreadDescription(GetCurrentThread(), wszName);
+#else
+    K_NOREF(name);
+#endif
 }
 

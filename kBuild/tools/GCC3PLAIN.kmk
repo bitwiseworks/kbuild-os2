@@ -1,4 +1,4 @@
-# $Id: GCC3PLAIN.kmk 3121 2017-10-31 10:58:59Z bird $
+# $Id: GCC3PLAIN.kmk 3567 2022-06-26 20:00:02Z bird $
 ## @file
 # kBuild Tool Config - Generic GCC v3.2.x or later Using The System GCC, any Unix Linker and Unix Archiver.
 #
@@ -34,14 +34,22 @@
 TOOL_GCC3PLAIN := Generic GCC v3.2.x or later Using The System GCC, any Unix Linker and Unix Archiver.
 
 # Tool Specific Properties
-TOOL_GCC3PLAIN_CC  ?= gcc$(HOSTSUFF_EXE)
-TOOL_GCC3PLAIN_CXX ?= g++$(HOSTSUFF_EXE)
-TOOL_GCC3PLAIN_AS  ?= gcc$(HOSTSUFF_EXE)
-TOOL_GCC3PLAIN_AR  ?= ar$(HOSTSUFF_EXE)
-TOOL_GCC3PLAIN_RANLIB ?= ranlib$(HOSTSUFF_EXE)
-TOOL_GCC3PLAIN_LD  ?= gcc$(HOSTSUFF_EXE)
-TOOL_GCC3PLAIN_LD_SYSMOD ?= ld$(HOSTSUFF_EXE)
-TOOL_GCC3PLAIN_LD_SYSMOD.os2 ?= g++$(HOSTSUFF_EXE)
+ifndef TOOL_GCC3PLAIN_PREFIX
+ TOOL_GCC3PLAIN_PREFIX :=
+endif
+ifndef TOOL_GCC3PLAIN_SUFFIX
+ TOOL_GCC3PLAIN_SUFFIX := $(HOSTSUFF_EXE)
+endif
+TOOL_GCC3PLAIN_PREFIX2 ?= $(TOOL_GCC3PLAIN_PREFIX)
+TOOL_GCC3PLAIN_SUFFIX2 ?= $(TOOL_GCC3PLAIN_SUFFIX)
+TOOL_GCC3PLAIN_CC            ?= $(TOOL_GCC3PLAIN_PREFIX)gcc$(TOOL_GCC3PLAIN_SUFFIX)
+TOOL_GCC3PLAIN_CXX           ?= $(TOOL_GCC3PLAIN_PREFIX)g++$(TOOL_GCC3PLAIN_SUFFIX)
+TOOL_GCC3PLAIN_AS            ?= $(TOOL_GCC3PLAIN_PREFIX)gcc$(TOOL_GCC3PLAIN_SUFFIX)
+TOOL_GCC3PLAIN_AR            ?= $(TOOL_GCC3PLAIN_PREFIX2)ar$(TOOL_GCC3PLAIN_SUFFIX2)
+TOOL_GCC3PLAIN_RANLIB        ?= $(TOOL_GCC3PLAIN_PREFIX2)ranlib$(TOOL_GCC3PLAIN_SUFFIX2)
+TOOL_GCC3PLAIN_LD            ?= $(TOOL_GCC3PLAIN_PREFIX)gcc$(TOOL_GCC3PLAIN_SUFFIX)
+TOOL_GCC3PLAIN_LD_SYSMOD     ?= $(TOOL_GCC3PLAIN_PREFIX2)ld$(TOOL_GCC3PLAIN_SUFFIX2)
+TOOL_GCC3PLAIN_LD_SYSMOD.os2 ?= $(TOOL_GCC3PLAIN_PREFIX)g++$(TOOL_GCC3PLAIN_SUFFIX)
 TOOL_GCC3PLAIN_LDFLAGS.dll.os2 ?= -Zdll
 TOOL_GCC3PLAIN_LDFLAGS.dll.darwin ?= -dynamiclib
 ifndef TOOL_GCC3PLAIN_LDFLAGS.$(KBUILD_TARGET)
@@ -49,18 +57,14 @@ ifndef TOOL_GCC3PLAIN_LDFLAGS.$(KBUILD_TARGET)
 else
  TOOL_GCC3PLAIN_LDFLAGS.dll ?= $(TOOL_GCC3PLAIN_LDFLAGS.$(KBUILD_TARGET))
 endif
-TOOL_GCC3PLAIN_LD_SONAME.darwin ?= $(NO_SUCH_VARIABLE)
-TOOL_GCC3PLAIN_LD_SONAME.os2 ?= $(NO_SUCH_VARIABLE)
+TOOL_GCC3PLAIN_LD_SONAME.darwin  ?= $(NO_SUCH_VARIABLE)
+TOOL_GCC3PLAIN_LD_SONAME.os2     ?= $(NO_SUCH_VARIABLE)
 TOOL_GCC3PLAIN_LD_SONAME.solaris ?= -Wl,-h,$(firstword $($(1)_SONAME.$(KBUILD_TARGET).$(KBUILD_TYPE)) $($(1)_SONAME.$(KBUILD_TARGET)) $($(1)_SONAME.$(KBUILD_TYPE)) $($(1)_SONAME) $(notdir $(2)))
-TOOL_GCC3PLAIN_LD_SONAME.win ?= $(NO_SUCH_VARIABLE)
+TOOL_GCC3PLAIN_LD_SONAME.win     ?= $(NO_SUCH_VARIABLE)
 ifndef TOOL_GCC3PLAIN_LD_SONAME.$(KBUILD_TARGET)
  TOOL_GCC3PLAIN_LD_SONAME ?= -Wl,-soname=$(firstword $($(1)_SONAME.$(KBUILD_TARGET).$(KBUILD_TYPE)) $($(1)_SONAME.$(KBUILD_TARGET)) $($(1)_SONAME.$(KBUILD_TYPE)) $($(1)_SONAME) $(notdir $(2)))
 else
  TOOL_GCC3PLAIN_LD_SONAME ?= $(TOOL_GCC3PLAIN_LD_SONAME.$(KBUILD_TARGET))
-endif
-ifdef SLKRUNS
- TOOL_GCC3PLAIN_CC  += -fmessage-length=0
- TOOL_GCC3PLAIN_CXX += -fmessage-length=0
 endif
 
 # General Properties used by kBuild
@@ -114,7 +118,7 @@ define TOOL_GCC3PLAIN_COMPILE_C_CMDS
 	$(QUIET)$(KOBJCACHE) -f $(outbase).koc -d $(PATH_OBJCACHE) -t $(bld_trg).$(bld_trg_arch) -p\
 		--kObjCache-cpp $(outbase).i\
 		$(TOOL_GCC3PLAIN_CC) -E -o -\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		$(abspath $(source))\
 		--kObjCache-cc $(obj)\
@@ -128,7 +132,7 @@ else # !KBUILD_USE_KOBJCACHE
 TOOL_GCC3PLAIN_COMPILE_C_OUTPUT =
 define TOOL_GCC3PLAIN_COMPILE_C_CMDS
 	$(QUIET)$(TOOL_GCC3PLAIN_CC) -c\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		-o $(obj)\
 		$(abspath $(source))
@@ -158,7 +162,7 @@ define TOOL_GCC3PLAIN_COMPILE_CXX_CMDS
 	$(QUIET)$(KOBJCACHE) -f $(outbase).koc -d $(PATH_OBJCACHE) -t $(bld_trg).$(bld_trg_arch) -p\
 		--kObjCache-cpp $(outbase).ii\
 		$(TOOL_GCC3PLAIN_CXX) -E -o -\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		$(abspath $(source))\
 		--kObjCache-cc $(obj)\
@@ -172,7 +176,7 @@ else # !KBUILD_USE_KOBJCACHE
 TOOL_GCC3PLAIN_COMPILE_CXX_OUTPUT =
 define TOOL_GCC3PLAIN_COMPILE_CXX_CMDS
 	$(QUIET)$(TOOL_GCC3PLAIN_CXX) -c\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		-o $(obj)\
 		$(abspath $(source))
@@ -199,7 +203,7 @@ TOOL_GCC3PLAIN_COMPILE_AS_DEPEND =
 TOOL_GCC3PLAIN_COMPILE_AS_DEPORD =
 define TOOL_GCC3PLAIN_COMPILE_AS_CMDS
 	$(QUIET)$(TOOL_GCC3PLAIN_AS) -c\
-		$(flags) $(addprefix -I, $(incs)) $(addprefix -D, $(defs))\
+		$(flags) $(qaddprefix sh,-I, $(incs)) $(qaddprefix sh,-D, $(defs))\
 		-Wp,-MD,$(dep) -Wp,-MT,$(obj) -Wp,-MP\
 		-o $(obj)\
 		$(abspath $(source))

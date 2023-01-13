@@ -50,6 +50,7 @@
 #define VUNSET		0x20	/* the variable is not set */
 #define VNOFUNC		0x40	/* don't call the callback function */
 #define VNOSET		0x80	/* do not set variable - just readonly test */
+#define VSTRFIXED2      0x4000  /* variable struct is in the shinstance, cannot be freed. (VSTRFIXED is mixed up in local vars) */
 #ifdef PC_OS2_LIBPATHS
 #define VOS2LIBPATH     0x8000  /* OS/2 LIBPATH related variable. */
 #endif
@@ -126,6 +127,9 @@ extern struct var vhistsize;
 #define mpathset(psh)	(((psh)->vmpath.flags & VUNSET) == 0)
 
 void initvar(struct shinstance *);
+#ifndef SH_FORKED_MODE
+void subshellinitvar(shinstance *, shinstance *);
+#endif
 void setvar(struct shinstance *, const char *, const char *, int);
 void setvareq(struct shinstance *, char *, int);
 struct strlist;

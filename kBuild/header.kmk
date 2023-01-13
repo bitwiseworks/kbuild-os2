@@ -1,4 +1,4 @@
-# $Id: header.kmk 3253 2019-01-02 00:23:15Z bird $
+# $Id: header.kmk 3579 2023-01-05 01:53:41Z bird $
 ## @file
 # kBuild - File included at top of a makefile.
 #
@@ -79,7 +79,7 @@ endif
 # The revision in which this file was last modified.
 # This can be useful when using development versions of kBuild.
 #
-KMK_REVISION := $(patsubst %:,,  $Rev: 3253 $  )
+KMK_REVISION := $(patsubst %:,,  $Rev: 3579 $  )
 
 
 #
@@ -197,9 +197,9 @@ KBUILD_BLD_TYPES := release profile debug
 # build types. (PORTME)
 #
 KBUILD_OSES      := darwin dos dragonfly freebsd gnuhurd gnukfbsd gnuknbsd haiku l4 linux netbsd nt openbsd os2 solaris win os-agnostic
-KBUILD_ARCHES    := x86 amd64 noarch alpha arm32 arm64 hppa32 hppa64 ia64 m68k mips32 mips64 ppc32 ppc64 s390 s390x sh32 sh64 sparc32 sparc64 x32
-KBUILD_ARCHES_64 := amd64 alpha arm64 hppa64 ia64 mips64 ppc64 s390x sh64 sparc64 x32
-KBUILD_ARCHES_32 := x86 arm32 hppa32 m68k mips32 ppc32 s390 sh32 sparc32
+KBUILD_ARCHES    := x86 amd64 noarch alpha arm32 arm64 hppa32 hppa64 ia64 m68k mips32 mips64 ppc32 ppc64 riscv32 riscv64 s390 s390x sh32 sh64 sparc32 sparc64 x32
+KBUILD_ARCHES_64 := amd64 alpha arm64 hppa64 ia64 mips64 ppc64 riscv64 s390x sh64 sparc64 x32
+KBUILD_ARCHES_32 := x86 arm32 hppa32 m68k mips32 ppc32 riscv32 s390 sh32 sparc32
 
 
 
@@ -234,9 +234,10 @@ ifndef KBUILD_TYPE
 else ifdef BUILD_TYPE
  ifneq ($(KBUILD_TYPE),$(BUILD_TYPE))
   ifeq ($(origin KBUILD_TYPE):$(origin BUILD_TYPE),environment:command line)
+   $(warning kBuild: Please use KBUILD_TYPE instead of BUILD_TYPE on the command line!)
    KBUILD_TYPE := $(BUILD_TYPE)
   else ifneq ($(origin KBUILD_TYPE):$(origin BUILD_TYPE),command line:environment)
-   $(error kBuild: KBUILD_TYPE and BUILD_TYPE disagree.)
+   $(error kBuild: KBUILD_TYPE (command line) and BUILD_TYPE (env) disagree.)
   endif
  endif
 endif
@@ -251,21 +252,6 @@ else
  ifneq (.$(words $(KBUILD_TYPE)).$(KBUILD_TYPE).,.1.$(strip $(KBUILD_TYPE)).)
   $(error kBuild: The KBUILD_TYPE value '$(KBUILD_TYPE)' contains spaces/tabs!)
  endif
-endif
-
-
-#
-# Host platform legacy
-# kmk deals with this, so this is only temporary until I've rebuilt everything.
-#
-ifndef KBUILD_HOST
- KBUILD_HOST := $(BUILD_PLATFORM)
-endif
-ifndef KBUILD_HOST_ARCH
- KBUILD_HOST_ARCH := $(BUILD_PLATFORM_ARCH)
-endif
-ifndef KBUILD_HOST_CPU
- KBUILD_HOST_CPU := $(BUILD_PLATFORM_CPU)
 endif
 
 
@@ -314,6 +300,7 @@ ifndef KBUILD_TARGET
 else ifdef BUILD_TARGET
  ifneq ($(KBUILD_TARGET),$(BUILD_TARGET))
   ifeq ($(origin KBUILD_TARGET):$(origin BUILD_TARGET),environment:command line)
+   $(warning kBuild: Please use KBUILD_TARGET instead of BUILD_TARGET on the command line!)
    KBUILD_TARGET := $(BUILD_TARGET)
   else ifneq ($(origin KBUILD_TARGET):$(origin BUILD_TARGET),command line:environment)
    $(error kBuild: KBUILD_TARGET and BUILD_TARGET disagree)
@@ -329,6 +316,7 @@ ifndef KBUILD_TARGET_ARCH
 else ifdef BUILD_TARGET_ARCH
  ifneq ($(KBUILD_TARGET_ARCH),$(BUILD_TARGET_ARCH))
   ifeq ($(origin KBUILD_TARGET_ARCH):$(origin BUILD_TARGET_ARCH),environment:command line)
+   $(warning kBuild: Please use KBUILD_TARGET_ARCH instead of BUILD_TARGET_ARCH on the command line!)
    KBUILD_TARGET_ARCH := $(BUILD_TARGET_ARCH)
   else ifneq ($(origin KBUILD_TARGET_ARCH):$(origin BUILD_TARGET_ARCH),command line:environment)
    $(error kBuild: KBUILD_TARGET_ARCH and BUILD_TARGET_ARCH disagree)
@@ -344,6 +332,7 @@ ifndef KBUILD_TARGET_CPU
 else ifdef BUILD_TARGET_CPU
  ifneq ($(KBUILD_TARGET_CPU),$(BUILD_TARGET_CPU))
   ifeq ($(origin KBUILD_TARGET_CPU):$(origin BUILD_TARGET_CPU),environment:command line)
+   $(warning kBuild: Please use KBUILD_TARGET_CPU instead of BUILD_TARGET_CPU on the command line!)
    KBUILD_TARGET_CPU := $(BUILD_TARGET_CPU)
   else ifneq ($(origin KBUILD_TARGET_CPU):$(origin BUILD_TARGET_CPU),command line:environment)
    $(error kBuild: KBUILD_TARGET_CPU and BUILD_TARGET_CPU disagree)
@@ -402,6 +391,21 @@ endif
 # Short hand for $(KBUILD_TARGET).$(KBUILD_TARGET_ARCH).
 KBUILD_TARGET_DOT_ARCH = $(KBUILD_TARGET).$(KBUILD_TARGET_ARCH)
 KBUILD_HOST_DOT_ARCH   = $(KBUILD_HOST).$(KBUILD_TARGET_ARCH)
+
+
+#
+# Feature indicators.
+#
+
+## File quoting functions.
+if1of (quote, $(KMK_FEATURES))
+ KMK_WITH_QUOTING := 1
+endif
+
+## Version sorting and comparing.
+if1of (versort, $(KMK_FEATURES))
+ KMK_WITH_VERSION_COMPARE := 1
+endif
 
 
 #
@@ -490,7 +494,9 @@ PATH_OBJ             = $(PATH_OUT)/obj
 PATH_TARGET          = $(PATH_OBJ)/$(CURSUBDIR)
 PATH_STAGE           = $(PATH_OUT)/stage
 ifndef PATH_INS
- ifdef DESTROOT
+ ifdef DESTDIR
+PATH_INS             = $(DESTDIR)
+ else ifdef DESTROOT
 PATH_INS             = $(DESTROOT)
  else
 PATH_INS             = $(PATH_OUT)/dist
@@ -508,12 +514,15 @@ PATH_DOC = $(error kBuild: PATH_DOC is obsoleted in kBuild 0.1.2. Use PATH_STAGE
 ifndef KBUILD_DEVTOOLS
  ifeq ($(PATH_DEVTOOLS),)
   KBUILD_DEVTOOLS    = $(PATH_ROOT)/tools
- else  
+ else
   KBUILD_DEVTOOLS   := $(PATH_DEVTOOLS)
- endif 
-endif 
+  export KBUILD_DEVTOOLS
+ endif
+endif
 KBUILD_DEVTOOLS_TRG ?= $(KBUILD_DEVTOOLS)/$(KBUILD_TARGET).$(KBUILD_TARGET_ARCH)
 KBUILD_DEVTOOLS_HST ?= $(KBUILD_DEVTOOLS)/$(KBUILD_HOST).$(KBUILD_HOST_ARCH)
+KBUILD_DEVTOOLS_TRG_NOARCH ?= $(KBUILD_DEVTOOLS)/$(KBUILD_TARGET).noarch
+KBUILD_DEVTOOLS_HST_NOARCH ?= $(KBUILD_DEVTOOLS)/$(KBUILD_HOST).noarch
 
 if1of ($(KBUILD_TARGET_ARCH), amd64 hppa64 mips64 ppc64 s390x sparc64)
  ifeq ($(KBUILD_TARGET_ARCH),amd64)
@@ -548,12 +557,13 @@ if1of ($(KBUILD_HOST_ARCH), amd64 hppa64 mips64 ppc64 s390x sparc64)
 endif
 
 # Deprecated legacy names.
-PATH_DEVTOOLS         ?= $(KBUILD_DEVTOOLS)
-PATH_DEVTOOLS_TRG     ?= $(KBUILD_DEVTOOLS_TRG)
-PATH_DEVTOOLS_BLD     ?= $(KBUILD_DEVTOOLS_TRG)
-PATH_DEVTOOLS_TRG_ALT ?= $(KBUILD_DEVTOOLS_TRG_ALT)
-PATH_DEVTOOLS_HST     ?= $(KBUILD_DEVTOOLS_HST)
-PATH_DEVTOOLS_HST_ALT ?= $(KBUILD_DEVTOOLS_HST_ALT)
+unexport PATH_DEVTOOLS
+PATH_DEVTOOLS         = $(warning Please replace obsolete PATH_DEVTOOLS with KBUILD_DEVTOOLS)$(KBUILD_DEVTOOLS)
+PATH_DEVTOOLS_TRG     = $(warning Please replace obsolete PATH_DEVTOOLS_TRG with KBUILD_DEVTOOLS_TRG)$(KBUILD_DEVTOOLS_TRG)
+PATH_DEVTOOLS_BLD     = $(warning Please replace obsolete PATH_DEVTOOLS_BLD with KBUILD_DEVTOOLS_BLD)$(KBUILD_DEVTOOLS_TRG)
+PATH_DEVTOOLS_TRG_ALT = $(warning Please replace obsolete PATH_DEVTOOLS_TRG_ALT with KBUILD_DEVTOOLS_TRG_ALT)$(KBUILD_DEVTOOLS_TRG_ALT)
+PATH_DEVTOOLS_HST     = $(warning Please replace obsolete PATH_DEVTOOLS_HST with KBUILD_DEVTOOLS_HST)$(KBUILD_DEVTOOLS_HST)
+PATH_DEVTOOLS_HST_ALT = $(warning Please replace obsolete PATH_DEVTOOLS_HST_ALT with KBUILD_DEVTOOLS_HST_ALT)$(KBUILD_DEVTOOLS_HST_ALT)
 
 # KBUILD_PATH / PATH_KBUILD is determined by kmk.
 ifndef KBUILD_PATH
@@ -970,6 +980,9 @@ endif
 # Somewhat simple solution for automatic command dependencies.
 #
 
+## Included dependency files (used to be in footer.kmk).
+_DEPFILES_INCLUDED :=
+
 ## Temporary for the compile rule below.
 if "$(KBUILD_KMK_REVISION)" >= 3134
  KBUILD_HAVE_OPTIMIZED_APPEND := 1
@@ -1003,7 +1016,7 @@ endif
 #
 # @param 1     recipe name
 # @param 2     dep file.
-KB_FN_AUTO_CMD_DEPS_EX = $(eval includedep $2)$(eval _DEPFILES_INCLUDED += $2)$1: .MUST_MAKE = $$(comp-cmds-ex $$(AUTO_CMD_DEP_$(translate $1,:,_)_PREV_CMDS),$$(commands $1),FORCE)
+KB_FN_AUTO_CMD_DEPS_EX = $(eval includedep $2$(NL)_DEPFILES_INCLUDED += $2)$1: .MUST_MAKE = $$(comp-cmds-ex $$(AUTO_CMD_DEP_$(translate $1,:,_)_PREV_CMDS),$$(commands $1),FORCE)
 
 ##
 # $(call KB_FN_AUTO_CMD_DEPS_COMMANDS) as the first command in a recipe to
@@ -1665,23 +1678,23 @@ endif
 #
 ifdef KBUILD_QUIET
  # No output
- QUIET := @
- QUIET2:= @
- MSG_L1	=
- MSG_L2 =
+ QUIET  := @
+ QUIET2 := @
+ MSG_L1 :=
+ MSG_L2 :=
 else
  ifndef KBUILD_VERBOSE
   # Default output level.
   QUIET  := @
   QUIET2 := @
   MSG_L1 ?= %@$(ECHO) "kBuild: $1"
-  MSG_L2  =
+  MSG_L2 :=
  else ifeq ($(KBUILD_VERBOSE),1)
   # A bit more output
   QUIET  := @
   QUIET2 := @
   MSG_L1 ?= %@$(ECHO) "kBuild: $1 $2"
-  MSG_L2  =
+  MSG_L2 :=
  else ifeq ($(KBUILD_VERBOSE),2)
   # Lot more output
   QUIET  :=
@@ -1700,7 +1713,7 @@ endif
 
 ##
 # An internal define used by subheader.kmk, subfooter.kmk, and
-# KB_FN_PASS_0_ON_TARGET.
+# KB_FN_DO_PASS0_ON_TARGET.
 #
 # @param target    The target to process.
 #
@@ -1768,4 +1781,5 @@ endif
 # end-of-file-content
 __header_kmk__ := 1
 endif # !__header_kmk__
+
 

@@ -1,4 +1,4 @@
-/* $Id: kWorker.c 3200 2018-03-28 20:32:11Z bird $ */
+/* $Id: kWorker.c 3522 2021-12-19 12:11:21Z bird $ */
 /** @file
  * kWorker - experimental process reuse worker for Windows.
  *
@@ -49,10 +49,12 @@
 #include "kbuild_version.h"
 
 #include "nt/ntstuff.h"
+#include "nt/nthlp.h"
 #include <psapi.h>
 
 #include "nt/kFsCache.h"
 #include "nt_fullpath.h"
+#include "win_get_processor_group_active_mask.h"
 #include "quote_argv.h"
 #include "md5.h"
 #include "console.h"
@@ -67,11 +69,11 @@
  * Enables temporary memory files for cl.exe.  */
 #define WITH_TEMP_MEMORY_FILES
 
-/** @def WITH_HASH_MD5_CACHE
- * Enables caching of MD5 sums for cl.exe.
+/** @def WITH_HASH_CACHE
+ * Enables caching of MD5, SHA-1, SHA-256 and SHA-512 hashes for cl.exe.
  * This prevents wasting time on rehashing common headers each time
  * they are included. */
-#define WITH_HASH_MD5_CACHE
+#define WITH_HASH_CACHE
 
 /** @def WITH_CRYPT_CTX_REUSE
  * Enables reusing crypt contexts.  The Visual C++ compiler always creates a
@@ -194,6 +196,79 @@
 #define TUPLE(a_sz)                     a_sz, sizeof(a_sz) - 1
 
 
+/**
+ * Generate CRT slot wrapper functions.
+ */
+#define CRT_SLOT_FUNCTION_WRAPPER(a_RetTypeAndCallConv, a_FnName, a_aArgsDecl, a_aArgCall) \
+    static a_RetTypeAndCallConv a_FnName##00 a_aArgsDecl { const unsigned iCrtSlot =  0; return a_FnName##_wrapped a_aArgCall; } \
+    static a_RetTypeAndCallConv a_FnName##01 a_aArgsDecl { const unsigned iCrtSlot =  1; return a_FnName##_wrapped a_aArgCall; } \
+    static a_RetTypeAndCallConv a_FnName##02 a_aArgsDecl { const unsigned iCrtSlot =  2; return a_FnName##_wrapped a_aArgCall; } \
+    static a_RetTypeAndCallConv a_FnName##03 a_aArgsDecl { const unsigned iCrtSlot =  3; return a_FnName##_wrapped a_aArgCall; } \
+    static a_RetTypeAndCallConv a_FnName##04 a_aArgsDecl { const unsigned iCrtSlot =  4; return a_FnName##_wrapped a_aArgCall; } \
+    static a_RetTypeAndCallConv a_FnName##05 a_aArgsDecl { const unsigned iCrtSlot =  5; return a_FnName##_wrapped a_aArgCall; } \
+    static a_RetTypeAndCallConv a_FnName##06 a_aArgsDecl { const unsigned iCrtSlot =  6; return a_FnName##_wrapped a_aArgCall; } \
+    static a_RetTypeAndCallConv a_FnName##07 a_aArgsDecl { const unsigned iCrtSlot =  7; return a_FnName##_wrapped a_aArgCall; } \
+    static a_RetTypeAndCallConv a_FnName##08 a_aArgsDecl { const unsigned iCrtSlot =  8; return a_FnName##_wrapped a_aArgCall; } \
+    static a_RetTypeAndCallConv a_FnName##09 a_aArgsDecl { const unsigned iCrtSlot =  9; return a_FnName##_wrapped a_aArgCall; } \
+    static a_RetTypeAndCallConv a_FnName##10 a_aArgsDecl { const unsigned iCrtSlot = 10; return a_FnName##_wrapped a_aArgCall; } \
+    static a_RetTypeAndCallConv a_FnName##11 a_aArgsDecl { const unsigned iCrtSlot = 11; return a_FnName##_wrapped a_aArgCall; } \
+    static a_RetTypeAndCallConv a_FnName##12 a_aArgsDecl { const unsigned iCrtSlot = 12; return a_FnName##_wrapped a_aArgCall; } \
+    static a_RetTypeAndCallConv a_FnName##13 a_aArgsDecl { const unsigned iCrtSlot = 13; return a_FnName##_wrapped a_aArgCall; } \
+    static a_RetTypeAndCallConv a_FnName##14 a_aArgsDecl { const unsigned iCrtSlot = 14; return a_FnName##_wrapped a_aArgCall; } \
+    static a_RetTypeAndCallConv a_FnName##15 a_aArgsDecl { const unsigned iCrtSlot = 15; return a_FnName##_wrapped a_aArgCall; } \
+    static a_RetTypeAndCallConv a_FnName##16 a_aArgsDecl { const unsigned iCrtSlot = 16; return a_FnName##_wrapped a_aArgCall; } \
+    static a_RetTypeAndCallConv a_FnName##17 a_aArgsDecl { const unsigned iCrtSlot = 17; return a_FnName##_wrapped a_aArgCall; } \
+    static a_RetTypeAndCallConv a_FnName##18 a_aArgsDecl { const unsigned iCrtSlot = 18; return a_FnName##_wrapped a_aArgCall; } \
+    static a_RetTypeAndCallConv a_FnName##19 a_aArgsDecl { const unsigned iCrtSlot = 19; return a_FnName##_wrapped a_aArgCall; } \
+    static a_RetTypeAndCallConv a_FnName##20 a_aArgsDecl { const unsigned iCrtSlot = 20; return a_FnName##_wrapped a_aArgCall; } \
+    static a_RetTypeAndCallConv a_FnName##21 a_aArgsDecl { const unsigned iCrtSlot = 21; return a_FnName##_wrapped a_aArgCall; } \
+    static a_RetTypeAndCallConv a_FnName##22 a_aArgsDecl { const unsigned iCrtSlot = 22; return a_FnName##_wrapped a_aArgCall; } \
+    static a_RetTypeAndCallConv a_FnName##23 a_aArgsDecl { const unsigned iCrtSlot = 23; return a_FnName##_wrapped a_aArgCall; } \
+    static a_RetTypeAndCallConv a_FnName##24 a_aArgsDecl { const unsigned iCrtSlot = 24; return a_FnName##_wrapped a_aArgCall; } \
+    static a_RetTypeAndCallConv a_FnName##25 a_aArgsDecl { const unsigned iCrtSlot = 25; return a_FnName##_wrapped a_aArgCall; } \
+    static a_RetTypeAndCallConv a_FnName##26 a_aArgsDecl { const unsigned iCrtSlot = 26; return a_FnName##_wrapped a_aArgCall; } \
+    static a_RetTypeAndCallConv a_FnName##27 a_aArgsDecl { const unsigned iCrtSlot = 27; return a_FnName##_wrapped a_aArgCall; } \
+    static a_RetTypeAndCallConv a_FnName##28 a_aArgsDecl { const unsigned iCrtSlot = 28; return a_FnName##_wrapped a_aArgCall; } \
+    static a_RetTypeAndCallConv a_FnName##29 a_aArgsDecl { const unsigned iCrtSlot = 29; return a_FnName##_wrapped a_aArgCall; } \
+    static a_RetTypeAndCallConv a_FnName##30 a_aArgsDecl { const unsigned iCrtSlot = 30; return a_FnName##_wrapped a_aArgCall; } \
+    static a_RetTypeAndCallConv a_FnName##31 a_aArgsDecl { const unsigned iCrtSlot = 31; return a_FnName##_wrapped a_aArgCall; } \
+    static const KUPTR a_FnName[] = \
+    { \
+        (KUPTR)a_FnName##00, \
+        (KUPTR)a_FnName##01, \
+        (KUPTR)a_FnName##02, \
+        (KUPTR)a_FnName##03, \
+        (KUPTR)a_FnName##04, \
+        (KUPTR)a_FnName##05, \
+        (KUPTR)a_FnName##06, \
+        (KUPTR)a_FnName##07, \
+        (KUPTR)a_FnName##08, \
+        (KUPTR)a_FnName##09, \
+        (KUPTR)a_FnName##10, \
+        (KUPTR)a_FnName##11, \
+        (KUPTR)a_FnName##12, \
+        (KUPTR)a_FnName##13, \
+        (KUPTR)a_FnName##14, \
+        (KUPTR)a_FnName##15, \
+        (KUPTR)a_FnName##16, \
+        (KUPTR)a_FnName##17, \
+        (KUPTR)a_FnName##18, \
+        (KUPTR)a_FnName##19, \
+        (KUPTR)a_FnName##20, \
+        (KUPTR)a_FnName##21, \
+        (KUPTR)a_FnName##22, \
+        (KUPTR)a_FnName##23, \
+        (KUPTR)a_FnName##24, \
+        (KUPTR)a_FnName##25, \
+        (KUPTR)a_FnName##26, \
+        (KUPTR)a_FnName##27, \
+        (KUPTR)a_FnName##28, \
+        (KUPTR)a_FnName##29, \
+        (KUPTR)a_FnName##30, \
+        (KUPTR)a_FnName##31, \
+    }
+
+
 /*********************************************************************************************************************************
 *   Structures and Typedefs                                                                                                      *
 *********************************************************************************************************************************/
@@ -220,8 +295,10 @@ typedef enum KWMODSTATE
 typedef struct KWMODULE *PKWMODULE;
 typedef struct KWMODULE
 {
-    /** Pointer to the next image. */
-    PKWMODULE           pNext;
+    /** Pointer to the next image withe the same hash. */
+    PKWMODULE           pNextHash;
+    /** Pointer to the next image in the global list. */
+    PKWMODULE           pNextList;
     /** The normalized path to the image. */
     const char         *pszPath;
     /** The hash of the program path. */
@@ -232,6 +309,8 @@ typedef struct KWMODULE
     const wchar_t      *pwszPath;
     /** The offset of the filename in pszPath. */
     KU16                offFilename;
+    /** The offset of the filename in pwszPath. */
+    KU16                offFilenameW;
     /** Set if executable. */
     KBOOL               fExe;
     /** Set if native module entry. */
@@ -240,8 +319,22 @@ typedef struct KWMODULE
     PKLDRMOD            pLdrMod;
     /** The windows module handle. */
     HMODULE             hOurMod;
+    /** Parent (real) module if this is a virtual API module (api-ms-*.dll or
+     * ext-ms-*.dll). Referenced. */
+    PKWMODULE           pVirtualApiMod;
     /** The of the loaded image bits. */
     KSIZE               cbImage;
+    /** The CRT slot for this module, if applicable (KU8_MAX when not). */
+    KU8                 iCrtSlot;
+    /** Loop prevention when working the tree. */
+    KBOOL               fVisited;
+    /** HACK: Set if re-init is needed (fReInitOnMsPdbSrvEndpointChange). */
+    KBOOL               fNeedReInit;
+    /** HACK: Reinit when _MSPDBSRV_ENDPOINT_ changes, K_FALSE if not applicable.
+     * 1 if applicable but not yet used, 2 if used and have pszMsPdbSrvEndpoint. */
+    KU8                 fReInitOnMsPdbSrvEndpointChange;
+    /** HACK: The old _MSPDBSRV_ENDPOINT_ value. */
+    char               *pszMsPdbSrvEndpoint;
 
     union
     {
@@ -257,6 +350,8 @@ typedef struct KWMODULE
             void               *pvBits;
             /** The state. */
             KWMODSTATE          enmState;
+            /** The re-init state. */
+            KWMODSTATE          enmReInitState;
 #if defined(KBUILD_OS_WINDOWS) && defined(KBUILD_ARCH_AMD64)
             /** The number of entries in the table. */
             KU32                cFunctions;
@@ -294,7 +389,15 @@ typedef struct KWMODULE
                 KSIZE           cbToZero;
             } aQuickZeroChunks[3];
 
-            /** TLS index if one was allocated, otherwise KU32_MAX. */
+            /** Pointer to g_abInitData of the kWorkerTlsXxxK.c instance.
+             * This member is set by kwLdrTlsAllocationHook. */
+            KU8                *pabTlsInitData;
+            /** Pointer to the g_pvWorkerModule variable in kWorkerTlsXxxK.c (our instance
+             * of it).  This member is set by kwLdrTlsAllocationHook.   Used by our
+             * destructor to prevent after-free references. */
+            PKWMODULE          *ppTlsWorkerModuleVar;
+            /** TLS index if one was allocated, otherwise KU32_MAX.
+             * This member is set by kwLdrTlsAllocationHook. */
             KU32                idxTls;
             /** Offset (RVA) of the TLS initialization data. */
             KU32                offTlsInitData;
@@ -343,12 +446,33 @@ typedef struct KWDYNLOAD
 typedef struct KWGETMODULEHANDLECACHE
 {
     const char     *pszName;
+    const wchar_t  *pwszName;
     KU8             cchName;
     KU8             cwcName;
-    const wchar_t  *pwszName;
+    KBOOL           fAlwaysPresent;
     HANDLE          hmod;
 } KWGETMODULEHANDLECACHE;
 typedef KWGETMODULEHANDLECACHE *PKWGETMODULEHANDLECACHE;
+
+
+/** One TLS DLL. */
+typedef struct KWTLSDLL
+{
+    const wchar_t  *pwszName;   /**< The DLL name. */
+    KBOOL           fUsed;      /**< Set if used, clear if not. */
+} KWTLSDLL;
+typedef KWTLSDLL *PKWTLSDLL;
+
+/**
+ * TLS DLL tracker.
+ */
+typedef struct KWTLSDLLENTRY
+{
+    KU32            cbTls;      /**< Max TLS size. */
+    KU32            cDlls;      /**< Number of DLLs we ship (paDlls). */
+    PKWTLSDLL       paDlls;     /**< Array of DLLs we ship. */
+} KWTLSDLLENTRY;
+typedef KWTLSDLLENTRY *PKWTLSDLLENTRY;
 
 
 /**
@@ -367,11 +491,23 @@ typedef struct KFSWCACHEDFILE
     KU8                *pbCached;
     /** The file size. */
     KU32                cbCached;
-#ifdef WITH_HASH_MD5_CACHE
+#ifdef WITH_HASH_CACHE
     /** Set if we've got a valid MD5 hash in abMd5Digest. */
     KBOOL               fValidMd5;
+    /** Set if we've got a valid SHA-1 hash in abMd5Digest. */
+    KBOOL               fValidSha1;
+    /** Set if we've got a valid SHA-256 hash in abMd5Digest. */
+    KBOOL               fValidSha256;
+    /** Set if we've got a valid SHA-512 hash in abMd5Digest. */
+    KBOOL               fValidSha512;
     /** The MD5 digest if fValidMd5 is set. */
     KU8                 abMd5Digest[16];
+    /** The SHA-1 digest if fValidSha1 is set. */
+    KU8                 abSha1Digest[20];
+    /** The SHA-256 digest if fValidSha256 is set. */
+    KU8                 abSha256Digest[32];
+    /** The SHA-512 digest if fValidSha256 is set. */
+    KU8                 abSha512Digest[64];
 #endif
 
     /** Circular self reference. Prevents the object from ever going away and
@@ -383,39 +519,42 @@ typedef struct KFSWCACHEDFILE
 /** Pointer to a cached filed. */
 typedef KFSWCACHEDFILE *PKFSWCACHEDFILE;
 
-#ifdef WITH_HASH_MD5_CACHE
+#ifdef WITH_HASH_CACHE
 
 /** Pointer to a MD5 hash instance. */
-typedef struct KWHASHMD5 *PKWHASHMD5;
+typedef struct KWCRYPTHASH *PKWCRYPTHASH;
 /**
  * A MD5 hash instance.
  */
-typedef struct KWHASHMD5
+typedef struct KWCRYPTHASH
 {
     /** The magic value. */
     KUPTR               uMagic;
     /** Pointer to the next hash handle. */
-    PKWHASHMD5          pNext;
+    PKWCRYPTHASH        pNext;
     /** The cached file we've associated this handle with. */
     PKFSWCACHEDFILE     pCachedFile;
     /** The number of bytes we've hashed. */
     KU32                cbHashed;
     /** Set if this has gone wrong. */
     KBOOL               fGoneBad;
-    /** Set if we're in fallback mode (file not cached). */
-    KBOOL               fFallbackMode;
     /** Set if we've already finalized the digest. */
     KBOOL               fFinal;
-    /** The MD5 fallback context. */
-    struct MD5Context   Md5Ctx;
+    /** If in fallback mode. */
+    HCRYPTHASH          hFallback;
+    /** The algorithm. */
+    ALG_ID              idAlg;
+    /** The hash name. */
+    const char         *pszAlgName;
+    /** The digest size. */
+    KU32                cbDigest;
     /** The finalized digest. */
-    KU8                 abDigest[16];
+    KU8                 abDigest[64];
+} KWCRYPTHASH;
+/** Magic value for KWCRYPTHASH::uMagic (Les McCann). */
+# define KWCRYPTHASH_MAGIC    KUPTR_C(0x19350923)
 
-} KWHASHMD5;
-/** Magic value for KWHASHMD5::uMagic (Les McCann). */
-# define KWHASHMD5_MAGIC    KUPTR_C(0x19350923)
-
-#endif /* WITH_HASH_MD5_CACHE */
+#endif /* WITH_HASH_CACHE */
 #ifdef WITH_TEMP_MEMORY_FILES
 
 typedef struct KWFSTEMPFILESEG *PKWFSTEMPFILESEG;
@@ -529,8 +668,10 @@ typedef enum KWHANDLETYPE
     KWHANDLETYPE_INVALID = 0,
     KWHANDLETYPE_FSOBJ_READ_CACHE,
     KWHANDLETYPE_FSOBJ_READ_CACHE_MAPPING,
+#ifdef WITH_TEMP_MEMORY_FILES
     KWHANDLETYPE_TEMP_FILE,
     KWHANDLETYPE_TEMP_FILE_MAPPING,
+#endif
     KWHANDLETYPE_OUTPUT_BUF
 } KWHANDLETYPE;
 
@@ -546,14 +687,18 @@ typedef struct KWHANDLE
     KU32                dwDesiredAccess;
     /** The handle. */
     HANDLE              hHandle;
+    /** The current owner (GetCurrentThreadId). */
+    KU32                tidOwner;
 
     /** Type specific data. */
     union
     {
         /** The file system object.   */
         PKFSWCACHEDFILE     pCachedFile;
+#ifdef WITH_TEMP_MEMORY_FILES
         /** Temporary file handle or mapping handle. */
         PKWFSTEMPFILE       pTempFile;
+#endif
 #ifdef WITH_CONSOLE_OUTPUT_BUFFERING
         /** Buffered output stream. */
         PKWOUTPUTSTREAMBUF  pOutBuf;
@@ -579,8 +724,10 @@ typedef struct KWMEMMAPPING
     {
         /** The file system object.   */
         PKFSWCACHEDFILE     pCachedFile;
+#ifdef WITH_TEMP_MEMORY_FILES
         /** Temporary file handle or mapping handle. */
         PKWFSTEMPFILE       pTempFile;
+#endif
     } u;
 } KWMEMMAPPING;
 /** Pointer to a memory mapping tracker. */
@@ -702,10 +849,10 @@ typedef struct KWTOOL *PKWTOOL;
 typedef struct KWSANDBOX *PKWSANDBOX;
 typedef struct KWSANDBOX
 {
+    /** Jump buffer (first for alignment reasons). */
+    jmp_buf     JmpBuf;
     /** The tool currently running in the sandbox. */
     PKWTOOL     pTool;
-    /** Jump buffer. */
-    jmp_buf     JmpBuf;
     /** The thread ID of the main thread (owner of JmpBuf). */
     DWORD       idMainThread;
     /** Copy of the NT TIB of the main thread. */
@@ -753,6 +900,9 @@ typedef struct KWSANDBOX
     wchar_t   **papwszEnvVars;
 
 
+    /** Critical section protecting the below handle members below.
+     * @note Does not protect the individual handles.  */
+    CRITICAL_SECTION HandlesLock;
     /** Handle table. */
     PKWHANDLE      *papHandles;
     /** Size of the handle table. */
@@ -771,9 +921,13 @@ typedef struct KWSANDBOX
     /** Memory mappings (MapViewOfFile / UnmapViewOfFile). */
     PKWMEMMAPPING   paMemMappings;
 
+#ifdef WITH_TEMP_MEMORY_FILES
     /** Head of the list of temporary file. */
     PKWFSTEMPFILE   pTempFileHead;
+#endif
 
+    /** Critical section protecting pVirtualAllocHead. */
+    CRITICAL_SECTION VirtualAllocLock;
     /** Head of the virtual alloc allocations. */
     PKWVIRTALLOC    pVirtualAllocHead;
     /** Head of the heap list (HeapCreate).
@@ -790,14 +944,19 @@ typedef struct KWSANDBOX
 
     MY_UNICODE_STRING SavedCommandLine;
 
-#ifdef WITH_HASH_MD5_CACHE
-    /** The special MD5 hash instance. */
-    PKWHASHMD5      pHashHead;
+#ifdef WITH_HASH_CACHE
+    /** The crypto provider instance we use for hashes. */
+    HCRYPTPROV      hCryptProvRsa;
+    /** The crypto provider instance we use for hashes. */
+    HCRYPTPROV      hCryptProvAes;
+    /** List of crypto hash instances. */
+    PKWCRYPTHASH    pHashHead;
     /** ReadFile sets these while CryptHashData claims and clears them.
      *
-     * This is part of the heuristics we use for MD5 caching for header files. The
-     * observed pattern is that c1.dll/c1xx.dll first reads a chunk of a source or
-     * header, then passes the same buffer and read byte count to CryptHashData.
+     * This is part of the heuristics we use for MD5/SHA1/SHA256 caching for header
+     * files. The observed pattern is that c1.dll/c1xx.dll first reads a chunk of a
+     * source or header, then passes the same buffer and read byte count to
+     * CryptHashData.
      */
     struct
     {
@@ -850,6 +1009,23 @@ typedef struct KWSANDBOX
 #endif
 } KWSANDBOX;
 
+
+/** A CRT slot.  */
+typedef struct KWCRTSLOT
+{
+    KU32        iSlot;
+
+    /** The CRT module data. */
+    PKWMODULE   pModule;
+    /** Pointer to the malloc function. */
+    void * (__cdecl *pfnMalloc)(size_t);
+    /** Pointer to the beginthreadex function. */
+    uintptr_t (__cdecl *pfnBeginThreadEx)(void *, unsigned, unsigned (__stdcall *)(void *), void *, unsigned, unsigned *);
+
+} KWCRTSLOT;
+typedef KWCRTSLOT *PKWCRTSLOT;
+
+
 /** Replacement function entry. */
 typedef struct KWREPLACEMENTFUNCTION
 {
@@ -859,11 +1035,13 @@ typedef struct KWREPLACEMENTFUNCTION
     KSIZE       cchFunction;
     /** The module name (optional). */
     const char *pszModule;
-    /** The replacement function or data address. */
+    /** The replacement function, data address or CRT slot function array. */
     KUPTR       pfnReplacement;
     /** Only replace in the executable.
      * @todo fix the reinitialization of non-native DLLs!  */
     KBOOL       fOnlyExe;
+    /** Set if pfnReplacement points to a CRT slot function array. */
+    KBOOL       fCrtSlotArray;
 } KWREPLACEMENTFUNCTION;
 typedef KWREPLACEMENTFUNCTION const *PCKWREPLACEMENTFUNCTION;
 
@@ -883,6 +1061,42 @@ typedef struct KWREPLACEMENTDATA
 typedef KWREPLACEMENTDATA const *PCKWREPLACEMENTDATA;
 #endif
 
+/**
+ * One test job (--full-test).
+ */
+typedef struct KWONETEST
+{
+    /** Where this job originated. */
+    const char     *pszJobSrc;
+    /** The argument number it started with. */
+    unsigned        iJobSrc;
+    /** Set if virgin, clear if modified. */
+    KBOOL           fVirgin;
+
+    /** Number of runs to give it. */
+    unsigned        cRuns;
+
+    /** @name kSubmitHandleJobUnpacked arguments
+     * @{ */
+    const char     *pszExecutable;
+    const char     *pszCwd;
+    KU32            cArgs;
+    const char    **papszArgs;
+    KU32            cEnvVars;
+    const char    **papszEnvVars;
+    const char     *pszSpecialEnv;
+    KBOOL           fWatcomBrainDamange;
+    KBOOL           fNoPchCaching;
+    KU32            cPostCmdArgs;
+    const char    **papszPostCmdArgs;
+    /** @} */
+
+    /** Pointer to the next one. */
+    struct KWONETEST *pNext;
+} KWONETEST;
+/** Pointer to one test job. */
+typedef KWONETEST *PKWONETEST;
+
 
 /*********************************************************************************************************************************
 *   Global Variables                                                                                                             *
@@ -896,20 +1110,106 @@ static PKWMODULE    g_pModInLdBuf = NULL;
 /** The module that previuosly occupied g_abDefLdBuf. */
 static PKWMODULE    g_pModPrevInLdBuf = NULL;
 
+/** Module list head. */
+static PKWMODULE    g_pModuleHead = NULL;
+/** Where to insert the next module. */
+static PKWMODULE   *g_ppModuleNext = &g_pModuleHead;
+
 /** Module hash table. */
 static PKWMODULE    g_apModules[127];
 
 /** GetModuleHandle cache. */
 static KWGETMODULEHANDLECACHE g_aGetModuleHandleCache[] =
 {
-#define MOD_CACHE_STRINGS(str) str, sizeof(str) - 1, (sizeof(L##str) / sizeof(wchar_t)) - 1, L##str
-    { MOD_CACHE_STRINGS("KERNEL32.DLL"),    NULL },
-    { MOD_CACHE_STRINGS("mscoree.dll"),     NULL },
+#define MOD_CACHE_STRINGS(str) str, L##str, sizeof(str) - 1, (sizeof(L##str) / sizeof(wchar_t)) - 1
+    { MOD_CACHE_STRINGS("KERNEL32.DLL"),    K_TRUE,  NULL },
+#if 1
+    { MOD_CACHE_STRINGS("KERNELBASE.DLL"),  K_TRUE,  NULL },
+    { MOD_CACHE_STRINGS("NTDLL.DLL"),       K_TRUE,  NULL },
+#endif
+    { MOD_CACHE_STRINGS("mscoree.dll"),     K_FALSE, NULL },
 };
 
 /** Module pending TLS allocation. See kwLdrModuleCreateNonNativeSetupTls. */
 static PKWMODULE    g_pModPendingTlsAlloc = NULL;
 
+/** The 1KB TLS DLLs. */
+static KWTLSDLL     g_aTls1KDlls[] =
+{
+    { L"kWorkerTls1K.dll",   K_FALSE },
+    { L"kWorkerTls1K01.dll", K_FALSE },
+    { L"kWorkerTls1K02.dll", K_FALSE },
+    { L"kWorkerTls1K03.dll", K_FALSE },
+    { L"kWorkerTls1K04.dll", K_FALSE },
+    { L"kWorkerTls1K05.dll", K_FALSE },
+    { L"kWorkerTls1K06.dll", K_FALSE },
+    { L"kWorkerTls1K07.dll", K_FALSE },
+    { L"kWorkerTls1K08.dll", K_FALSE },
+    { L"kWorkerTls1K09.dll", K_FALSE },
+    { L"kWorkerTls1K10.dll", K_FALSE },
+    { L"kWorkerTls1K11.dll", K_FALSE },
+    { L"kWorkerTls1K12.dll", K_FALSE },
+    { L"kWorkerTls1K13.dll", K_FALSE },
+    { L"kWorkerTls1K14.dll", K_FALSE },
+    { L"kWorkerTls1K15.dll", K_FALSE },
+};
+
+/** The 64KB TLS DLLs. */
+static KWTLSDLL     g_aTls64KDlls[] =
+{
+    { L"kWorkerTls64K.dll",   K_FALSE },
+    { L"kWorkerTls64K01.dll", K_FALSE },
+    { L"kWorkerTls64K02.dll", K_FALSE },
+    { L"kWorkerTls64K03.dll", K_FALSE },
+    { L"kWorkerTls64K04.dll", K_FALSE },
+    { L"kWorkerTls64K05.dll", K_FALSE },
+    { L"kWorkerTls64K06.dll", K_FALSE },
+    { L"kWorkerTls64K07.dll", K_FALSE },
+};
+
+/** The 128KB TLS DLLs. */
+static KWTLSDLL     g_aTls128KDlls[] =
+{
+    { L"kWorkerTls128K.dll",   K_FALSE },
+    { L"kWorkerTls128K01.dll", K_FALSE },
+    { L"kWorkerTls128K02.dll", K_FALSE },
+    { L"kWorkerTls128K03.dll", K_FALSE },
+    { L"kWorkerTls128K04.dll", K_FALSE },
+    { L"kWorkerTls128K05.dll", K_FALSE },
+    { L"kWorkerTls128K06.dll", K_FALSE },
+    { L"kWorkerTls128K07.dll", K_FALSE },
+};
+
+/** The 512KB TLS DLLs. */
+static KWTLSDLL     g_aTls512KDlls[] =
+{
+    { L"kWorkerTls512K.dll",   K_FALSE },
+    { L"kWorkerTls512K01.dll", K_FALSE },
+    { L"kWorkerTls512K02.dll", K_FALSE },
+    { L"kWorkerTls512K03.dll", K_FALSE },
+    { L"kWorkerTls512K04.dll", K_FALSE },
+    { L"kWorkerTls512K05.dll", K_FALSE },
+    { L"kWorkerTls512K06.dll", K_FALSE },
+    { L"kWorkerTls512K07.dll", K_FALSE },
+};
+
+/** The TLS DLLs grouped by size. */
+static KWTLSDLLENTRY const g_aTlsDlls[] =
+{
+    {     1024, K_ELEMENTS(g_aTls1KDlls),   g_aTls1KDlls },
+    {  64*1024, K_ELEMENTS(g_aTls64KDlls),  g_aTls64KDlls },
+    { 128*1024, K_ELEMENTS(g_aTls128KDlls), g_aTls128KDlls },
+    { 512*1024, K_ELEMENTS(g_aTls512KDlls), g_aTls512KDlls },
+};
+
+/** CRT slots.
+ * @note The number of entires here must match CRT_SLOT_FUNCTION_WRAPPER. */
+static KWCRTSLOT    g_aCrtSlots[32];
+
+/** windbg .reload statements. vs   */
+char                g_szReloads[4096];
+/** Current offset into g_szReloads. */
+KU32 volatile       g_cchReloads;
 
 /** The file system cache. */
 static PKFSCACHE    g_pFsCache;
@@ -925,6 +1225,9 @@ static int          g_cVerbose = 2;
 
 /** Whether we should restart the worker. */
 static KBOOL        g_fRestart = K_FALSE;
+
+/** The process group this worker is tied to (--group option), -1 if none. */
+static KI32         g_iProcessGroup = -1;
 
 /** Whether control-C/SIGINT or Control-Break/SIGBREAK have been seen. */
 static int volatile g_rcCtrlC = 0;
@@ -1038,6 +1341,25 @@ static KSIZE    g_cWriteFileToInMemTemp;
 /** Total bytes written to in-memory temporary files. */
 static KSIZE    g_cbWriteFileToInMemTemp;
 
+#ifdef WITH_HASH_CACHE
+/** Total number of hashes. */
+static KSIZE    g_cHashes;
+/** Number of cached hash hits. */
+static KSIZE    g_cHashesCached;
+/** Number of fallbacks. */
+static KSIZE    g_cHashesFallbacks;
+/** Number of partial cached file hashes. */
+static KSIZE    g_cHashesPartial;
+/** Total number of MD5 hashes. */
+static KSIZE    g_cHashesMd5;
+/** Total number of SHA-1 hashes. */
+static KSIZE    g_cHashesSha1;
+/** Total number of SHA-256 hashes. */
+static KSIZE    g_cHashesSha256;
+/** Total number of SHA-512 hashes. */
+static KSIZE    g_cHashesSha512;
+#endif
+
 
 /*********************************************************************************************************************************
 *   Internal Functions                                                                                                           *
@@ -1045,7 +1367,15 @@ static KSIZE    g_cbWriteFileToInMemTemp;
 static FNKLDRMODGETIMPORT kwLdrModuleGetImportCallback;
 static int kwLdrModuleResolveAndLookup(const char *pszName, PKWMODULE pExe, PKWMODULE pImporter,
                                        const char *pszSearchPath, PKWMODULE *ppMod);
+static PKWMODULE kwLdrModuleForLoadedNative(const char *pszName, KBOOL fEnsureCrtSlot, KBOOL fAlwaysPresent);
+static PKWMODULE kwLdrModuleForLoadedNativeByHandle(HMODULE hModule, KBOOL fEnsureCrtSlot, const char *pszLogName);
+static int kwLdrModuleCreateCrtSlot(PKWMODULE pModule);
+static PKWMODULE kwToolLocateModuleByHandle(PKWTOOL pTool, HMODULE hmod);
+static char *kwSandboxDoGetEnvA(PKWSANDBOX pSandbox, const char *pchVar, KSIZE cchVar);
 static KBOOL kwSandboxHandleTableEnter(PKWSANDBOX pSandbox, PKWHANDLE pHandle, HANDLE hHandle);
+static PKWHANDLE kwSandboxHandleLookup(HANDLE hFile);
+static PKWHANDLE kwSandboxHandleGet(HANDLE hFile);
+K_INLINE void kwSandboxHandlePut(PKWHANDLE pHandle);
 #ifdef WITH_CONSOLE_OUTPUT_BUFFERING
 static void kwSandboxConsoleWriteA(PKWSANDBOX pSandbox, PKWOUTPUTSTREAMBUF pLineBuf, const char *pchBuffer, KU32 cchToWrite);
 #endif
@@ -1157,8 +1487,20 @@ static void kwErrPrintfV(const char *pszFormat, va_list va)
 {
     DWORD const dwSavedErr = GetLastError();
 
+#if defined(KW_LOG_ENABLED) && defined(WITH_LOG_FILE)
+    va_list vaCopy;
+# if  defined(va_copy) || !defined(_MSC_VER) || _MSC_VER >= 1700 /*??*/
+    va_copy(vaCopy, va);
+# else
+    vaCopy = va;
+# endif
+    kwDebuggerPrintf("kWorker: error: ");
+    kwDebuggerPrintfV(pszFormat, vaCopy);
+#endif
+
     fprintf(stderr, "kWorker: error: ");
     vfprintf(stderr, pszFormat, va);
+    fflush(stderr); /* In case it's a pipe. */
 
     SetLastError(dwSavedErr);
 }
@@ -1608,7 +1950,7 @@ static wchar_t *kwPathGetFilenameW(const wchar_t *pwszPath)
 static PKWMODULE kwLdrModuleRetain(PKWMODULE pMod)
 {
     kHlpAssert(pMod->cRefs > 0);
-    kHlpAssert(pMod->cRefs < 64);
+    kHlpAssert(pMod->cRefs < 64 || pMod->fNative /* kernelbase.dll and VC++ 14.2 */);
     pMod->cRefs++;
     return pMod;
 }
@@ -1623,24 +1965,54 @@ static void kwLdrModuleRelease(PKWMODULE pMod)
 {
     if (--pMod->cRefs == 0)
     {
-        /* Unlink it. */
+        /* Make sure it doesn't receive any more native TLS callbacks.if non-native. */
+        if (!pMod->fNative && pMod->u.Manual.ppTlsWorkerModuleVar)
+        {
+            *pMod->u.Manual.ppTlsWorkerModuleVar = NULL;
+            pMod->u.Manual.ppTlsWorkerModuleVar  = NULL;
+        }
+
+        /* Unlink it from the hash table. */
         if (!pMod->fExe)
         {
-            PKWMODULE pPrev = NULL;
             unsigned  idx   = pMod->uHashPath % K_ELEMENTS(g_apModules);
             if (g_apModules[idx] == pMod)
-                g_apModules[idx] = pMod->pNext;
+                g_apModules[idx] = pMod->pNextHash;
             else
             {
                 PKWMODULE pPrev = g_apModules[idx];
                 kHlpAssert(pPrev != NULL);
-                while (pPrev->pNext != pMod)
+                while (pPrev->pNextHash != pMod)
                 {
-                    pPrev = pPrev->pNext;
+                    pPrev = pPrev->pNextHash;
                     kHlpAssert(pPrev != NULL);
                 }
-                pPrev->pNext = pMod->pNext;
+                pPrev->pNextHash = pMod->pNextHash;
             }
+        }
+
+        /* Unlink it from the list. */
+        if (pMod != g_pModuleHead)
+        {
+            PKWMODULE pPrev = g_pModuleHead;
+            while (pPrev)
+            {
+                if (pPrev->pNextList == pMod)
+                {
+                    pPrev->pNextList = pMod->pNextList;
+                    if (!pMod->pNextList)
+                        g_ppModuleNext = &pPrev->pNextList;
+                    break;
+                }
+                pPrev = pPrev->pNextList;
+            }
+            kHlpAssert(pPrev != NULL);
+        }
+        else
+        {
+            g_pModuleHead = pMod->pNextList;
+            if (!pMod->pNextList)
+                g_ppModuleNext = &g_pModuleHead;
         }
 
         /* Release import modules. */
@@ -1665,10 +2037,19 @@ static void kwLdrModuleRelease(PKWMODULE pMod)
             kHlpPageFree(pMod->u.Manual.pbLoad, pMod->cbImage);
         }
 
+        if (pMod->iCrtSlot != KU8_MAX)
+            g_aCrtSlots[pMod->iCrtSlot].pModule = NULL;
+
+        if (pMod->pszMsPdbSrvEndpoint)
+        {
+            kHlpFree(pMod->pszMsPdbSrvEndpoint);
+            pMod->pszMsPdbSrvEndpoint = NULL;
+        }
+
         kHlpFree(pMod);
     }
     else
-        kHlpAssert(pMod->cRefs < 64);
+        kHlpAssert(pMod->cRefs < 64 || pMod->fNative /* kernelbase.dll and VC++ 14.2 */);
 }
 
 
@@ -1680,9 +2061,17 @@ static void kwLdrModuleRelease(PKWMODULE pMod)
  */
 static PKWMODULE kwLdrModuleLink(PKWMODULE pMod)
 {
-    unsigned idx = pMod->uHashPath % K_ELEMENTS(g_apModules);
-    pMod->pNext = g_apModules[idx];
-    g_apModules[idx] = pMod;
+    if (!pMod->fExe)
+    {
+        unsigned idx = pMod->uHashPath % K_ELEMENTS(g_apModules);
+        pMod->pNextHash = g_apModules[idx];
+        g_apModules[idx] = pMod;
+    }
+
+    pMod->pNextList = NULL;
+    *g_ppModuleNext = pMod;
+    g_ppModuleNext = &pMod->pNextList;
+
     return pMod;
 }
 
@@ -1747,6 +2136,7 @@ static void kwLdrModuleDoNativeImportReplacements(PKWMODULE pMod)
         {
             KU32                iThunk;
             const char * const  pszImport   = (const char *)&pbImage[pImpDesc->Name];
+            PKWMODULE           pImportMod  = NULL;
             PIMAGE_THUNK_DATA   paThunks    = (PIMAGE_THUNK_DATA)&pbImage[pImpDesc->FirstThunk];
             PIMAGE_THUNK_DATA   paOrgThunks = (PIMAGE_THUNK_DATA)&pbImage[pImpDesc->OriginalFirstThunk];
             kHlpAssertReturnVoid(pImpDesc->Name < cbImage);
@@ -1763,7 +2153,7 @@ static void kwLdrModuleDoNativeImportReplacements(PKWMODULE pMod)
                 if (!IMAGE_SNAP_BY_ORDINAL(off))
                 {
                     IMAGE_IMPORT_BY_NAME const *pName     = (IMAGE_IMPORT_BY_NAME const *)&pbImage[off];
-                    KSIZE const                 cchSymbol = kHlpStrLen(pName->Name);
+                    KSIZE const                 cchSymbol = kHlpStrLen((const char *)&pName->Name[0]);
                     KU32                        i         = g_cSandboxNativeReplacements;
                     while (i-- > 0)
                         if (   g_aSandboxNativeReplacements[i].cchFunction == cchSymbol
@@ -1772,7 +2162,7 @@ static void kwLdrModuleDoNativeImportReplacements(PKWMODULE pMod)
                             if (   !g_aSandboxNativeReplacements[i].pszModule
                                 || kHlpStrICompAscii(g_aSandboxNativeReplacements[i].pszModule, pszImport) == 0)
                             {
-                                KW_LOG(("%s: replacing %s!%s\n", pMod->pLdrMod->pszName, pszImport, pName->Name));
+                                KWLDR_LOG(("%s: replacing %s!%s\n", pMod->pLdrMod->pszName, pszImport, pName->Name));
 
                                 /* The .rdata section is normally read-only, so we need to make it writable first. */
                                 if ((KUPTR)&paThunks[iThunk] - (KUPTR)pbProtRange >= cbPage)
@@ -1781,7 +2171,7 @@ static void kwLdrModuleDoNativeImportReplacements(PKWMODULE pMod)
                                     if (fOldProt)
                                     {
                                         fRc = VirtualProtect(pbProtRange, cbProtRange, fOldProt, NULL /*pfOldProt*/);
-                                        kHlpAssert(fRc);
+                                        kHlpAssert(fRc || GetLastError() == ERROR_NOACCESS /*tinderwin2*/);
                                         fOldProt = 0;
                                     }
 
@@ -1798,6 +2188,7 @@ static void kwLdrModuleDoNativeImportReplacements(PKWMODULE pMod)
                                             case PAGE_EXECUTE_READWRITE:
                                             case PAGE_EXECUTE_WRITECOPY:
                                                 /* Already writable, nothing to do. */
+                                                fRc = TRUE;
                                                 break;
 
                                             default:
@@ -1817,7 +2208,30 @@ static void kwLdrModuleDoNativeImportReplacements(PKWMODULE pMod)
                                     }
                                 }
 
-                                paThunks[iThunk].u1.AddressOfData = g_aSandboxNativeReplacements[i].pfnReplacement;
+                                /*
+                                 * Unslotted replacements are simple.
+                                 */
+                                if (!g_aSandboxNativeReplacements[i].fCrtSlotArray)
+                                    paThunks[iThunk].u1.AddressOfData = g_aSandboxNativeReplacements[i].pfnReplacement;
+                                else
+                                {
+                                    /*
+                                     * Must find our module entry for this module, possibly creating one.
+                                     */
+                                    if (!pImportMod)
+                                    {
+                                        pImportMod = kwLdrModuleForLoadedNative(pszImport, K_TRUE /*fEnsureCrtSlot*/,
+                                                                                K_TRUE /*fAlwaysPresent*/);
+                                        if (!pImportMod)
+                                        {
+                                            kwErrPrintf("Failed to get module '%s' when performing replacements on module '%s'!\n",
+                                                        pszImport, pMod->pszPath);
+                                            break;
+                                        }
+                                    }
+                                    paThunks[iThunk].u1.AddressOfData
+                                        = ((KUPTR *)g_aSandboxNativeReplacements[i].pfnReplacement)[pImportMod->iCrtSlot];
+                                }
                                 break;
                             }
                         }
@@ -1853,25 +2267,33 @@ static void kwLdrModuleDoNativeImportReplacements(PKWMODULE pMod)
  *                              module.
  */
 static PKWMODULE kwLdrModuleCreateForNativekLdrModule(PKLDRMOD pLdrMod, const char *pszPath, KSIZE cbPath, KU32 uHashPath,
-                                                      KBOOL fDoReplacements)
+                                                      KBOOL fDoReplacements, PKWMODULE pVirtualApiMod)
 {
     /*
      * Create the entry.
      */
-    PKWMODULE pMod   = (PKWMODULE)kHlpAllocZ(sizeof(*pMod) + cbPath + cbPath * 2 * sizeof(wchar_t));
+    PKWMODULE pMod = (PKWMODULE)kHlpAllocZ(sizeof(*pMod) + cbPath + cbPath * 2 * sizeof(wchar_t));
     if (pMod)
     {
-        pMod->pwszPath      = (wchar_t *)(pMod + 1);
+        pMod->pwszPath          = (wchar_t *)(pMod + 1);
         kwStrToUtf16(pszPath, (wchar_t *)pMod->pwszPath, cbPath * 2);
-        pMod->pszPath       = (char *)kHlpMemCopy((char *)&pMod->pwszPath[cbPath * 2], pszPath, cbPath);
-        pMod->uHashPath     = uHashPath;
-        pMod->cRefs         = 1;
-        pMod->offFilename   = (KU16)(kHlpGetFilename(pszPath) - pszPath);
-        pMod->fExe          = K_FALSE;
-        pMod->fNative       = K_TRUE;
-        pMod->pLdrMod       = pLdrMod;
-        pMod->hOurMod       = (HMODULE)(KUPTR)pLdrMod->aSegments[0].MapAddress;
-        pMod->cbImage       = (KSIZE)kLdrModSize(pLdrMod);
+        pMod->pszPath           = (char *)kHlpMemCopy((char *)&pMod->pwszPath[cbPath * 2], pszPath, cbPath);
+        pMod->uHashPath         = uHashPath;
+        pMod->cRefs             = 1;
+        pMod->offFilename       = (KU16)(kHlpGetFilename(pszPath) - pszPath);
+        pMod->offFilenameW      = (KU16)(kwPathGetFilenameW(pMod->pwszPath) - pMod->pwszPath);
+        pMod->fExe              = K_FALSE;
+        pMod->fNative           = K_TRUE;
+        pMod->pLdrMod           = pLdrMod;
+        pMod->hOurMod           = (HMODULE)(KUPTR)pLdrMod->aSegments[0].MapAddress;
+        pMod->cbImage           = (KSIZE)kLdrModSize(pLdrMod);
+        pMod->iCrtSlot          = KU8_MAX;
+        pMod->fNeedReInit       = K_FALSE;
+        pMod->pszMsPdbSrvEndpoint = NULL;
+        pMod->fReInitOnMsPdbSrvEndpointChange = kHlpStrNICompAscii(&pMod->pszPath[pMod->offFilename], TUPLE("mspdb")) == 0;
+        pMod->pVirtualApiMod    = pVirtualApiMod;
+        if (pVirtualApiMod)
+            kwLdrModuleRetain(pVirtualApiMod);
 
         if (fDoReplacements)
         {
@@ -1880,8 +2302,9 @@ static PKWMODULE kwLdrModuleCreateForNativekLdrModule(PKLDRMOD pLdrMod, const ch
             SetLastError(dwSavedErr);
         }
 
-        KW_LOG(("New module: %p LB %#010x %s (native)\n",
-                (KUPTR)pMod->pLdrMod->aSegments[0].MapAddress, kLdrModSize(pMod->pLdrMod), pMod->pszPath));
+        KWLDR_LOG(("New module: %p LB %#010x %s (native%s%s)\n",
+                   (KUPTR)pMod->pLdrMod->aSegments[0].MapAddress, kLdrModSize(pMod->pLdrMod), pMod->pszPath,
+                   pVirtualApiMod ? ", virtual api => " : "", pVirtualApiMod ? pVirtualApiMod->pszPath : ""));
         g_cModules++;
         return kwLdrModuleLink(pMod);
     }
@@ -1901,20 +2324,186 @@ static PKWMODULE kwLdrModuleCreateForNativekLdrModule(PKLDRMOD pLdrMod, const ch
  */
 static PKWMODULE kwLdrModuleCreateNative(const char *pszPath, KU32 uHashPath, KBOOL fDoReplacements)
 {
-    /*
-     * Open the module and check the type.
-     */
     PKLDRMOD pLdrMod;
-    int rc = kLdrModOpenNative(pszPath, &pLdrMod);
+    int rc;
+
+    /*
+     * HACK ALERT! Make sure the application path is searched when looking for
+     * imports in the module we're loading.
+     */
+    /** @todo improve on this hack!  */
+    PKWMODULE pExe = g_Sandbox.pTool ? g_Sandbox.pTool->u.Sandboxed.pExe : NULL;
+    if (pExe)
+    {
+        /* HACK ALERT! */
+        wchar_t *pwzFilename = (wchar_t *)&pExe->pwszPath[pExe->offFilenameW];
+        wchar_t wcSaved = pExe->pwszPath[pExe->offFilenameW];
+        *pwzFilename = '\0';
+        if (!SetDllDirectoryW(pExe->pwszPath))
+            kwErrPrintf("SetDllDirectoryW failed: %u\n", GetLastError());
+        KW_LOG(("kwLdrModuleCreateNative: Applied SetDllDirectoryW hack (%ls)\n", pExe->pwszPath));
+        *pwzFilename = wcSaved;
+    }
+    else
+        KW_LOG(("kwLdrModuleCreateNative: Warning! Too early for SetDllDirectoryW hack\n"));
+
+
+    /*
+     * Load the library and create a module structure for it.
+     */
+    rc = kLdrModOpenNative(pszPath, KLDRMOD_OPEN_FLAGS_NATIVE_ALLOW_INIT_TERM, &pLdrMod);
     if (rc == 0)
     {
-        PKWMODULE pMod = kwLdrModuleCreateForNativekLdrModule(pLdrMod, pszPath, kHlpStrLen(pszPath) + 1,
-                                                              uHashPath, fDoReplacements);
+        KSIZE     cchPath = kHlpStrLen(pszPath);
+        PKWMODULE pMod = kwLdrModuleCreateForNativekLdrModule(pLdrMod, pszPath, cchPath + 1, uHashPath,
+                                                              fDoReplacements, NULL /*pVirtualApiMod*/);
         if (pMod)
             return pMod;
         kLdrModClose(pLdrMod);
     }
     return NULL;
+}
+
+
+/**
+ * Checks if the given name could be a virtual API module or not.
+ */
+static KBOOL kwLdrIsVirtualApiModule(const char *pszName, KSIZE cchName)
+{
+    if (cchName <= 7)
+        return K_FALSE;
+    switch (*pszName)
+    {
+        default:
+            return K_FALSE;
+        case 'a':
+        case 'A':
+            if (pszName[1] != 'p' && pszName[1] != 'P')
+                return K_FALSE;
+            if (pszName[2] != 'i' && pszName[2] != 'I')
+                return K_FALSE;
+            break;
+        case 'e':
+        case 'E':
+            if (pszName[1] != 'x' && pszName[1] != 'X')
+                return K_FALSE;
+            if (pszName[2] != 't' && pszName[2] != 'T')
+                return K_FALSE;
+            break;
+    }
+    if (pszName[3] != '-')
+        return K_FALSE;
+    if (pszName[4] != 'm' && pszName[4] != 'M')
+        return K_FALSE;
+    if (pszName[5] != 's' && pszName[5] != 'S')
+        return K_FALSE;
+    if (pszName[6] != '-')
+        return K_FALSE;
+    return K_TRUE;
+}
+
+
+/**
+ * Try load what seems to be a virtual API DLL.
+ *
+ * This is a worker for kwLdrModuleResolveAndLookup and
+ * kwSandbox_Kernel32_LoadLibraryExA_VirtualApiModule.
+ *
+ * @returns Pointer to module on success, NULL on failure.
+ * @param   pszName             The name of the module.  This must be
+ *                              normalized already!
+ * @param   cchName             The length of the name.
+ */
+static PKWMODULE kwLdrModuleTryLoadVirtualDll(const char *pszName, KSIZE cchName)
+{
+    HMODULE     hModule;
+
+    /*
+     * Look it up in the hash table.
+     */
+    KU32 const  uHashPath = kwStrHash(pszName);
+    unsigned    idxHash   = uHashPath % K_ELEMENTS(g_apModules);
+    PKWMODULE   pMod      = g_apModules[idxHash];
+    if (pMod)
+    {
+        do
+        {
+            if (   pMod->uHashPath == uHashPath
+                && kHlpStrComp(pMod->pszPath, pszName) == 0)
+                return kwLdrModuleRetain(pMod);
+            pMod = pMod->pNextHash;
+        } while (pMod);
+    }
+
+    /*
+     * Not found. Try load it.
+     */
+    hModule = LoadLibraryA(pszName);
+    if (!hModule)
+    {
+        KWLDR_LOG(("kwLdrModuleTryLoadVirtualDll: %s failed (%u)\n", pszName, GetLastError()));
+        return NULL;
+    }
+
+    /*
+     * Loaded successfully.  Create a module for the real module.
+     */
+    pMod = kwLdrModuleForLoadedNativeByHandle(hModule, K_FALSE /*fEnsureCrtSlot*/, pszName);
+    if (pMod)
+    {
+        /* Create a module for the virtual API name too, unless it is actually a real DLL. */
+        if (stricmp(&pMod->pszPath[pMod->offFilename], pszName) != 0)
+        {
+            PKLDRMOD pLdrMod;
+            int rc = kLdrModOpenNativeByHandle((KUPTR)hModule, KLDRMOD_OPEN_FLAGS_NATIVE_ALLOW_INIT_TERM, &pLdrMod);
+            if (rc == 0)
+            {
+                PKWMODULE pVirtMod = kwLdrModuleCreateForNativekLdrModule(pLdrMod, pszName, cchName + 1, kwStrHash(pszName),
+                                                                          K_FALSE /*fDoReplacements*/, pMod /*pVirtualApiMod*/);
+                if (pVirtMod)
+                {
+                    kwLdrModuleRelease(pMod);
+                    pMod = pVirtMod;
+                }
+                else
+                {
+                    kLdrModClose(pLdrMod);
+                    kwErrPrintf("out of memory\n");
+                }
+            }
+            else
+                kwErrPrintf("kLdrModOpenNativeByHandle failed for %p / '%s': %d\n", hModule, pszName, rc);
+        }
+        else
+        {
+            KWLDR_LOG(("kwLdrModuleTryLoadVirtualDll: %s -> %s - A real DLL!\n", pszName, pMod->pszPath));
+            /* HACK ALERT! If api-ms-win-crt-* find ucrtbase.dll and attach it as the
+                           real module as we cannot make replacements in the virtual
+                           API set forward DLLs. */
+            /** @todo Find a way of scanning the exports and collect forwarder DLLs and
+             *        imported DLLs. kLdrModEnumSymbols()? */
+            if (   pMod->pVirtualApiMod == NULL
+                && kHlpStrNICompAscii(pszName, TUPLE("api-ms-win-crt-")) == 0)
+            {
+                HMODULE hModReal = GetModuleHandleW(L"ucrtbase.dll");
+                if (hModReal)
+                {
+                    PKWMODULE pRealMod = kwLdrModuleForLoadedNativeByHandle(hModReal, K_TRUE /*fEnsureCrtSlot*/, "ucrtbase.dll");
+                    if (pRealMod)
+                    {
+                        KWLDR_LOG(("kwLdrModuleTryLoadVirtualDll: Linking %s to '%s'.\n", pszName, pRealMod->pszPath));
+                        pMod->pVirtualApiMod = pRealMod;
+                    }
+                    else
+                        KWLDR_LOG(("kwLdrModuleTryLoadVirtualDll: kwLdrModuleForLoadedNativeByHandle failed for ucrtbase.dll/%s!\n", pszName));
+                }
+                else
+                    KWLDR_LOG(("kwLdrModuleTryLoadVirtualDll: no ucrtbase.dll found for %s!\n", pszName));
+            }
+        }
+    }
+
+    return pMod;
 }
 
 
@@ -1981,7 +2570,7 @@ static void kwLdrModuleCreateNonNativeSetupQuickZeroAndCopy(PKWMODULE pMod)
                             pMod->u.Manual.aQuickCopyChunks[iChunk].pbDst    = &pMod->u.Manual.pbLoad[(KSIZE)paSegs[iSeg].RVA];
                             pMod->u.Manual.aQuickCopyChunks[iChunk].pbSrc    = &pMod->u.Manual.pbCopy[(KSIZE)paSegs[iSeg].RVA];
                             pMod->u.Manual.aQuickCopyChunks[iChunk].cbToCopy = paSegs[iSeg].cbMapped - cbTrailingZeros;
-                            pMod->u.Manual.cQuickCopyChunks = iChunk + 1;
+                            pMod->u.Manual.cQuickCopyChunks = (KU8)(iChunk + 1);
                             KWLDR_LOG(("aQuickCopyChunks[%u]: %#p LB %#" KSIZE_PRI " <- %p (%*.*s)\n", iChunk,
                                        pMod->u.Manual.aQuickCopyChunks[iChunk].pbDst,
                                        pMod->u.Manual.aQuickCopyChunks[iChunk].cbToCopy,
@@ -1998,7 +2587,7 @@ static void kwLdrModuleCreateNonNativeSetupQuickZeroAndCopy(PKWMODULE pMod)
                             pMod->u.Manual.aQuickZeroChunks[iZero].pbDst    = pMod->u.Manual.aQuickCopyChunks[iChunk].pbDst
                                                                             + pMod->u.Manual.aQuickCopyChunks[iChunk].cbToCopy;
                             pMod->u.Manual.aQuickZeroChunks[iZero].cbToZero = cbTrailingZeros;
-                            pMod->u.Manual.cQuickZeroChunks = iZero + 1;
+                            pMod->u.Manual.cQuickZeroChunks = (KU8)(iZero + 1);
                             KWLDR_LOG(("aQuickZeroChunks[%u]: %#p LB %#" KSIZE_PRI " <- zero (%*.*s)\n", iZero,
                                        pMod->u.Manual.aQuickZeroChunks[iZero].pbDst,
                                        pMod->u.Manual.aQuickZeroChunks[iZero].cbToZero,
@@ -2029,13 +2618,53 @@ static void kwLdrModuleCreateNonNativeSetupQuickZeroAndCopy(PKWMODULE pMod)
 
 
 /**
- * Called from TLS allocation DLL during DLL_PROCESS_ATTACH.
+ * Called from the TLS allocation DLL when ever the native loader wants to issue
+ * a TLS callback after the initial kwLdrTlsAllocationHook callout.
  *
  * @param   hDll            The DLL handle.
- * @param   idxTls          The allocated TLS index.
- * @param   ppfnTlsCallback Pointer to the TLS callback table entry.
+ * @param   dwReason        The callback reason.
+ * @param   pvContext       Some context value that seems to always be NULL.
+ * @param   pMod            Out internal module.
  */
-__declspec(dllexport) void kwLdrTlsAllocationHook(void *hDll, ULONG idxTls, PIMAGE_TLS_CALLBACK *ppfnTlsCallback)
+static void kwLdrTlsNativeLoaderCallback(void *hDll, DWORD dwReason, void *pvContext, PKWMODULE pMod)
+{
+    if (   pMod
+        && pMod->u.Manual.enmState == KWMODSTATE_READY)
+    {
+        KWLDR_LOG(("kwLdrTlsNativeLoaderCallback: hDll=%p dwReason=%#x pvContext=%p pMod=%p\n",
+                   hDll, dwReason, pvContext, pMod));
+        if (pMod->u.Manual.cTlsCallbacks)
+        {
+            PIMAGE_TLS_CALLBACK *ppfnCallback = (PIMAGE_TLS_CALLBACK *)&pMod->u.Manual.pbLoad[pMod->u.Manual.offTlsCallbacks];
+            do
+            {
+                KWLDR_LOG(("kwLdrTlsNativeLoaderCallback: Calling TLS callback %p(%p, %#x, %p) - %s\n",
+                           *ppfnCallback, pMod->hOurMod, dwReason, pvContext, pMod->pszPath));
+                (*ppfnCallback)(pMod->hOurMod, dwReason, pvContext);
+                ppfnCallback++;
+            } while (*ppfnCallback);
+        }
+    }
+    else
+        KWLDR_LOG(("kwLdrTlsNativeLoaderCallback: hDll=%p dwReason=%#x pvContext=%p pMod=%p - skipped\n",
+                   hDll, dwReason, pvContext, pMod));
+}
+
+
+/**
+ * Called from TLS allocation DLL during DLL_PROCESS_ATTACH.
+ *
+ * @returns Address of the callback function (kwLdrTlsNativeLoaderCallback).
+ * @param   hDll                The DLL handle.
+ * @param   idxTls              The allocated TLS index.
+ * @param   pabInitData         The init data in the TLS allocation DLL
+ *                              (g_abInitData).
+ * @param   ppWorkerModuleVar   Pointer to the variable holding the pMod
+ *                              callback parameter value (g_pvWorkerModule).
+ *
+ * @see     KWLDRTLSALLOCATIONHOOK in kWorkerTlsXxxxK.c
+ */
+__declspec(dllexport) KUPTR kwLdrTlsAllocationHook(void *hDll, ULONG idxTls, KU8 *pabInitData, PKWMODULE *ppWorkerModuleVar)
 {
     /*
      * Do the module initialization thing first.
@@ -2043,33 +2672,56 @@ __declspec(dllexport) void kwLdrTlsAllocationHook(void *hDll, ULONG idxTls, PIMA
     PKWMODULE pMod = g_pModPendingTlsAlloc;
     if (pMod)
     {
-        PPEB        pPeb = kwSandboxGetProcessEnvironmentBlock();
-        LIST_ENTRY *pHead;
-        LIST_ENTRY *pCur;
-
-        pMod->u.Manual.idxTls = idxTls;
-        KWLDR_LOG(("kwLdrTlsAllocationHook: idxTls=%d (%#x) for %s\n", idxTls, idxTls, pMod->pszPath));
-
-        /*
-         * Try sabotage the DLL name so we can load this module again.
-         */
-        pHead = &pPeb->Ldr->InMemoryOrderModuleList;
-        for (pCur = pHead->Blink; pCur != pHead; pCur = pCur->Blink)
+        if (   pMod->u.Manual.idxTls         == KU32_MAX
+            && pMod->u.Manual.pabTlsInitData == NULL)
         {
-            LDR_DATA_TABLE_ENTRY *pMte;
-            pMte = (LDR_DATA_TABLE_ENTRY *)((KUPTR)pCur - K_OFFSETOF(LDR_DATA_TABLE_ENTRY, InMemoryOrderLinks));
-            if (((KUPTR)pMte->DllBase & ~(KUPTR)31) == ((KUPTR)hDll & ~(KUPTR)31))
+            pMod->u.Manual.idxTls               = idxTls;
+            pMod->u.Manual.pabTlsInitData       = pabInitData;
+            pMod->u.Manual.ppTlsWorkerModuleVar = ppWorkerModuleVar;
+            KWLDR_LOG(("kwLdrTlsAllocationHook: idxTls=%d (%#x) for %s\n", idxTls, idxTls, pMod->pszPath));
+
+#if 0 /** @todo this doesn't work W10 18363   */
             {
-                PUNICODE_STRING pStr = &pMte->FullDllName;
-                KSIZE off = pStr->Length / sizeof(pStr->Buffer[0]);
-                pStr->Buffer[--off]++;
-                pStr->Buffer[--off]++;
-                pStr->Buffer[--off]++;
-                KWLDR_LOG(("kwLdrTlsAllocationHook: patched the MTE (%p) for %p\n", pMte, hDll));
-                break;
+                /*
+                 * Try sabotage the DLL name so we can load this module again.
+                 */
+                PPEB        pPeb = kwSandboxGetProcessEnvironmentBlock();
+                LIST_ENTRY *pHead;
+                LIST_ENTRY *pCur;
+
+                pHead = &pPeb->Ldr->InMemoryOrderModuleList;
+                for (pCur = pHead->Blink; pCur != pHead; pCur = pCur->Blink)
+                {
+                    LDR_DATA_TABLE_ENTRY *pMte;
+                    pMte = (LDR_DATA_TABLE_ENTRY *)((KUPTR)pCur - K_OFFSETOF(LDR_DATA_TABLE_ENTRY, InMemoryOrderLinks));
+                    if (((KUPTR)pMte->DllBase & ~(KUPTR)31) == ((KUPTR)hDll & ~(KUPTR)31))
+                    {
+                        PUNICODE_STRING pStr = &pMte->FullDllName;
+                        KSIZE off = pStr->Length / sizeof(pStr->Buffer[0]);
+                        pStr->Buffer[--off]++;
+                        pStr->Buffer[--off]++;
+                        pStr->Buffer[--off]++;
+                        KWLDR_LOG(("kwLdrTlsAllocationHook: patched the MTE (%p) for %p\n", pMte, hDll));
+                        break;
+                    }
+                }
             }
+#endif
+
+            /*
+             * Don't return a callback function unless the module has callbacks to service.
+             */
+            if (pMod->u.Manual.cTlsCallbacks > 0)
+            {
+                *ppWorkerModuleVar = pMod;
+                return (KUPTR)kwLdrTlsNativeLoaderCallback;
+            }
+            return 0;
         }
+        KWLDR_LOG(("kwLdrTlsAllocationHook: WTF? pMod=%p: idxTls=%#x pabTlsInitData=%p\n",
+                   pMod, pMod->u.Manual.idxTls, pMod->u.Manual.pabTlsInitData));
     }
+    return 0;
 }
 
 
@@ -2097,6 +2749,8 @@ static int kwLdrModuleCreateNonNativeSetupTls(PKWMODULE pMod)
         PIMAGE_TLS_DIRECTORY const  paEntries = (PIMAGE_TLS_DIRECTORY)&pbImg[pTlsDir->VirtualAddress];
         KU32 const                  cEntries  = pTlsDir->Size / sizeof(IMAGE_TLS_DIRECTORY);
         KU32                        iEntry;
+        KU32                        iTlsDll;
+        KU32                        iTlsDllSub;
         KUPTR                       offIndex;
         KUPTR                       offCallbacks;
         KUPTR const                *puCallbacks;
@@ -2151,25 +2805,35 @@ static int kwLdrModuleCreateNonNativeSetupTls(PKWMODULE pMod)
 
         /*
          * Make the allocation by loading a new instance of one of the TLS dlls.
-         * The DLL will make a call to
+         * The DLL will make a call to kwLdrTlsAllocationHook.
          */
         offIndex     = (KUPTR)paEntries[0].AddressOfIndex     - (KUPTR)pMod->u.Manual.pbLoad;
         offCallbacks = (KUPTR)paEntries[0].AddressOfCallBacks - (KUPTR)pMod->u.Manual.pbLoad;
         puCallbacks  = (KUPTR const *)&pbImg[offCallbacks];
         cbData = paEntries[0].SizeOfZeroFill + (paEntries[0].EndAddressOfRawData - paEntries[0].StartAddressOfRawData);
-        if (cbData <= 1024)
-            pwszTlsDll = L"kWorkerTls1K.dll";
-        else if (cbData <= 65536)
-            pwszTlsDll = L"kWorkerTls64K.dll";
-        else if (cbData <= 524288)
-            pwszTlsDll = L"kWorkerTls512K.dll";
-        else
-        {
-            kwErrPrintf("TLS data size in %s is too big: %u (%#p), max 512KB\n", pMod->pszPath, (unsigned)cbData, cbData);
-            return -1;
-        }
 
-        pMod->u.Manual.idxTls         = KU32_MAX;
+        /** @todo find better strategy here. Like temporary copy or whatever when
+         *        there is more than a single user. */
+        for (iTlsDll = 0; cbData > g_aTlsDlls[iTlsDll].cbTls;)
+            if (++iTlsDll >= K_ELEMENTS(g_aTlsDlls))
+            {
+                kwErrPrintf("TLS data size in %s is too big: %u (%#p), max 512KB\n", pMod->pszPath, (unsigned)cbData, cbData);
+                return -1;
+            }
+        for (iTlsDllSub = 0; g_aTlsDlls[iTlsDll].paDlls[iTlsDllSub].fUsed;)
+            if (++iTlsDllSub >= g_aTlsDlls[iTlsDll].cDlls)
+            {
+                kwErrPrintf("No unused TLS DLLs for %s of size %u!\n", pMod->pszPath, (unsigned)cbData);
+                return -1;
+            }
+
+        g_aTlsDlls[iTlsDll].paDlls[iTlsDllSub].fUsed = K_TRUE;
+        pwszTlsDll = g_aTlsDlls[iTlsDll].paDlls[iTlsDllSub].pwszName;
+
+        pMod->u.Manual.pabTlsInitData       = NULL;
+        pMod->u.Manual.ppTlsWorkerModuleVar = NULL;
+        pMod->u.Manual.idxTls               = KU32_MAX;
+
         pMod->u.Manual.offTlsInitData = (KU32)((KUPTR)paEntries[0].StartAddressOfRawData - (KUPTR)pMod->u.Manual.pbLoad);
         pMod->u.Manual.cbTlsInitData  = (KU32)(paEntries[0].EndAddressOfRawData - paEntries[0].StartAddressOfRawData);
         pMod->u.Manual.cbTlsAlloc     = (KU32)cbData;
@@ -2193,8 +2857,13 @@ static int kwLdrModuleCreateNonNativeSetupTls(PKWMODULE pMod)
         }
 
         *(KU32 *)&pMod->u.Manual.pbCopy[offIndex] = pMod->u.Manual.idxTls;
-        KWLDR_LOG(("kwLdrModuleCreateNonNativeSetupTls: idxTls=%d hmodTlsDll=%p (%ls) cbData=%#x\n",
-                   pMod->u.Manual.idxTls, hmodTlsDll, pwszTlsDll, cbData));
+        KWLDR_LOG(("kwLdrModuleCreateNonNativeSetupTls: idxTls=%d hmodTlsDll=%p (%ls) cbData=%#x pabTlsInitData=%p\n",
+                   pMod->u.Manual.idxTls, hmodTlsDll, pwszTlsDll, cbData, pMod->u.Manual.pabTlsInitData));
+
+        kHlpAssert(pMod->u.Manual.pabTlsInitData);
+        if (pMod->u.Manual.pabTlsInitData && pMod->u.Manual.cbTlsInitData)
+            kHlpMemCopy(pMod->u.Manual.pabTlsInitData, &pMod->u.Manual.pbCopy[pMod->u.Manual.offTlsInitData],
+                        pMod->u.Manual.cbTlsInitData);
     }
     return 0;
 }
@@ -2241,6 +2910,7 @@ static PKWMODULE kwLdrModuleCreateNonNative(const char *pszPath, KU32 uHashPath,
 
             default:
                 rc = KERR_GENERAL_FAILURE;
+                kwErrPrintf("kwLdrModuleCreateNonNative: Unsupported module type %d (%s)!\n", pLdrMod->enmType, pszPath);
                 break;
         }
         if (rc == 0)
@@ -2266,7 +2936,11 @@ static PKWMODULE kwLdrModuleCreateNonNative(const char *pszPath, KU32 uHashPath,
                     pMod->fExe          = fExe;
                     pMod->fNative       = K_FALSE;
                     pMod->pLdrMod       = pLdrMod;
-                    pMod->u.Manual.cImpMods = (KU32)cImports;
+                    pMod->iCrtSlot      = KU8_MAX;
+                    pMod->fNeedReInit   = K_FALSE;
+                    pMod->fReInitOnMsPdbSrvEndpointChange = K_FALSE;
+                    pMod->pszMsPdbSrvEndpoint       = NULL;
+                    pMod->u.Manual.cImpMods         = (KU32)cImports;
 #if defined(KBUILD_OS_WINDOWS) && defined(KBUILD_ARCH_AMD64)
                     pMod->u.Manual.fRegisteredFunctionTable = K_FALSE;
 #endif
@@ -2274,6 +2948,8 @@ static PKWMODULE kwLdrModuleCreateNonNative(const char *pszPath, KU32 uHashPath,
                     pMod->u.Manual.fCanDoQuick      = K_FALSE;
                     pMod->u.Manual.cQuickZeroChunks = 0;
                     pMod->u.Manual.cQuickCopyChunks = 0;
+                    pMod->u.Manual.pabTlsInitData       = NULL;
+                    pMod->u.Manual.ppTlsWorkerModuleVar = NULL;
                     pMod->u.Manual.idxTls           = KU32_MAX;
                     pMod->u.Manual.offTlsInitData   = KU32_MAX;
                     pMod->u.Manual.cbTlsInitData    = 0;
@@ -2283,6 +2959,7 @@ static PKWMODULE kwLdrModuleCreateNonNative(const char *pszPath, KU32 uHashPath,
                     pMod->pszPath       = (char *)kHlpMemCopy(&pMod->u.Manual.apImpMods[cImports + 1], pszPath, cbPath);
                     pMod->pwszPath      = (wchar_t *)(pMod->pszPath + cbPath + (cbPath & 1));
                     kwStrToUtf16(pMod->pszPath, (wchar_t *)pMod->pwszPath, cbPath * 2);
+                    pMod->offFilenameW  = (KU16)(kwPathGetFilenameW(pMod->pwszPath) - pMod->pwszPath);
 
                     /*
                      * Figure out where to load it and get memory there.
@@ -2304,17 +2981,25 @@ static PKWMODULE kwLdrModuleCreateNonNative(const char *pszPath, KU32 uHashPath,
                         if (rc == 0)
                         {
                             KI32 iImp;
+                            KU32 cchReloads;
 
                             /*
                              * Link the module (unless it's an executable image) and process the imports.
                              */
                             pMod->hOurMod = (HMODULE)pMod->u.Manual.pbLoad;
-                            if (!fExe)
-                                kwLdrModuleLink(pMod);
-                            KW_LOG(("New module: %p LB %#010x %s (kLdr)\n",
-                                    pMod->u.Manual.pbLoad, pMod->cbImage, pMod->pszPath));
-                            KW_LOG(("TODO: .reload /f %s=%p\n", pMod->pszPath, pMod->u.Manual.pbLoad));
+                            kwLdrModuleLink(pMod);
+                            KWLDR_LOG(("New module: %p LB %#010x %s (kLdr)\n",
+                                       pMod->u.Manual.pbLoad, pMod->cbImage, pMod->pszPath));
+                            KWLDR_LOG(("TODO: .reload /f %s=%p\n", pMod->pszPath, pMod->u.Manual.pbLoad));
                             kwDebuggerPrintf("TODO: .reload /f %s=%p\n", pMod->pszPath, pMod->u.Manual.pbLoad);
+                            cchReloads = g_cchReloads;
+                            if (cchReloads + 80 < sizeof(g_szReloads))
+                            {
+                                cchReloads += _snprintf(&g_szReloads[cchReloads], sizeof(g_szReloads) - cchReloads,
+                                                        "%s.reload /f %s=%p\n", cchReloads ? "; " : "",
+                                                        pMod->pszPath, pMod->u.Manual.pbLoad);
+                                g_cchReloads = cchReloads;
+                            }
 
                             for (iImp = 0; iImp < cImports; iImp++)
                             {
@@ -2327,6 +3012,8 @@ static PKWMODULE kwLdrModuleCreateNonNative(const char *pszPath, KU32 uHashPath,
                                     if (rc == 0)
                                         continue;
                                 }
+                                kwErrPrintf("Error getting import '%s' for '%s': %d (%u)\n",
+                                            szName, pMod->pszPath, rc, GetLastError());
                                 break;
                             }
 
@@ -2374,10 +3061,17 @@ static PKWMODULE kwLdrModuleCreateNonNative(const char *pszPath, KU32 uHashPath,
                                          */
                                         pMod->u.Manual.pvBits = pMod->u.Manual.pbCopy;
                                         pMod->u.Manual.enmState = KWMODSTATE_NEEDS_BITS;
+                                        pMod->u.Manual.enmReInitState = KWMODSTATE_NEEDS_BITS;
+                                        if (   g_Sandbox.pTool
+                                            && (   g_Sandbox.pTool->u.Sandboxed.enmHint == KWTOOLHINT_VISUAL_CPP_CL
+                                                || g_Sandbox.pTool->u.Sandboxed.enmHint == KWTOOLHINT_VISUAL_CPP_LINK)
+                                            && !pMod->fExe)
+                                            pMod->u.Manual.enmReInitState = KWMODSTATE_READY;
                                         g_cModules++;
                                         g_cNonNativeModules++;
                                         return pMod;
                                     }
+                                    kwErrPrintf("kwLdrModuleCreateNonNativeSetupTls failed with %d for %s\n", rc, pMod->pszPath);
                                 }
                                 else
                                     kwErrPrintf("kLdrModGetBits failed for %s: %#x (%d)\n", pszPath, rc, rc);
@@ -2396,7 +3090,11 @@ static PKWMODULE kwLdrModuleCreateNonNative(const char *pszPath, KU32 uHashPath,
                     else
                         kwErrPrintf("Failed to allocate %#x bytes\n", pMod->cbImage);
                 }
+                else
+                    kwErrPrintf("kwLdrModuleCreateNonNative: out of memory!\n");
             }
+            else
+                kwErrPrintf("kwLdrModuleCreateNonNative: kLdrModNumberOfImports failed for '%s'\n", pszPath);
         }
         kLdrModClose(pLdrMod);
     }
@@ -2438,8 +3136,19 @@ static int kwLdrModuleGetImportCallback(PKLDRMOD pMod, KU32 iImport, KU32 iSymbo
                     if (   pCurMod->fExe
                         || !g_aSandboxReplacements[i].fOnlyExe)
                     {
-                        KW_LOG(("replacing %s!%s\n",&pImpMod->pszPath[pImpMod->offFilename], g_aSandboxReplacements[i].pszFunction));
-                        *puValue = g_aSandboxReplacements[i].pfnReplacement;
+                        KWLDR_LOG(("replacing %s!%s\n",&pImpMod->pszPath[pImpMod->offFilename], g_aSandboxReplacements[i].pszFunction));
+                        if (!g_aSandboxReplacements[i].fCrtSlotArray)
+                            *puValue = g_aSandboxReplacements[i].pfnReplacement;
+                        else
+                        {
+                            if (pImpMod->iCrtSlot == KU8_MAX)
+                            {
+                                rc = kwLdrModuleCreateCrtSlot(pImpMod);
+                                if (rc)
+                                    KWLDR_LOG(("kwLdrModuleGetImportCallback: kwLdrModuleCreateCrtSlot failed: %d\n", rc));
+                            }
+                            *puValue = ((KUPTR *)g_aSandboxReplacements[i].pfnReplacement)[pImpMod->iCrtSlot];
+                        }
                     }
                     break;
                 }
@@ -2447,7 +3156,7 @@ static int kwLdrModuleGetImportCallback(PKLDRMOD pMod, KU32 iImport, KU32 iSymbo
     }
 
     //printf("iImport=%u (%s) %*.*s rc=%d\n", iImport, &pImpMod->pszPath[pImpMod->offFilename], cchSymbol, cchSymbol, pchSymbol, rc);
-    KW_LOG(("iImport=%u (%s) %*.*s rc=%d\n", iImport, &pImpMod->pszPath[pImpMod->offFilename], cchSymbol, cchSymbol, pchSymbol, rc));
+    KWLDR_LOG(("iImport=%u (%s) %*.*s rc=%d\n", iImport, &pImpMod->pszPath[pImpMod->offFilename], cchSymbol, cchSymbol, pchSymbol, rc));
     return rc;
 
 }
@@ -2484,9 +3193,18 @@ static KBOOL kwLdrModuleShouldDoNativeReplacements(const char *pszFilename, KWLO
 {
     if (enmLocation != KWLOCATION_SYSTEM32)
         return K_TRUE;
-    return kHlpStrNICompAscii(pszFilename, TUPLE("msvc"))   == 0
-        || kHlpStrNICompAscii(pszFilename, TUPLE("msdis"))  == 0
-        || kHlpStrNICompAscii(pszFilename, TUPLE("mspdb"))  == 0;
+    return kHlpStrNICompAscii(pszFilename, TUPLE("msvc"))            == 0
+        || kHlpStrNICompAscii(pszFilename, TUPLE("msdis"))           == 0
+        || kHlpStrNICompAscii(pszFilename, TUPLE("mspdb"))           == 0
+        || kHlpStrNICompAscii(pszFilename, TUPLE("vcruntime"))       == 0
+        || kHlpStrNICompAscii(pszFilename, TUPLE("ucrtbase"))        == 0
+        || kHlpStrNICompAscii(pszFilename, TUPLE("api-ms-win-crt-")) == 0
+#if 0 /* for debugging, only for debugging. */
+        || kHlpStrICompAscii(pszFilename, "c1.dll") == 0
+        || kHlpStrICompAscii(pszFilename, "c1xx.dll") == 0
+        || kHlpStrICompAscii(pszFilename, "c2.dll") == 0
+#endif
+        ;
 }
 
 
@@ -2538,6 +3256,9 @@ static KBOOL kwLdrModuleCanLoadNatively(const char *pszFilename, KWLOCATION enmL
         return K_TRUE;
     if (enmLocation == KWLOCATION_UNKNOWN_NATIVE)
         return K_TRUE;
+    if (   enmLocation == KWLOCATION_UNKNOWN
+        && kwLdrIsVirtualApiModule(pszFilename, kHlpStrLen(pszFilename)))
+        return K_TRUE;
 
     /* If the location is unknown, we must check if it's some dynamic loading
        of a SYSTEM32 DLL with a full path.  We do not want to load these ourselves! */
@@ -2560,9 +3281,20 @@ static KBOOL kwLdrModuleCanLoadNatively(const char *pszFilename, KWLOCATION enmL
         }
     }
 
-    return kHlpStrNICompAscii(pszFilename, TUPLE("msvc"))   == 0
-        || kHlpStrNICompAscii(pszFilename, TUPLE("msdis"))  == 0
-        || kHlpStrNICompAscii(pszFilename, TUPLE("mspdb"))  == 0;
+    return kHlpStrNICompAscii(pszFilename, TUPLE("msvc"))      == 0
+        || kHlpStrNICompAscii(pszFilename, TUPLE("msdis"))     == 0
+        || kHlpStrNICompAscii(pszFilename, TUPLE("mspdb"))     == 0
+        || kHlpStrNICompAscii(pszFilename, TUPLE("tbbmalloc")) == 0
+        || kHlpStrNICompAscii(pszFilename, TUPLE("ucrtbase"))  == 0
+        || kHlpStrNICompAscii(pszFilename, TUPLE("vcruntime")) == 0
+        || (   enmLocation != KWLOCATION_UNKNOWN
+            && kwLdrIsVirtualApiModule(pszFilename, kHlpStrLen(pszFilename)))
+#if 0 /* for debugging, only for debugging. */
+        //|| kHlpStrICompAscii(pszFilename, "c1.dll") == 0
+        //|| kHlpStrICompAscii(pszFilename, "c1xx.dll") == 0
+        //|| kHlpStrICompAscii(pszFilename, "c2.dll") == 0
+#endif
+        ;
 }
 
 
@@ -2645,7 +3377,7 @@ static PKWMODULE kwLdrModuleTryLoadDll(const char *pszPath, KWLOCATION enmLocati
                     if (   pMod->uHashPath == uHashPath
                         && kHlpStrComp(pMod->pszPath, szNormPath) == 0)
                         return kwLdrModuleRetain(pMod);
-                    pMod = pMod->pNext;
+                    pMod = pMod->pNextHash;
                 } while (pMod);
             }
 
@@ -2692,6 +3424,18 @@ static int kwLdrModuleResolveAndLookup(const char *pszName, PKWMODULE pExe, PKWM
     KBOOL       fNeedSuffix = *kHlpGetExt(pszName) == '\0' && kHlpGetFilename(pszName) == pszName;
     KSIZE       cchSuffix   = fNeedSuffix ? 4 : 0;
 
+    /* Virtual API module.  Normalize and try load it. */
+    if (pMod == NULL && cchName > 7 && kwLdrIsVirtualApiModule(pszName, cchName))
+    {
+        if (cchName + cchSuffix >= sizeof(szPath))
+            return KERR_BUFFER_OVERFLOW;
+        kHlpMemCopy(szPath, pszName, cchName);
+        if (fNeedSuffix)
+            kHlpMemCopy(&szPath[cchName], ".dll", sizeof(".dll"));
+        szPath[cchName + cchSuffix] = '\0';
+        _strlwr(szPath);
+        pMod = kwLdrModuleTryLoadVirtualDll(szPath, cchName + cchSuffix);
+    }
 
     /* The import path. */
     if (pMod == NULL && pImporter != NULL)
@@ -2779,6 +3523,160 @@ static int kwLdrModuleResolveAndLookup(const char *pszName, PKWMODULE pExe, PKWM
 
 
 /**
+ * Creates a CRT slot for the given module.
+ *
+ * @returns 0 on success, non-zero on failure.
+ * @param   pModule             The module.
+ */
+static int kwLdrModuleCreateCrtSlot(PKWMODULE pModule)
+{
+    KSIZE iSlot;
+    kHlpAssert(pModule->iCrtSlot == KU8_MAX);
+    for (iSlot = 0; iSlot < K_ELEMENTS(g_aCrtSlots); iSlot++)
+        if (g_aCrtSlots[iSlot].pModule == NULL)
+        {
+            KLDRADDR uAddr;
+            int rc;
+
+            /* Do the linking: */
+            g_aCrtSlots[iSlot].pModule = pModule;
+            g_aCrtSlots[iSlot].iSlot   = (KU32)iSlot;
+            pModule->iCrtSlot          = (KU8)iSlot;
+
+            /* resolve symbols: */
+            rc = kLdrModQuerySymbol(pModule->pLdrMod, NULL /*pvBits*/, KLDRMOD_BASEADDRESS_MAP, KU32_MAX, "malloc", 6,
+                                    NULL /*pvszVersion*/, NULL /*pfnGetForwarder*/, NULL /*pvUser*/, &uAddr, NULL);
+            *(KUPTR *)&g_aCrtSlots[iSlot].pfnMalloc = rc == 0 ? (KUPTR)uAddr : 0;
+            if (rc != 0)
+                kwErrPrintf("Failed to resolved 'malloc' in '%s': %d\n", pModule->pszPath, rc);
+
+            rc = kLdrModQuerySymbol(pModule->pLdrMod, NULL /*pvBits*/, KLDRMOD_BASEADDRESS_MAP, KU32_MAX, "_beginthreadex", 14,
+                                    NULL /*pvszVersion*/, NULL /*pfnGetForwarder*/, NULL /*pvUser*/, &uAddr, NULL);
+            *(KUPTR *)&g_aCrtSlots[iSlot].pfnBeginThreadEx = rc == 0 ? (KUPTR)uAddr : 0;
+            //if (rc != 0)
+            //    kwErrPrintf("Failed to resolved '_beginthreadex' in '%s': %d\n", pModule->pszPath, rc);
+
+            return 0;
+        }
+    kwErrPrintf("Out of CRT slots!\n");
+    return KERR_NO_MEMORY;
+}
+
+
+/**
+ * Locates the module structure for an already loaded native module.
+ *
+ * This will create a module structure if needed.
+ *
+ * @returns Pointer to the module structure on success, NULL on failure.
+ * @param   hModule         The native module handle.
+ * @param   fEnsureCrtSlot  Whether to ensure that it has a valid CRT slot.
+ * @param   pszLogName      The name to use for logging/errors.
+ */
+static PKWMODULE kwLdrModuleForLoadedNativeByHandle(HMODULE hModule, KBOOL fEnsureCrtSlot, const char *pszLogName)
+{
+    /*
+     * Get a normalized path for it.
+     */
+    char szModPath[1024];
+    if (GetModuleFileNameA(hModule, szModPath, sizeof(szModPath)) > 0)
+    {
+        char szNormPath[1024];
+        int rc = kwPathNormalize(szModPath, szNormPath, sizeof(szNormPath));
+        if (rc == 0)
+        {
+            /*
+             * Hash the path and look it up.
+             */
+            KU32        uHashPath;
+            KSIZE const cchPath   = kwStrHashEx(szNormPath, &uHashPath);
+            unsigned    idxHash   = uHashPath % K_ELEMENTS(g_apModules);
+            PKWMODULE   pMod      = g_apModules[idxHash];
+            if (pMod)
+            {
+                do
+                {
+                    if (   pMod->uHashPath == uHashPath
+                        && kHlpStrComp(pMod->pszPath, szNormPath) == 0)
+                    {
+                        kwLdrModuleRetain(pMod);
+                        break;
+                    }
+                    pMod = pMod->pNextHash;
+                } while (pMod);
+            }
+
+            /*
+             * If not in the hash table, so create a module entry.
+             */
+            if (!pMod)
+            {
+                PKLDRMOD pLdrMod;
+                rc = kLdrModOpenNativeByHandle((KUPTR)hModule, KLDRMOD_OPEN_FLAGS_NATIVE_ALLOW_INIT_TERM, &pLdrMod);
+                if (rc == 0)
+                {
+                    /** @todo more accurately determine location  */
+                    const char *pszFilename = kHlpGetFilename(szNormPath);
+                    KBOOL fDoReplacements = kwLdrModuleShouldDoNativeReplacements(pszFilename, KWLOCATION_SYSTEM32);
+                    pMod = kwLdrModuleCreateForNativekLdrModule(pLdrMod, szNormPath, cchPath + 1, uHashPath,
+                                                                fDoReplacements, NULL /*pVirtualApiMod*/);
+                    if (!pMod)
+                    {
+                        kLdrModClose(pLdrMod);
+                        kwErrPrintf("out of memory\n");
+                    }
+                }
+                else
+                    kwErrPrintf("kLdrModOpenNativeByHandle failed for %p / '%s': %d\n", hModule, pszLogName, rc);
+            }
+            if (pMod)
+            {
+                /*
+                 * Create a CRT slot for the module if necessary.
+                 */
+                if (!fEnsureCrtSlot || pMod->iCrtSlot != KU8_MAX)
+                    return pMod;
+                rc = kwLdrModuleCreateCrtSlot(pMod);
+                if (rc == 0)
+                    return pMod;
+                kwLdrModuleRelease(pMod);
+            }
+        }
+        else
+            kwErrPrintf("kwPathNormalize failed for '%s' (%s): %u!\n", szModPath, pszLogName, GetLastError());
+    }
+    else
+        kwErrPrintf("GetModuleFileNameA failed for '%s': %u!\n", pszLogName, GetLastError());
+    return NULL;
+}
+
+
+/**
+ * Locates the module structure for an already loaded native module.
+ *
+ * This will create a module structure if needed.
+ *
+ * @returns Pointer to the module structure on success, NULL on failure.
+ * @param   pszName         The name of the module.
+ * @param   fEnsureCrtSlot  Whether to ensure that it has a valid CRT slot.
+ * @param   fAlwaysPresent  Whether the module is expected to always be present,
+ *                          or not.  If not, complain less.
+ */
+static PKWMODULE kwLdrModuleForLoadedNative(const char *pszName, KBOOL fEnsureCrtSlot, KBOOL fAlwaysPresent)
+{
+    /*
+     * Locate the module handle and pass it to kwLdrModuleForLoadedNativeByHandle.
+     */
+    HANDLE hModule = GetModuleHandleA(pszName);
+    if (hModule)
+        return kwLdrModuleForLoadedNativeByHandle(hModule, fEnsureCrtSlot, pszName);
+    if (fAlwaysPresent)
+        kwErrPrintf("Module '%s' was not found by GetModuleHandleA/W!\n", pszName);
+    return NULL;
+}
+
+
+/**
  * Does the TLS memory initialization for a module on the current thread.
  *
  * @returns 0 on success, error on failure.
@@ -2812,12 +3710,12 @@ static void kwLdrCallTlsCallbacks(PKWMODULE pMod, DWORD dwReason)
 {
     if (pMod->u.Manual.cTlsCallbacks)
     {
-        PIMAGE_TLS_CALLBACK *pCallback = (PIMAGE_TLS_CALLBACK *)&pMod->u.Manual.pbLoad[pMod->u.Manual.offTlsCallbacks];
+        PIMAGE_TLS_CALLBACK *ppfnCallback = (PIMAGE_TLS_CALLBACK *)&pMod->u.Manual.pbLoad[pMod->u.Manual.offTlsCallbacks];
         do
         {
-            KWLDR_LOG(("%s: Calling TLS callback %p(%p,%#x,0)\n", pMod->pszPath, *pCallback, pMod->hOurMod, dwReason));
-            (*pCallback)(pMod->hOurMod, dwReason, 0);
-        } while (*++pCallback);
+            KWLDR_LOG(("%s: Calling TLS callback %p(%p,%#x,0)\n", pMod->pszPath, *ppfnCallback, pMod->hOurMod, dwReason));
+            (*ppfnCallback)(pMod->hOurMod, dwReason, 0);
+        } while (*++ppfnCallback);
     }
 }
 
@@ -2942,6 +3840,27 @@ static int kwLdrModuleInitTree(PKWMODULE pMod)
                 pMod->u.Manual.enmState = KWMODSTATE_INIT_FAILED;
         }
     }
+    /*
+     * Special hack to disconnect mspdbXXX.dll from mspdbsrv.exe when
+     * _MSPDBSRV_ENDPOINT_ changes value.
+     */
+    else if (pMod->fNeedReInit)
+    {
+        int rc2;
+        KWLDR_LOG(("kwLdrModuleInitTree: mspdb re-init hack: %s\n", pMod->pszPath));
+        //fprintf(stderr, "%d: kwLdrModuleInitTree: mspdb re-init hack: %s\n", getpid(), kwSandboxDoGetEnvA(&g_Sandbox, TUPLE("_MSPDBSRV_ENDPOINT_"))); fflush(stderr);
+        rc = kLdrModCallTerm(pMod->pLdrMod, pMod->u.Manual.pbLoad, (KUPTR)pMod->hOurMod);
+        rc2 = kLdrModCallInit(pMod->pLdrMod, pMod->u.Manual.pbLoad, (KUPTR)pMod->hOurMod);
+        if (!rc && !rc2)
+        { /* likely */ }
+        else
+        {
+            kwErrPrintf("Re-init of '%s' failed: rc=%d rc2=%d\n", pMod->pszPath, rc, rc2);
+            if (rc2 && !rc)
+                rc = rc2;
+        }
+        pMod->fNeedReInit = K_FALSE;
+    }
     return rc;
 }
 
@@ -2961,10 +3880,19 @@ static PKWMODULE kwToolLocateModuleByHandle(PKWTOOL pTool, HMODULE hmod)
     KU32            i;
     PKWDYNLOAD      pDynLoad;
 
+    if (pTool)
+    { /* likely */ }
+    else
+        return NULL;
+
     /* The executable. */
     if (   hmod == NULL
-        || pTool->u.Sandboxed.pExe->hOurMod == hmod)
-        return kwLdrModuleRetain(pTool->u.Sandboxed.pExe);
+        || (pTool->u.Sandboxed.pExe && pTool->u.Sandboxed.pExe->hOurMod == hmod))
+    {
+        if (pTool->u.Sandboxed.pExe)
+            return kwLdrModuleRetain(pTool->u.Sandboxed.pExe);
+        return NULL;
+    }
 
     /*
      * Binary lookup using the module table.
@@ -2977,8 +3905,8 @@ static PKWMODULE kwToolLocateModuleByHandle(PKWTOOL pTool, HMODULE hmod)
         i = iEnd / 2;
         for (;;)
         {
-            KUPTR const uHModThis = (KUPTR)papMods[i]->hOurMod;
-            if (uHMod < uHModThis)
+            KUPTR const uHModCur = (KUPTR)papMods[i]->hOurMod;
+            if (uHMod < uHModCur)
             {
                 iEnd = i--;
                 if (iStart <= i)
@@ -2986,7 +3914,7 @@ static PKWMODULE kwToolLocateModuleByHandle(PKWTOOL pTool, HMODULE hmod)
                 else
                     break;
             }
-            else if (uHMod != uHModThis)
+            else if (uHMod != uHModCur)
             {
                 iStart = ++i;
                 if (i < iEnd)
@@ -2994,8 +3922,15 @@ static PKWMODULE kwToolLocateModuleByHandle(PKWTOOL pTool, HMODULE hmod)
                 else
                     break;
             }
-            else
+            /* We've got a match.  Always return the non-virtual module (first) when there is one. */
+            else if (!papMods[i]->pVirtualApiMod)
                 return kwLdrModuleRetain(papMods[i]);
+            else
+            {
+                while (i > 0 && papMods[i - 1]->pVirtualApiMod && papMods[i - 1]->hOurMod == hmod)
+                    i--;
+                return kwLdrModuleRetain(papMods[i]);
+            }
 
             i = iStart + (iEnd - iStart) / 2;
         }
@@ -3005,7 +3940,6 @@ static PKWMODULE kwToolLocateModuleByHandle(PKWTOOL pTool, HMODULE hmod)
         while (--iStart > 0)
             kHlpAssert((KUPTR)papMods[iStart]->hOurMod != uHMod);
         kHlpAssert(i == 0 || (KUPTR)papMods[i - 1]->hOurMod < uHMod);
-        kHlpAssert(i == pTool->u.Sandboxed.cModules || (KUPTR)papMods[i]->hOurMod > uHMod);
 #endif
     }
 
@@ -3046,8 +3980,9 @@ static int kwToolAddModule(PKWTOOL pTool, PKWMODULE pMod)
         i = iEnd / 2;
         for (;;)
         {
-            KUPTR const uHModThis = (KUPTR)papMods[i]->hOurMod;
-            if (uHMod < uHModThis)
+            PKWMODULE   pCurMod  = papMods[i];
+            KUPTR const uHModCur = (KUPTR)pCurMod->hOurMod;
+            if (uHMod < uHModCur)
             {
                 iEnd = i;
                 if (iStart < i)
@@ -3055,7 +3990,7 @@ static int kwToolAddModule(PKWTOOL pTool, PKWMODULE pMod)
                 else
                     break;
             }
-            else if (uHMod != uHModThis)
+            else if (uHMod != uHModCur)
             {
                 iStart = ++i;
                 if (i < iEnd)
@@ -3065,7 +4000,33 @@ static int kwToolAddModule(PKWTOOL pTool, PKWMODULE pMod)
             }
             else
             {
-                /* Already there in the table. */
+                /* Already there in the table. The non-virtual module must be the first
+                   entry if we've got duplicate hmod values because of virtual modules.  */
+                if (pMod != pCurMod)
+                {
+                    /* Skip to the last module with the same hmod. */
+                    while (i + 1 < iEnd && (KUPTR)(pCurMod = papMods[i + 1])->hOurMod == uHMod)
+                    {
+                        if (pMod == pCurMod)
+                            return 0;
+                        i++;
+                    }
+
+                    /* Then scan backwards till the first one. */
+                    while (i > 0 && (KUPTR)(pCurMod = papMods[i - 1])->hOurMod == uHMod)
+                    {
+                        if (pMod == pCurMod)
+                            return 0;
+                        i--;
+                    }
+                    pCurMod = papMods[i];
+                    if (pMod != pCurMod)
+                    {
+                        if (pMod->pVirtualApiMod && !pCurMod->pVirtualApiMod)
+                            i++;
+                        break;
+                    }
+                }
                 return 0;
             }
 
@@ -3076,10 +4037,12 @@ static int kwToolAddModule(PKWTOOL pTool, PKWMODULE pMod)
         while (--iStart > 0)
         {
             kHlpAssert(papMods[iStart] != pMod);
-            kHlpAssert((KUPTR)papMods[iStart]->hOurMod != uHMod);
+            kHlpAssert(   (KUPTR)papMods[iStart]->hOurMod != uHMod
+                       || pMod->pVirtualApiMod
+                       || papMods[iStart]->pVirtualApiMod);
         }
-        kHlpAssert(i == 0 || (KUPTR)papMods[i - 1]->hOurMod < uHMod);
-        kHlpAssert(i == pTool->u.Sandboxed.cModules || (KUPTR)papMods[i]->hOurMod > uHMod);
+        kHlpAssert(i == 0 || (KUPTR)papMods[i - 1]->hOurMod <= uHMod);
+        kHlpAssert(i == pTool->u.Sandboxed.cModules || (KUPTR)papMods[i]->hOurMod >= uHMod);
 #endif
     }
     else
@@ -3101,7 +4064,7 @@ static int kwToolAddModule(PKWTOOL pTool, PKWMODULE pMod)
         kHlpMemMove(&papMods[i + 1], &papMods[i], (pTool->u.Sandboxed.cModules - i) * sizeof(papMods[0]));
     papMods[i] = kwLdrModuleRetain(pMod);
     pTool->u.Sandboxed.cModules++;
-    KW_LOG(("kwToolAddModule: %u modules after adding %p=%s\n", pTool->u.Sandboxed.cModules, uHMod, pMod->pszPath));
+    KWLDR_LOG(("kwToolAddModule: %u modules after adding %p=%s\n", pTool->u.Sandboxed.cModules, uHMod, pMod->pszPath));
     return 0;
 }
 
@@ -3116,6 +4079,8 @@ static int kwToolAddModule(PKWTOOL pTool, PKWMODULE pMod)
 static int kwToolAddModuleAndImports(PKWTOOL pTool, PKWMODULE pMod)
 {
     int rc = kwToolAddModule(pTool, pMod);
+    if (pMod->pVirtualApiMod && rc == 0)
+        rc = kwToolAddModule(pTool, pMod->pVirtualApiMod);
     if (!pMod->fNative && rc == 0)
     {
         KSIZE iImp = pMod->u.Manual.cImpMods;
@@ -3128,6 +4093,7 @@ static int kwToolAddModuleAndImports(PKWTOOL pTool, PKWMODULE pMod)
                 break;
         }
     }
+
     return 0;
 }
 
@@ -3152,6 +4118,8 @@ static PKWTOOL kwToolEntryCreate(PKFSOBJ pToolFsObj, const char *pszSearchPath)
     if (pTool)
     {
         KBOOL fRc;
+        wchar_t wcSaved;
+        wchar_t *pwcEnd;
         pTool->pwszPath = (wchar_t const *)(pTool + 1);
         fRc = kFsCacheObjGetFullPathW(pToolFsObj, (wchar_t *)pTool->pwszPath, cwcPath, '\\');
         kHlpAssert(fRc); K_NOREF(fRc);
@@ -3160,9 +4128,17 @@ static PKWTOOL kwToolEntryCreate(PKFSOBJ pToolFsObj, const char *pszSearchPath)
         fRc = kFsCacheObjGetFullPathA(pToolFsObj, (char *)pTool->pszPath, cbPath, '\\');
         kHlpAssert(fRc);
 
+        /* HACK ALERT! This is to help the loader search the application directory. */
+        pwcEnd = (wchar_t *)&pTool->pwszPath[pToolFsObj->cwcParent];
+        wcSaved = *pwcEnd;
+        *pwcEnd = '\0';
+        if (!SetDllDirectoryW(pTool->pwszPath))
+            kwErrPrintf("SetDllDirectoryW(tool) failed: %u\n", GetLastError());
+        *pwcEnd = wcSaved;
+
         pTool->enmType = KWTOOLTYPE_SANDBOXED;
         pTool->u.Sandboxed.pExe = kwLdrModuleCreateNonNative(pTool->pszPath, kwStrHash(pTool->pszPath), K_TRUE /*fExe*/,
-                                                             NULL /*pEexeMod*/, pszSearchPath);
+                                                             NULL /*pExeMod*/, pszSearchPath);
         if (pTool->u.Sandboxed.pExe)
         {
             int rc = kwLdrModuleQueryMainEntrypoint(pTool->u.Sandboxed.pExe, &pTool->u.Sandboxed.uMainAddr);
@@ -3185,12 +4161,16 @@ static PKWTOOL kwToolEntryCreate(PKFSOBJ pToolFsObj, const char *pszSearchPath)
             }
         }
         else
+        {
+            kwErrPrintf("kwLdrModuleCreateNonNative failed!\n");
             pTool->enmType = KWTOOLTYPE_EXEC;
+        }
 
         kFsCacheObjRelease(g_pFsCache, pToolFsObj);
         g_cTools++;
         return pTool;
     }
+    kwErrPrintf("kFsCacheObjAddUserData failed!\n");
     kFsCacheObjRelease(g_pFsCache, pToolFsObj);
     return NULL;
 }
@@ -3433,7 +4413,7 @@ static int parse_args(const char *pszSrc, int *pcArgs, char **argv, char *pchPoo
         if (*pszSrc == 0)
             break;
         pfFlags = pchPool;
-        PUTC((char)_ARG_NONZERO);
+        PUTC((unsigned char)_ARG_NONZERO);
         PUTV;
         bs = 0; chQuote = 0;
         for (;;)
@@ -3595,8 +4575,8 @@ static _onexit_t __cdecl kwSandbox_msvcrt__onexit(_onexit_t pfnFunc)
         }
         return NULL;
     }
-    KW_LOG(("_onexit(%p) - IGNORED\n", pfnFunc));
-    return pfnFunc;
+    //KW_LOG(("_onexit(%p) - IGNORED\n", pfnFunc));
+    //return pfnFunc;
 }
 
 
@@ -3620,8 +4600,8 @@ static int __cdecl kwSandbox_msvcrt_atexit(int (__cdecl *pfnFunc)(void))
         }
         return -1;
     }
-    KW_LOG(("atexit(%p) - IGNORED!\n", pfnFunc));
-    return 0;
+    //KW_LOG(("atexit(%p) - IGNORED!\n", pfnFunc));
+    //return 0;
 }
 
 
@@ -3857,14 +4837,35 @@ static uintptr_t __cdecl kwSandbox_msvcr120__beginthreadex(void *pvSecAttr, unsi
 
 
 /** _beginthreadex - create a new thread. */
-static uintptr_t __cdecl kwSandbox_msvcrt__beginthreadex(void *pvSecAttr, unsigned cbStack,
-                                                         unsigned (__stdcall *pfnThreadProc)(void *), void *pvUser,
-                                                         unsigned fCreate, unsigned *pidThread)
+static uintptr_t __cdecl kwSandbox_msvcrt__beginthreadex_wrapped(void *pvSecAttr, unsigned cbStack,
+                                                                 unsigned (__stdcall *pfnThreadProc)(void *), void *pvUser,
+                                                                 unsigned fCreate, unsigned *pidThread, PKWCRTSLOT pSlot)
 {
+    /*
+     * Since the VC++ 12 (VS 2013) compiler, the 2nd pass is now threaded.
+     * Let it do whatever it needs to.
+     */
+    KW_LOG(("kwSandbox_msvcrt__beginthreadex: pvSecAttr=%p (inh=%d) cbStack=%#x pfnThreadProc=%p pvUser=%p fCreate=%#x pidThread=%p\n",
+            pvSecAttr, pvSecAttr ? ((LPSECURITY_ATTRIBUTES)pvSecAttr)->bInheritHandle : 0, cbStack,
+            pfnThreadProc, pvUser, fCreate, pidThread));
+    if (   g_Sandbox.pTool->u.Sandboxed.enmHint == KWTOOLHINT_VISUAL_CPP_CL
+        && pSlot->pfnBeginThreadEx)
+    {
+        uintptr_t rcRet = pSlot->pfnBeginThreadEx(pvSecAttr, cbStack, pfnThreadProc, pvUser, fCreate, pidThread);
+        KW_LOG(("kwSandbox_msvcrt__beginthreadex: returns %p *pidThread=%#x\n", rcRet, pidThread ? *pidThread : -1));
+        return rcRet;
+    }
+
     kHlpAssert(GetCurrentThreadId() == g_Sandbox.idMainThread);
     KWFS_TODO();
     return 0;
 }
+
+CRT_SLOT_FUNCTION_WRAPPER(uintptr_t __cdecl, kwSandbox_msvcrt__beginthreadex,
+                          (void *pvSecAttr, unsigned cbStack, unsigned (__stdcall *pfnThreadProc)(void *),
+                           void *pvUser, unsigned fCreate, unsigned *pidThread),
+                          (pvSecAttr, cbStack, pfnThreadProc, pvUser, fCreate, pidThread, &g_aCrtSlots[iCrtSlot]));
+
 
 
 /*
@@ -3902,7 +4903,7 @@ static LPCH WINAPI kwSandbox_Kernel32_GetEnvironmentStringsA(void)
             psz = (char *)kHlpMemPCopy(psz, pszCur, cbCur);
         }
         *psz++ = '\0';
-        kHlpAssert(psz - pszzEnv == cbNeeded);
+        kHlpAssert((KUPTR)(psz - pszzEnv) == cbNeeded);
     }
 
     KW_LOG(("GetEnvironmentStringsA -> %p [%u]\n", pszzEnv, cbNeeded));
@@ -3918,7 +4919,7 @@ static LPCH WINAPI kwSandbox_Kernel32_GetEnvironmentStringsA(void)
     }
     fprintf(stderr, "  %u:%p=<eos>\n\n", iVar, pszCur);
     pszCur++;
-    fprintf(stderr, "ended at %p, after %u bytes (exepcted %u)\n", pszCur, pszCur - pszzEnv, cbNeeded);
+    fprintf(stderr, "ended at %p, after %u bytes (expected %u)\n", pszCur, pszCur - pszzEnv, cbNeeded);
 #endif
     return pszzEnv;
 }
@@ -3959,7 +4960,7 @@ static LPWCH WINAPI kwSandbox_Kernel32_GetEnvironmentStringsW(void)
             pwsz = (wchar_t *)kHlpMemPCopy(pwsz, pwszCur, cwcCur * sizeof(wchar_t));
         }
         *pwsz++ = '\0';
-        kHlpAssert(pwsz - pwszzEnv == cwcNeeded);
+        kHlpAssert((KUPTR)(pwsz - pwszzEnv) == cwcNeeded);
     }
 
     KW_LOG(("GetEnvironmentStringsW -> %p [%u]\n", pwszzEnv, cwcNeeded));
@@ -4585,6 +5586,68 @@ static KUPTR /*void*/ __cdecl kwSandbox_msvcrt__get_wenviron(wchar_t ***ppapwszE
 }
 
 
+/** CRT - _wdupenv_s() (see _tdupenv_s(). */
+static errno_t __cdecl kwSandbox_msvcrt__wdupenv_s_wrapped(wchar_t **ppwszValue, size_t *pcwcValue, const wchar_t *pwszVarName,
+                                                           PKWCRTSLOT pSlot)
+{
+    errno_t rc;
+    wchar_t *pwszValue;
+    kHlpAssert(GetCurrentThreadId() == g_Sandbox.idMainThread);
+
+    if (ppwszValue)
+    {
+        pwszValue = kwSandboxDoGetEnvW(&g_Sandbox, pwszVarName, wcslen(pwszVarName));
+        if (pwszValue)
+        {
+            size_t cwcValue = wcslen(pwszValue);
+            wchar_t *pwszDst = pSlot->pfnMalloc ? (wchar_t *)pSlot->pfnMalloc((cwcValue + 1) * sizeof(wchar_t)) : NULL;
+            if (pwszDst)
+            {
+                memcpy(pwszDst, pwszValue, cwcValue * sizeof(wchar_t));
+                pwszDst[cwcValue] = '\0';
+                *ppwszValue = pwszDst;
+                if (pcwcValue)
+                    *pcwcValue = cwcValue;
+                rc = 0;
+            }
+            else
+            {
+                *ppwszValue = NULL;
+                if (pcwcValue)
+                    *pcwcValue  = 0;
+                rc = ENOMEM;
+            }
+        }
+        else
+        {
+            *ppwszValue = NULL;
+            if (pcwcValue)
+                *pcwcValue = 0;
+            rc = 0;
+        }
+        KW_LOG(("_wdupenv_s(,,%ls) -> %d '%ls'\n", pwszVarName, rc, *ppwszValue ? *ppwszValue : L"<null>"));
+        //fprintf(stderr, "%d: _wdupenv_s(,,%ls) -> %d '%ls'\n", getpid(), pwszVarName, rc, *ppwszValue ? *ppwszValue : L"<null>"); fflush(stderr); // HACKING
+    }
+    else
+    {
+        /*
+         * Warning! If mspdb100.dll ends up here, it won't reinitialize the event name
+         *          and continue to use the one it constructed when _MSPDBSRV_ENDPOINT_
+         *          was set to a value.
+         */
+        if (pcwcValue)
+            *pcwcValue = 0;
+        rc = EINVAL;
+        KW_LOG(("_wdupenv_s(,,%ls) -> EINVAL\n", pwszVarName));
+        //fprintf(stderr, "%d: _wdupenv_s(,,%ls) -> EINVAL\n", getpid(), pwszVarName); fflush(stderr); // HACKING
+    }
+    return rc;
+}
+CRT_SLOT_FUNCTION_WRAPPER(errno_t __cdecl, kwSandbox_msvcrt__wdupenv_s,
+                          (wchar_t **ppwszValue, size_t *pcwcValue, const wchar_t *pwszVarName),
+                          (ppwszValue, pcwcValue, pwszVarName, &g_aCrtSlots[iCrtSlot]));
+
+
 
 /*
  *
@@ -4608,7 +5671,7 @@ static HMODULE WINAPI kwSandbox_Kernel32_LoadLibraryExA_Resource(PKWDYNLOAD pDyn
 
         pDynLoad->pNext = g_Sandbox.pTool->u.Sandboxed.pDynLoadHead;
         g_Sandbox.pTool->u.Sandboxed.pDynLoadHead = pDynLoad;
-        KW_LOG(("LoadLibraryExA(%s,,[resource]) -> %p\n", pDynLoad->szRequest, pDynLoad->hmod));
+        KWLDR_LOG(("LoadLibraryExA(%s,,[resource]) -> %p\n", pDynLoad->szRequest, pDynLoad->hmod));
     }
     else
         kHlpFree(pDynLoad);
@@ -4621,92 +5684,52 @@ static HMODULE WINAPI kwSandbox_Kernel32_LoadLibraryExA_Resource(PKWDYNLOAD pDyn
  */
 static HMODULE WINAPI kwSandbox_Kernel32_LoadLibraryExA_VirtualApiModule(PKWDYNLOAD pDynLoad, DWORD fFlags)
 {
-    HMODULE     hmod;
-    PKWMODULE   pMod;
-    KU32        uHashPath;
-    KSIZE       idxHash;
-    char        szNormPath[256];
+    static const char s_szDll[] = ".dll";
     KSIZE       cbFilename = kHlpStrLen(pDynLoad->szRequest) + 1;
+    PKWMODULE   pMod;
+    char        szNormPath[256];
 
     /*
-     * Lower case it.
+     * Lower case it and make sure it ends with .dll.
      */
-    if (cbFilename <= sizeof(szNormPath))
-    {
-        kHlpMemCopy(szNormPath, pDynLoad->szRequest, cbFilename);
-        _strlwr(szNormPath);
-    }
-    else
+    if (cbFilename > sizeof(szNormPath))
     {
         SetLastError(ERROR_FILENAME_EXCED_RANGE);
         return NULL;
     }
+    kHlpMemCopy(szNormPath, pDynLoad->szRequest, cbFilename);
+    _strlwr(szNormPath);
+    kHlpAssert(cbFilename > 7 /* api-ms- */ );
+    if (strcmp(&szNormPath[cbFilename - 5], s_szDll) != 0)
+    {
+        if (cbFilename + sizeof(s_szDll) - 1 > sizeof(szNormPath))
+        {
+            SetLastError(ERROR_FILENAME_EXCED_RANGE);
+            return NULL;
+        }
+
+        memcpy(&szNormPath[cbFilename - sizeof(s_szDll)], s_szDll, sizeof(s_szDll));
+        cbFilename += sizeof(s_szDll) - 1;
+    }
 
     /*
-     * Check if it has already been loaded so we don't create an unnecessary
-     * loader module for it.
+     * Try load it.
      */
-    uHashPath = kwStrHash(szNormPath);
-    idxHash   = uHashPath % K_ELEMENTS(g_apModules);
-    pMod      = g_apModules[idxHash];
+    pMod = kwLdrModuleTryLoadVirtualDll(szNormPath, cbFilename - 1);
     if (pMod)
     {
-        do
-        {
-            if (   pMod->uHashPath == uHashPath
-                && kHlpStrComp(pMod->pszPath, szNormPath) == 0)
-            {
-                pDynLoad->pMod = kwLdrModuleRetain(pMod);
-                pDynLoad->hmod = pMod->hOurMod;
+        kwToolAddModuleAndImports(g_Sandbox.pTool, pMod);
 
-                pDynLoad->pNext = g_Sandbox.pTool->u.Sandboxed.pDynLoadHead;
-                g_Sandbox.pTool->u.Sandboxed.pDynLoadHead = pDynLoad;
-                KW_LOG(("LoadLibraryExA(%s,,) -> %p [already loaded]\n", pDynLoad->szRequest, pDynLoad->hmod));
-                return pDynLoad->hmod;
-            }
-            pMod = pMod->pNext;
-        } while (pMod);
-    }
+        pDynLoad->pMod = pMod;
+        pDynLoad->hmod = pMod->hOurMod;
 
-
-    /*
-     * Try load it and make a kLdr module for it.
-     */
-    hmod = LoadLibraryExA(szNormPath, NULL /*hFile*/, fFlags);
-    if (hmod)
-    {
-        PKLDRMOD pLdrMod;
-        int rc = kLdrModOpenNativeByHandle((KUPTR)hmod, &pLdrMod);
-        if (rc == 0)
-        {
-            PKWMODULE pMod = kwLdrModuleCreateForNativekLdrModule(pLdrMod, szNormPath, cbFilename, uHashPath,
-                                                                  K_FALSE /*fDoReplacements*/);
-            if (pMod)
-            {
-                kwToolAddModuleAndImports(g_Sandbox.pTool, pMod);
-
-                pDynLoad = (PKWDYNLOAD)kHlpAlloc(sizeof(*pDynLoad) + cbFilename + cbFilename * sizeof(wchar_t));
-                if (pDynLoad)
-                {
-                    pDynLoad->pMod = pMod;
-                    pDynLoad->hmod = hmod;
-
-                    pDynLoad->pNext = g_Sandbox.pTool->u.Sandboxed.pDynLoadHead;
-                    g_Sandbox.pTool->u.Sandboxed.pDynLoadHead = pDynLoad;
-                    KW_LOG(("LoadLibraryExA(%s,,) -> %p\n", pDynLoad->szRequest, pDynLoad->hmod));
-                    return hmod;
-                }
-
-                KWFS_TODO();
-            }
-            else
-                KWFS_TODO();
-        }
-        else
-            KWFS_TODO();
+        pDynLoad->pNext = g_Sandbox.pTool->u.Sandboxed.pDynLoadHead;
+        g_Sandbox.pTool->u.Sandboxed.pDynLoadHead = pDynLoad;
+        KWLDR_LOG(("LoadLibraryExA(%s,,) -> %p [virtual API module - new]\n", pDynLoad->szRequest, pDynLoad->hmod));
+        return pDynLoad->hmod;
     }
     kHlpFree(pDynLoad);
-    return hmod;
+    return NULL;
 }
 
 
@@ -4719,6 +5742,7 @@ static HMODULE WINAPI kwSandbox_Kernel32_LoadLibraryExA(LPCSTR pszFilename, HAND
     PKWMODULE   pMod;
     int         rc;
     kHlpAssert(GetCurrentThreadId() == g_Sandbox.idMainThread);
+    //fprintf(stderr, "LoadLibraryExA: %s, %#x\n", pszFilename, fFlags);
 
     /*
      * Deal with a couple of extremely unlikely special cases right away.
@@ -4746,7 +5770,7 @@ static HMODULE WINAPI kwSandbox_Kernel32_LoadLibraryExA(LPCSTR pszFilename, HAND
                 rc = 0;
             if (rc == 0)
             {
-                KW_LOG(("LoadLibraryExA(%s,,) -> %p [cached]\n", pszFilename, pDynLoad->hmod));
+                KWLDR_LOG(("LoadLibraryExA(%s,,) -> %p [cached]\n", pszFilename, pDynLoad->hmod));
                 return pDynLoad->hmod;
             }
             SetLastError(ERROR_DLL_INIT_FAILED);
@@ -4764,7 +5788,7 @@ static HMODULE WINAPI kwSandbox_Kernel32_LoadLibraryExA(LPCSTR pszFilename, HAND
     }
     else
     {
-        KW_LOG(("LoadLibraryExA: Out of memory!\n"));
+        KWLDR_LOG(("LoadLibraryExA: Out of memory!\n"));
         SetLastError(ERROR_NOT_ENOUGH_MEMORY);
         return NULL;
     }
@@ -4781,7 +5805,7 @@ static HMODULE WINAPI kwSandbox_Kernel32_LoadLibraryExA(LPCSTR pszFilename, HAND
     /*
      * Special case: api-ms-win-core-synch-l1-2-0 and friends (32-bit yasm, built with VS2015).
      */
-    if (   strnicmp(pszFilename, TUPLE("api-ms-")) == 0
+    if (   kwLdrIsVirtualApiModule(pszFilename, cchFilename)
         && kHlpIsFilenameOnly(pszFilename))
         return kwSandbox_Kernel32_LoadLibraryExA_VirtualApiModule(pDynLoad, fFlags);
 
@@ -4792,6 +5816,15 @@ static HMODULE WINAPI kwSandbox_Kernel32_LoadLibraryExA(LPCSTR pszFilename, HAND
     pszSearchPath = kwSandboxDoGetEnvA(&g_Sandbox, "PATH", 4);
     if (!kHlpIsFilenameOnly(pszFilename))
         pMod = kwLdrModuleTryLoadDll(pszFilename, KWLOCATION_UNKNOWN, g_Sandbox.pTool->u.Sandboxed.pExe, pszSearchPath);
+#if 1 /* HACK ALERT! We run into trouble with a 2nd mspdb140.dll instance (x64 + x86), so use the one already loaded.   A call
+       * to NdrClientCall2 at ConnectToServer+0x426 fails with E_INVALIDARG.  Problems with multiple connections from same PID? */
+    else if (   strcmp(pszFilename, "mspdb140.dll") == 0
+             && GetModuleHandleA(pszFilename) != NULL)
+    {
+        pMod = kwLdrModuleForLoadedNativeByHandle(GetModuleHandleA(pszFilename), K_FALSE, pszFilename);
+        KWLDR_LOG(("LoadLibraryExA: mspdb140 hack: pMod=%p\n", pMod));
+    }
+#endif
     else
     {
         rc = kwLdrModuleResolveAndLookup(pszFilename, g_Sandbox.pTool->u.Sandboxed.pExe, NULL /*pImporter*/, pszSearchPath, &pMod);
@@ -4816,7 +5849,7 @@ static HMODULE WINAPI kwSandbox_Kernel32_LoadLibraryExA(LPCSTR pszFilename, HAND
         rc = kwLdrModuleInitTree(pMod);
         if (rc == 0)
         {
-            KW_LOG(("LoadLibraryExA(%s,,) -> %p\n", pszFilename, pDynLoad->hmod));
+            KWLDR_LOG(("LoadLibraryExA(%s,,) -> %p\n", pszFilename, pDynLoad->hmod));
             return pDynLoad->hmod;
         }
 
@@ -4841,63 +5874,95 @@ static HMODULE WINAPI kwSandbox_Kernel32_Native_LoadLibraryExA(LPCSTR pszFilenam
     /*
      * We may have to help resolved unqualified DLLs living in the executable directory.
      */
-    if (kHlpIsFilenameOnly(pszFilename))
+    if (   kHlpIsFilenameOnly(pszFilename)
+        && g_Sandbox.pTool
+        && g_Sandbox.pTool->u.Sandboxed.pExe)
     {
-        KSIZE cchFilename = kHlpStrLen(pszFilename);
-        KSIZE cchExePath  = g_Sandbox.pTool->u.Sandboxed.pExe->offFilename;
-        if (cchExePath + cchFilename + 1 <= sizeof(szPath))
+        KSIZE const cchFilename = kHlpStrLen(pszFilename);
+#define MY_IMATCH(a_szName)   (cchFilename == sizeof(a_szName) - 1 && kHlpStrICompAscii(pszFilename, a_szName) == 0)
+        if (   !kwLdrIsVirtualApiModule(pszFilename, cchFilename)
+            && !MY_IMATCH("ntdll")
+            && !MY_IMATCH("kernel32")
+            && !MY_IMATCH("ntdll.dll")
+            && !MY_IMATCH("kernelbase")
+            && !MY_IMATCH("kernel32.dll")
+            && !MY_IMATCH("kernelbase.dll")
+           )
+#undef  MY_IMATCH
         {
-            kHlpMemCopy(szPath, g_Sandbox.pTool->u.Sandboxed.pExe->pszPath, cchExePath);
-            kHlpMemCopy(&szPath[cchExePath], pszFilename, cchFilename + 1);
-            if (kwFsPathExists(szPath))
+            KSIZE cchExePath = g_Sandbox.pTool->u.Sandboxed.pExe->offFilename;
+            if (cchExePath + cchFilename + 1 <= sizeof(szPath))
             {
-                KWLDR_LOG(("kwSandbox_Kernel32_Native_LoadLibraryExA: %s -> %s\n", pszFilename, szPath));
-                pszFilename = szPath;
-            }
-        }
-
-        if (pszFilename != szPath)
-        {
-            KSIZE cchSuffix = 0;
-            KBOOL fNeedSuffix = K_FALSE;
-            const char *pszCur = kwSandboxDoGetEnvA(&g_Sandbox, "PATH", 4);
-            while (*pszCur != '\0')
-            {
-                /* Find the end of the component */
-                KSIZE cch = 0;
-                while (pszCur[cch] != ';' && pszCur[cch] != '\0')
-                    cch++;
-
-                if (   cch > 0 /* wrong, but whatever */
-                    && cch + 1 + cchFilename + cchSuffix < sizeof(szPath))
+                kHlpMemCopy(szPath, g_Sandbox.pTool->u.Sandboxed.pExe->pszPath, cchExePath);
+                kHlpMemCopy(&szPath[cchExePath], pszFilename, cchFilename + 1);
+                if (kwFsPathExists(szPath))
                 {
-                    char *pszDst = kHlpMemPCopy(szPath, pszCur, cch);
-                    if (   szPath[cch - 1] != ':'
-                        && szPath[cch - 1] != '/'
-                        && szPath[cch - 1] != '\\')
-                        *pszDst++ = '\\';
-                    pszDst = kHlpMemPCopy(pszDst, pszFilename, cchFilename);
-                    if (fNeedSuffix)
-                        pszDst = kHlpMemPCopy(pszDst, ".dll", 4);
-                    *pszDst = '\0';
+                    KWLDR_LOG(("kwSandbox_Kernel32_Native_LoadLibraryExA: %s -> %s\n", pszFilename, szPath));
+                    pszFilename = szPath;
+                }
+            }
 
-                    if (kwFsPathExists(szPath))
+            if (pszFilename != szPath)
+            {
+                KSIZE cchSuffix = 0;
+                KBOOL fNeedSuffix = K_FALSE;
+                const char *pszCur = kwSandboxDoGetEnvA(&g_Sandbox, "PATH", 4);
+                kHlpAssert(pszCur);
+                if (pszCur)
+                {
+                    while (*pszCur != '\0')
                     {
-                        KWLDR_LOG(("kwSandbox_Kernel32_Native_LoadLibraryExA: %s -> %s\n", pszFilename, szPath));
-                        pszFilename = szPath;
-                        break;
+                        /* Find the end of the component */
+                        KSIZE cch = 0;
+                        while (pszCur[cch] != ';' && pszCur[cch] != '\0')
+                            cch++;
+
+                        if (   cch > 0 /* wrong, but whatever */
+                            && cch + 1 + cchFilename + cchSuffix < sizeof(szPath))
+                        {
+                            char *pszDst = kHlpMemPCopy(szPath, pszCur, cch);
+                            if (   szPath[cch - 1] != ':'
+                                && szPath[cch - 1] != '/'
+                                && szPath[cch - 1] != '\\')
+                                *pszDst++ = '\\';
+                            pszDst = kHlpMemPCopy(pszDst, pszFilename, cchFilename);
+                            if (fNeedSuffix)
+                                pszDst = kHlpMemPCopy(pszDst, ".dll", 4);
+                            *pszDst = '\0';
+
+                            if (kwFsPathExists(szPath))
+                            {
+                                KWLDR_LOG(("kwSandbox_Kernel32_Native_LoadLibraryExA: %s -> %s\n", pszFilename, szPath));
+                                pszFilename = szPath;
+                                break;
+                            }
+                        }
+
+                        /* Advance */
+                        pszCur += cch;
+                        while (*pszCur == ';')
+                            pszCur++;
                     }
                 }
-
-                /* Advance */
-                pszCur += cch;
-                while (*pszCur == ';')
-                    pszCur++;
             }
         }
     }
 
     return LoadLibraryExA(pszFilename, hFile, fFlags);
+}
+
+
+/** Kernel32 - LoadLibraryExW() for native overloads */
+static HMODULE WINAPI kwSandbox_Kernel32_Native_LoadLibraryExW(LPCWSTR pwszFilename, HANDLE hFile, DWORD fFlags)
+{
+    char szTmp[4096];
+    KSIZE cchTmp = kwUtf16ToStr(pwszFilename, szTmp, sizeof(szTmp));
+    if (cchTmp < sizeof(szTmp))
+        return kwSandbox_Kernel32_Native_LoadLibraryExA(szTmp, hFile, fFlags);
+
+    KWFS_TODO();
+    SetLastError(ERROR_FILENAME_EXCED_RANGE);
+    return NULL;
 }
 
 
@@ -4943,50 +6008,127 @@ static BOOL WINAPI kwSandbox_Kernel32_FreeLibrary(HMODULE hmod)
 }
 
 
+/** Worker for GetModuleHandleA/W for handling cached modules. */
+static HMODULE kwSandbox_Kernel32_GetModuleHandle_ReturnedCachedEntry(KSIZE i)
+{
+    HMODULE hmod = g_aGetModuleHandleCache[i].hmod;
+    if (hmod)
+        KWLDR_LOG(("kwSandbox_Kernel32_GetModuleHandle_ReturnedCachedEntry(%u/%s -> %p [cached]\n",
+                   hmod, g_aGetModuleHandleCache[i].pszName));
+    else
+    {
+        /*
+         * The first time around we have to make sure we have a module table
+         * entry for it, if not we add one.  We need to add it to the tools
+         * module list to for it to work.
+         */
+        PKWMODULE pMod = kwLdrModuleForLoadedNative(g_aGetModuleHandleCache[i].pszName, K_FALSE,
+                                                    g_aGetModuleHandleCache[i].fAlwaysPresent);
+        if (pMod)
+        {
+            hmod = pMod->hOurMod;
+            if (!kwToolLocateModuleByHandle(g_Sandbox.pTool, hmod))
+            {
+                kwToolAddModule(g_Sandbox.pTool, pMod);
+                KWLDR_LOG(("kwSandbox_Kernel32_GetModuleHandle_ReturnedCachedEntry(%u/%s -> %p [added to tool]\n",
+                           hmod, g_aGetModuleHandleCache[i].pszName));
+            }
+            else
+                KWLDR_LOG(("kwSandbox_Kernel32_GetModuleHandle_ReturnedCachedEntry(%u/%s -> %p [known to tool]\n",
+                           hmod, g_aGetModuleHandleCache[i].pszName));
+
+        }
+    }
+    return hmod;
+}
+
+
 /** Kernel32 - GetModuleHandleA()   */
 static HMODULE WINAPI kwSandbox_Kernel32_GetModuleHandleA(LPCSTR pszModule)
 {
     KSIZE i;
     KSIZE cchModule;
     PKWDYNLOAD pDynLoad;
+    KSIZE cchSuffix;
+    DWORD dwErr = ERROR_MOD_NOT_FOUND;
     kHlpAssert(GetCurrentThreadId() == g_Sandbox.idMainThread);
 
     /*
      * The executable.
      */
     if (pszModule == NULL)
+    {
+        KWLDR_LOG(("kwSandbox_Kernel32_GetModuleHandleA(NULL) -> %p (exe)\n", g_Sandbox.pTool->u.Sandboxed.pExe->hOurMod));
         return (HMODULE)g_Sandbox.pTool->u.Sandboxed.pExe->hOurMod;
+    }
+
+    /*
+     * If no path of suffix, pretend it ends with .DLL.
+     */
+    cchSuffix = strpbrk(pszModule, ":/\\.") ? 0 : 4;
 
     /*
      * Cache of system modules we've seen queried.
      */
     cchModule = kHlpStrLen(pszModule);
     for (i = 0; i < K_ELEMENTS(g_aGetModuleHandleCache); i++)
-        if (   g_aGetModuleHandleCache[i].cchName == cchModule
-            && stricmp(pszModule, g_aGetModuleHandleCache[i].pszName) == 0)
-        {
-            if (g_aGetModuleHandleCache[i].hmod != NULL)
-                return g_aGetModuleHandleCache[i].hmod;
-            return g_aGetModuleHandleCache[i].hmod = GetModuleHandleA(pszModule);
-        }
+        if (    (   g_aGetModuleHandleCache[i].cchName == cchModule
+                 && stricmp(pszModule, g_aGetModuleHandleCache[i].pszName) == 0)
+            ||  (   cchSuffix > 0
+                 && g_aGetModuleHandleCache[i].cchName == cchModule + cchSuffix
+                 && strnicmp(pszModule, g_aGetModuleHandleCache[i].pszName, cchModule)
+                 && stricmp(&g_aGetModuleHandleCache[i].pszName[cchModule], ".dll") == 0))
+            return kwSandbox_Kernel32_GetModuleHandle_ReturnedCachedEntry(i);
 
     /*
      * Modules we've dynamically loaded.
      */
     for (pDynLoad = g_Sandbox.pTool->u.Sandboxed.pDynLoadHead; pDynLoad; pDynLoad = pDynLoad->pNext)
-        if (   pDynLoad->pMod
-            && (   stricmp(pDynLoad->pMod->pszPath, pszModule) == 0
-                || stricmp(&pDynLoad->pMod->pszPath[pDynLoad->pMod->offFilename], pszModule) == 0) )
+        if (pDynLoad->pMod)
         {
-            if (   pDynLoad->pMod->fNative
-                || pDynLoad->pMod->u.Manual.enmState == KWMODSTATE_READY)
+            const char *pszPath = pDynLoad->pMod->pszPath;
+            const char *pszName = &pszPath[pDynLoad->pMod->offFilename];
+            if (   stricmp(pszPath, pszModule) == 0
+                || stricmp(pszName, pszModule) == 0
+                || (   cchSuffix > 0
+                    && strnicmp(pszName, pszModule, cchModule) == 0
+                    && stricmp(&pszName[cchModule], ".dll") == 0))
             {
-                KW_LOG(("kwSandbox_Kernel32_GetModuleHandleA(%s,,) -> %p [dynload]\n", pszModule, pDynLoad->hmod));
-                return pDynLoad->hmod;
+                if (   pDynLoad->pMod->fNative
+                    || pDynLoad->pMod->u.Manual.enmState == KWMODSTATE_READY)
+                {
+                    KWLDR_LOG(("kwSandbox_Kernel32_GetModuleHandleA(%s,,) -> %p [dynload]\n", pszModule, pDynLoad->hmod));
+                    return pDynLoad->hmod;
+                }
+                KWLDR_LOG(("kwSandbox_Kernel32_GetModuleHandleA(%s) -> NULL (not read)\n", pszModule));
+                SetLastError(ERROR_MOD_NOT_FOUND);
+                return NULL;
             }
-            SetLastError(ERROR_MOD_NOT_FOUND);
-            return NULL;
         }
+
+    /*
+     * Hack for the api-ms-win-xxxxx.dll modules.  Find which module they map
+     * to and go via the g_aGetModuleHandleCache cache.
+     */
+/** @todo virtual api DLLs */
+    if (kHlpStrNICompAscii(pszModule, "api-ms-win-", 11) == 0)
+    {
+        HMODULE hmod = GetModuleHandleA(pszModule);
+        KWLDR_LOG(("kwSandbox_Kernel32_GetModuleHandleA(%s); hmod=%p\n", pszModule, hmod));
+        if (hmod)
+        {
+            if (hmod == GetModuleHandleW(L"KERNELBASE.DLL"))
+                return kwSandbox_Kernel32_GetModuleHandleA("KERNELBASE.DLL");
+            if (hmod == GetModuleHandleW(L"KERNEL32.DLL"))
+                return kwSandbox_Kernel32_GetModuleHandleA("KERNEL32.DLL");
+            if (hmod == GetModuleHandleW(L"NTDLL.DLL"))
+                return kwSandbox_Kernel32_GetModuleHandleA("NTDLL.DLL");
+            if (hmod == GetModuleHandleW(L"UCRTBASE.DLL"))
+                return kwSandbox_Kernel32_GetModuleHandleA("UCRTBASE.DLL");
+        }
+        else
+            dwErr = GetLastError();
+    }
 
     kwErrPrintf("pszModule=%s\n", pszModule);
     KWFS_TODO();
@@ -5001,48 +6143,87 @@ static HMODULE WINAPI kwSandbox_Kernel32_GetModuleHandleW(LPCWSTR pwszModule)
     KSIZE i;
     KSIZE cwcModule;
     PKWDYNLOAD pDynLoad;
+    KSIZE cwcSuffix;
+    DWORD dwErr = ERROR_MOD_NOT_FOUND;
     kHlpAssert(GetCurrentThreadId() == g_Sandbox.idMainThread);
 
     /*
      * The executable.
      */
     if (pwszModule == NULL)
+    {
+        KWLDR_LOG(("kwSandbox_Kernel32_GetModuleHandleW(NULL) -> %p (exe)\n", g_Sandbox.pTool->u.Sandboxed.pExe->hOurMod));
         return (HMODULE)g_Sandbox.pTool->u.Sandboxed.pExe->hOurMod;
+    }
+
+    /*
+     * If no path of suffix, pretend it ends with .DLL.
+     */
+    cwcSuffix = wcspbrk(pwszModule, L":/\\.") ? 0 : 4;
 
     /*
      * Cache of system modules we've seen queried.
      */
     cwcModule = kwUtf16Len(pwszModule);
     for (i = 0; i < K_ELEMENTS(g_aGetModuleHandleCache); i++)
-        if (   g_aGetModuleHandleCache[i].cwcName == cwcModule
-            && _wcsicmp(pwszModule, g_aGetModuleHandleCache[i].pwszName) == 0)
-        {
-            if (g_aGetModuleHandleCache[i].hmod != NULL)
-                return g_aGetModuleHandleCache[i].hmod;
-            return g_aGetModuleHandleCache[i].hmod = GetModuleHandleW(pwszModule);
-        }
+        if (   (   g_aGetModuleHandleCache[i].cwcName == cwcModule
+                && _wcsicmp(pwszModule, g_aGetModuleHandleCache[i].pwszName) == 0)
+            || (   cwcSuffix > 0
+                && g_aGetModuleHandleCache[i].cwcName == cwcModule + cwcSuffix
+                && _wcsnicmp(pwszModule, g_aGetModuleHandleCache[i].pwszName, cwcModule) == 0
+                && _wcsicmp(&g_aGetModuleHandleCache[i].pwszName[cwcModule], L".dll") == 0))
+            return kwSandbox_Kernel32_GetModuleHandle_ReturnedCachedEntry(i);
 
     /*
      * Modules we've dynamically loaded.
      */
     for (pDynLoad = g_Sandbox.pTool->u.Sandboxed.pDynLoadHead; pDynLoad; pDynLoad = pDynLoad->pNext)
-        if (   pDynLoad->pMod
-            && (   _wcsicmp(pDynLoad->pMod->pwszPath, pwszModule) == 0
-                || _wcsicmp(&pDynLoad->pMod->pwszPath[pDynLoad->pMod->offFilename], pwszModule) == 0) ) /** @todo wrong offset */
+        if (pDynLoad->pMod)
         {
-            if (   pDynLoad->pMod->fNative
-                || pDynLoad->pMod->u.Manual.enmState == KWMODSTATE_READY)
+            const wchar_t *pwszPath = pDynLoad->pMod->pwszPath;
+            const wchar_t *pwszName = &pwszPath[pDynLoad->pMod->offFilenameW];
+            if (   _wcsicmp(pwszPath, pwszModule) == 0
+                || _wcsicmp(pwszName, pwszModule) == 0
+                || (   cwcSuffix
+                    && _wcsnicmp(pwszName, pwszModule, cwcModule) == 0
+                    && _wcsicmp(&pwszName[cwcModule], L".dll") == 0))
             {
-                KW_LOG(("kwSandbox_Kernel32_GetModuleHandleW(%ls,,) -> %p [dynload]\n", pwszModule, pDynLoad->hmod));
-                return pDynLoad->hmod;
+                if (   pDynLoad->pMod->fNative
+                    || pDynLoad->pMod->u.Manual.enmState == KWMODSTATE_READY)
+                {
+                    KWLDR_LOG(("kwSandbox_Kernel32_GetModuleHandleW(%ls,,) -> %p [dynload]\n", pwszModule, pDynLoad->hmod));
+                    return pDynLoad->hmod;
+                }
+                KWLDR_LOG(("kwSandbox_Kernel32_GetModuleHandleW(%ls) -> NULL (not read)\n", pwszModule));
+                SetLastError(ERROR_MOD_NOT_FOUND);
+                return NULL;
             }
-            SetLastError(ERROR_MOD_NOT_FOUND);
-            return NULL;
         }
+
+    /*
+     * Hack for the api-ms-win-xxxxx.dll modules.  Find which module they map
+     * to and go via the g_aGetModuleHandleCache cache.
+     */
+    if (_wcsnicmp(pwszModule, L"api-ms-win-", 11) == 0)
+    {
+        HMODULE hmod = GetModuleHandleW(pwszModule);
+        KWLDR_LOG(("kwSandbox_Kernel32_GetModuleHandleW(%ls); hmod=%p\n", pwszModule, hmod));
+        if (hmod)
+        {
+            if (hmod == GetModuleHandleW(L"KERNELBASE.DLL"))
+                return kwSandbox_Kernel32_GetModuleHandleW(L"KERNELBASE.DLL");
+            if (hmod == GetModuleHandleW(L"KERNEL32.DLL"))
+                return kwSandbox_Kernel32_GetModuleHandleW(L"KERNEL32.DLL");
+            if (hmod == GetModuleHandleW(L"NTDLL.DLL"))
+                return kwSandbox_Kernel32_GetModuleHandleW(L"NTDLL.DLL");
+        }
+        else
+            dwErr = GetLastError();
+    }
 
     kwErrPrintf("pwszModule=%ls\n", pwszModule);
     KWFS_TODO();
-    SetLastError(ERROR_MOD_NOT_FOUND);
+    SetLastError(dwErr);
     return NULL;
 }
 
@@ -5055,7 +6236,7 @@ static UINT WINAPI kwSandbox_BreakIntoDebugger(void *pv1, void *pv2, void *pv3, 
 #else
     KWFS_TODO();
 #endif
-    return -1;
+    return ~(UINT)0;
 }
 
 
@@ -5162,7 +6343,23 @@ static FARPROC WINAPI kwSandbox_Kernel32_GetProcAddress(HMODULE hmod, LPCSTR psz
                             || (KUPTR)_ReturnAddress() - (KUPTR)g_Sandbox.pTool->u.Sandboxed.pExe->hOurMod
                                < g_Sandbox.pTool->u.Sandboxed.pExe->cbImage)
                         {
-                            uValue = g_aSandboxGetProcReplacements[i].pfnReplacement;
+                            if (!g_aSandboxReplacements[i].fCrtSlotArray)
+                                uValue = g_aSandboxGetProcReplacements[i].pfnReplacement;
+                            else
+                            {
+                                if (pMod->iCrtSlot == KU8_MAX)
+                                {
+                                    int rc = kwLdrModuleCreateCrtSlot(pMod);
+                                    if (rc)
+                                    {
+                                        KW_LOG(("GetProcAddress: kwLdrModuleCreateCrtSlot failed: %d\n", rc));
+                                        SetLastError(ERROR_INTERNAL_ERROR);
+                                        return NULL;
+                                    }
+                                }
+                                uValue = ((KUPTR *)g_aSandboxGetProcReplacements[i].pfnReplacement)[pMod->iCrtSlot];
+                            }
+
                             KW_LOG(("GetProcAddress(%s, %s) -> %p replaced\n", pMod->pszPath, pszProc, (KUPTR)uValue));
                         }
                         kwLdrModuleRelease(pMod);
@@ -5218,6 +6415,17 @@ static FARPROC WINAPI kwSandbox_Kernel32_GetProcAddress(HMODULE hmod, LPCSTR psz
     KWFS_TODO();
     return GetProcAddress(hmod, pszProc);
 }
+
+
+#ifndef NDEBUG
+/** Kernel32 - GetProcAddress() - native replacement for debugging only.  */
+static FARPROC WINAPI kwSandbox_Kernel32_Native_GetProcAddress(HMODULE hmod, LPCSTR pszProc)
+{
+    FARPROC pfnRet = GetProcAddress(hmod, pszProc);
+    KWLDR_LOG(("kwSandbox_Kernel32_Native_GetProcAddress(%p, %s) -> %p\n", hmod, pszProc, pfnRet));
+    return pfnRet;
+}
+#endif
 
 
 /** Kernel32 - GetModuleFileNameA()   */
@@ -5279,8 +6487,8 @@ static PVOID WINAPI kwSandbox_ntdll_RtlPcToFileHeader(PVOID pvPC, PVOID *ppvImag
             i = iEnd / 2;
             for (;;)
             {
-                KUPTR const uHModThis = (KUPTR)papMods[i]->hOurMod;
-                if (uPC < uHModThis)
+                KUPTR const uHModCur = (KUPTR)papMods[i]->hOurMod;
+                if (uPC < uHModCur)
                 {
                     iEnd = i;
                     if (iStart < i)
@@ -5288,7 +6496,7 @@ static PVOID WINAPI kwSandbox_ntdll_RtlPcToFileHeader(PVOID pvPC, PVOID *ppvImag
                     else
                         break;
                 }
-                else if (uPC != uHModThis)
+                else if (uPC != uHModCur)
                 {
                     iStart = ++i;
                     if (i < iEnd)
@@ -5359,6 +6567,7 @@ static DWORD kwFsLookupErrorToWindowsError(KFSLOOKUPERROR enmError)
 
         case KFSLOOKUPERROR_PATH_COMP_NOT_FOUND:
         case KFSLOOKUPERROR_PATH_COMP_NOT_DIR:
+        case KFSLOOKUPERROR_PATH_TOO_SHORT:
             return ERROR_PATH_NOT_FOUND;
 
         case KFSLOOKUPERROR_PATH_TOO_LONG:
@@ -5412,6 +6621,51 @@ static KBOOL kwFsIsClTempFileW(const wchar_t *pwszFilename)
             }
             return K_TRUE;
         }
+
+        /* In VC2019 there is also one {UUID} file in temp: */
+        if (pwszName[0] == '{')
+        {
+            KSIZE cwcName = kwUtf16Len(pwszName);
+            if (   cwcName == sizeof("{4465DDD9-E494-471B-996B-9B556E25AEF8}") - 1
+                && pwszName[37] == '}'
+                && iswalnum(pwszName[1])   // 4
+                && iswalnum(pwszName[2])   // 4
+                && iswalnum(pwszName[3])   // 6
+                && iswalnum(pwszName[4])   // 5
+                && iswalnum(pwszName[5])   // d
+                && iswalnum(pwszName[6])   // d
+                && iswalnum(pwszName[7])   // d
+                && iswalnum(pwszName[8])   // 9
+                && pwszName[9] == '-'      // -
+                && iswalnum(pwszName[10])  // e
+                && iswalnum(pwszName[11])  // 4
+                && iswalnum(pwszName[12])  // 9
+                && iswalnum(pwszName[13])  // 4
+                && pwszName[14] == '-'     // -
+                && iswalnum(pwszName[15])  // 4
+                && iswalnum(pwszName[16])  // 7
+                && iswalnum(pwszName[17])  // 1
+                && iswalnum(pwszName[18])  // b
+                && pwszName[19] == '-'     // -
+                && iswalnum(pwszName[20])  // 9
+                && iswalnum(pwszName[21])  // 9
+                && iswalnum(pwszName[22])  // 6
+                && iswalnum(pwszName[23])  // b
+                && pwszName[24] == '-'     // -
+                && iswalnum(pwszName[25])  // 9
+                && iswalnum(pwszName[26])  // b
+                && iswalnum(pwszName[27])  // 5
+                && iswalnum(pwszName[28])  // 5
+                && iswalnum(pwszName[29])  // 6
+                && iswalnum(pwszName[30])  // e
+                && iswalnum(pwszName[31])  // 2
+                && iswalnum(pwszName[32])  // 5
+                && iswalnum(pwszName[33])  // a
+                && iswalnum(pwszName[34])  // 3
+                && iswalnum(pwszName[35])  // f
+                && iswalnum(pwszName[36])) // 8
+                return K_TRUE;
+        }
     }
     return K_FALSE;
 }
@@ -5447,6 +6701,7 @@ static HANDLE kwFsTempFileCreateHandle(PKWFSTEMPFILE pTempFile, DWORD dwDesiredA
             pHandle->offFile            = 0;
             pHandle->hHandle            = hFile;
             pHandle->dwDesiredAccess    = dwDesiredAccess;
+            pHandle->tidOwner           = KU32_MAX;
             pHandle->u.pTempFile        = pTempFile;
             if (kwSandboxHandleTableEnter(&g_Sandbox, pHandle, hFile))
             {
@@ -5469,7 +6724,8 @@ static HANDLE kwFsTempFileCreateHandle(PKWFSTEMPFILE pTempFile, DWORD dwDesiredA
 }
 
 
-static HANDLE kwFsTempFileCreateW(const wchar_t *pwszFilename, DWORD dwDesiredAccess, DWORD dwCreationDisposition)
+static HANDLE kwFsTempFileCreateW(const wchar_t *pwszFilename, DWORD dwDesiredAccess, DWORD dwCreationDisposition,
+                                  KBOOL *pfFallback)
 {
     HANDLE hFile;
     DWORD  dwErr;
@@ -5493,6 +6749,7 @@ static HANDLE kwFsTempFileCreateW(const wchar_t *pwszFilename, DWORD dwDesiredAc
     /*
      * Create a new temporary file instance if not found.
      */
+    *pfFallback = K_FALSE;
     if (pTempFile == NULL)
     {
         KSIZE cbFilename;
@@ -5501,16 +6758,13 @@ static HANDLE kwFsTempFileCreateW(const wchar_t *pwszFilename, DWORD dwDesiredAc
         {
             case CREATE_ALWAYS:
             case OPEN_ALWAYS:
+            case CREATE_NEW:
                 dwErr = NO_ERROR;
                 break;
 
-            case CREATE_NEW:
-                kHlpAssertFailed();
-                SetLastError(ERROR_ALREADY_EXISTS);
-                return INVALID_HANDLE_VALUE;
-
             case OPEN_EXISTING:
             case TRUNCATE_EXISTING:
+                *pfFallback = K_TRUE;
                 kHlpAssertFailed();
                 SetLastError(ERROR_FILE_NOT_FOUND);
                 return INVALID_HANDLE_VALUE;
@@ -5553,7 +6807,7 @@ static HANDLE kwFsTempFileCreateW(const wchar_t *pwszFilename, DWORD dwDesiredAc
                 dwErr = NO_ERROR;
                 break;
             case OPEN_ALWAYS:
-                dwErr = ERROR_ALREADY_EXISTS ;
+                dwErr = ERROR_ALREADY_EXISTS;
                 break;
 
             case TRUNCATE_EXISTING:
@@ -5809,7 +7063,7 @@ static PKFSWCACHEDFILE kwFsObjCacheNewFile(PKFSOBJ pFsObj)
     kHlpAssert(pFsObj->pParent);
     kHlpAssertReturn(pFsObj->pParent->hDir != INVALID_HANDLE_VALUE, NULL);
 
-    Ios.Information = -1;
+    Ios.Information = ~(ULONG_PTR)0;
     Ios.u.Status    = -1;
 
     UniStr.Buffer        = (wchar_t *)pFsObj->pwszName;
@@ -5924,6 +7178,7 @@ static KBOOL kwFsObjCacheCreateFileHandle(PKFSWCACHEDFILE pCachedFile, DWORD dwD
             pHandle->offFile            = 0;
             pHandle->hHandle            = *phFile;
             pHandle->dwDesiredAccess    = dwDesiredAccess;
+            pHandle->tidOwner           = KU32_MAX;
             pHandle->u.pCachedFile      = pCachedFile;
             if (kwSandboxHandleTableEnter(&g_Sandbox, pHandle, pHandle->hHandle))
                 return K_TRUE;
@@ -5980,7 +7235,7 @@ static HANDLE WINAPI kwSandbox_Kernel32_CreateFileA(LPCSTR pszFilename, DWORD dw
     /*
      * Check for include files and similar that we do read-only caching of.
      */
-    if (dwCreationDisposition == FILE_OPEN_IF)
+    if (dwCreationDisposition == OPEN_EXISTING)
     {
         if (   dwDesiredAccess == GENERIC_READ
             || dwDesiredAccess == FILE_GENERIC_READ)
@@ -5998,17 +7253,27 @@ static HANDLE WINAPI kwSandbox_Kernel32_CreateFileA(LPCSTR pszFilename, DWORD dw
                         PKFSOBJ pFsObj;
                         kHlpAssert(GetCurrentThreadId() == g_Sandbox.idMainThread);
 
-                        pFsObj = kFsCacheLookupNoMissingA(g_pFsCache, pszFilename, &enmError);
+                        pFsObj = kFsCacheLookupA(g_pFsCache, pszFilename, &enmError);
                         if (pFsObj)
                         {
-                            KBOOL fRc = kwFsObjCacheCreateFile(pFsObj, dwDesiredAccess, pSecAttrs && pSecAttrs->bInheritHandle,
-                                                               &hFile);
-                            kFsCacheObjRelease(g_pFsCache, pFsObj);
-                            if (fRc)
+                            if (pFsObj->bObjType != KFSOBJ_TYPE_MISSING)
                             {
-                                KWFS_LOG(("CreateFileA(%s) -> %p [cached]\n", pszFilename, hFile));
-                                return hFile;
+                                KBOOL fRc = kwFsObjCacheCreateFile(pFsObj, dwDesiredAccess,
+                                                                   pSecAttrs && pSecAttrs->bInheritHandle, &hFile);
+                                kFsCacheObjRelease(g_pFsCache, pFsObj);
+                                if (fRc)
+                                {
+                                    KWFS_LOG(("CreateFileA(%s) -> %p [cached]\n", pszFilename, hFile));
+                                    return hFile;
+                                }
                             }
+                            else if (!(pFsObj->fFlags & KFSOBJ_F_USE_CUSTOM_GEN))
+                            {
+                                KWFS_LOG(("CreateFileA(%ls) -> INVALID_HANDLE_VALUE, ERROR_FILE_NOT_FOUND\n", pszFilename));
+                                SetLastError(ERROR_FILE_NOT_FOUND);
+                                return INVALID_HANDLE_VALUE;
+                            }
+                            /* Always fall back on missing files in volatile areas. */
                         }
                         /* These are for nasm and yasm header searching.  Cache will already
                            have checked the directories for the file, no need to call
@@ -6016,12 +7281,14 @@ static HANDLE WINAPI kwSandbox_Kernel32_CreateFileA(LPCSTR pszFilename, DWORD dw
                         else if (enmError == KFSLOOKUPERROR_NOT_FOUND)
                         {
                             KWFS_LOG(("CreateFileA(%s) -> INVALID_HANDLE_VALUE, ERROR_FILE_NOT_FOUND\n", pszFilename));
+                            SetLastError(ERROR_FILE_NOT_FOUND);
                             return INVALID_HANDLE_VALUE;
                         }
                         else if (   enmError == KFSLOOKUPERROR_PATH_COMP_NOT_FOUND
                                  || enmError == KFSLOOKUPERROR_PATH_COMP_NOT_DIR)
                         {
                             KWFS_LOG(("CreateFileA(%s) -> INVALID_HANDLE_VALUE, ERROR_PATH_NOT_FOUND\n", pszFilename));
+                            SetLastError(ERROR_PATH_NOT_FOUND);
                             return INVALID_HANDLE_VALUE;
                         }
 
@@ -6041,11 +7308,8 @@ static HANDLE WINAPI kwSandbox_Kernel32_CreateFileA(LPCSTR pszFilename, DWORD dw
      */
     hFile = CreateFileA(pszFilename, dwDesiredAccess, dwShareMode, pSecAttrs,
                         dwCreationDisposition, dwFlagsAndAttributes, hTemplateFile);
-    if (hFile != INVALID_HANDLE_VALUE)
-    {
-        kHlpAssert(   KW_HANDLE_TO_INDEX(hFile) >= g_Sandbox.cHandles
-                   || g_Sandbox.papHandles[KW_HANDLE_TO_INDEX(hFile)] == NULL);
-    }
+    kHlpAssert(hFile == INVALID_HANDLE_VALUE || kwSandboxHandleLookup(hFile) == NULL);
+
     KWFS_LOG(("CreateFileA(%s) -> %p\n", pszFilename, hFile));
     return hFile;
 }
@@ -6067,16 +7331,20 @@ static HANDLE WINAPI kwSandbox_Kernel32_CreateFileW(LPCWSTR pwszFilename, DWORD 
         && !(dwDesiredAccess & (GENERIC_EXECUTE | FILE_EXECUTE))
         && kwFsIsClTempFileW(pwszFilename))
     {
-        hFile = kwFsTempFileCreateW(pwszFilename, dwDesiredAccess, dwCreationDisposition);
-        KWFS_LOG(("CreateFileW(%ls) -> %p [temp]\n", pwszFilename, hFile));
-        return hFile;
+        KBOOL fFallback = K_FALSE;
+        hFile = kwFsTempFileCreateW(pwszFilename, dwDesiredAccess, dwCreationDisposition, &fFallback);
+        if (!fFallback)
+        {
+            KWFS_LOG(("CreateFileW(%ls) -> %p [temp]\n", pwszFilename, hFile));
+            return hFile;
+        }
     }
 #endif
 
     /*
      * Check for include files and similar that we do read-only caching of.
      */
-    if (dwCreationDisposition == FILE_OPEN_IF)
+    if (dwCreationDisposition == OPEN_EXISTING)
     {
         if (   dwDesiredAccess == GENERIC_READ
             || dwDesiredAccess == FILE_GENERIC_READ)
@@ -6093,30 +7361,61 @@ static HANDLE WINAPI kwSandbox_Kernel32_CreateFileW(LPCWSTR pwszFilename, DWORD 
                         PKFSOBJ pFsObj;
                         kHlpAssert(GetCurrentThreadId() == g_Sandbox.idMainThread);
 
-                        pFsObj = kFsCacheLookupNoMissingW(g_pFsCache, pwszFilename, &enmError);
+                        pFsObj = kFsCacheLookupW(g_pFsCache, pwszFilename, &enmError);
                         if (pFsObj)
                         {
-                            KBOOL fRc = kwFsObjCacheCreateFile(pFsObj, dwDesiredAccess, pSecAttrs && pSecAttrs->bInheritHandle,
-                                                               &hFile);
-                            kFsCacheObjRelease(g_pFsCache, pFsObj);
-                            if (fRc)
+                            if (pFsObj->bObjType != KFSOBJ_TYPE_MISSING)
                             {
-                                KWFS_LOG(("CreateFileW(%ls) -> %p [cached]\n", pwszFilename, hFile));
-                                return hFile;
+                                KBOOL fRc = kwFsObjCacheCreateFile(pFsObj, dwDesiredAccess,
+                                                                   pSecAttrs && pSecAttrs->bInheritHandle, &hFile);
+                                kFsCacheObjRelease(g_pFsCache, pFsObj);
+                                if (fRc)
+                                {
+                                    KWFS_LOG(("CreateFileW(%ls) -> %p [cached]\n", pwszFilename, hFile));
+                                    return hFile;
+                                }
                             }
+                            else if (!(pFsObj->fFlags & KFSOBJ_F_USE_CUSTOM_GEN))
+                            {
+                                KWFS_LOG(("CreateFileW(%ls) -> INVALID_HANDLE_VALUE, ERROR_FILE_NOT_FOUND\n", pwszFilename));
+                                SetLastError(ERROR_FILE_NOT_FOUND);
+#if 0
+                                if (   pFsObj->cchName > sizeof("generated.h")
+                                    && kHlpStrICompAscii(&pFsObj->pszName[pFsObj->cchName - sizeof("generated.h") + 1], "generated.h") == 0)
+                                    kwErrPrintf("CreateFileW(%ls) -> ERROR_FILE_NOT_FOUND; pFsObj->fFlags=%#x\n", pwszFilename, pFsObj->fFlags);
+#endif
+                                return INVALID_HANDLE_VALUE;
+                            }
+                            /* Always fall back on missing files in volatile areas. */
                         }
                         /* These are for nasm and yasm style header searching.  Cache will
                            already have checked the directories for the file, no need to call
                            CreateFile to do it again. */
                         else if (enmError == KFSLOOKUPERROR_NOT_FOUND)
                         {
+#if 0
+                            KSIZE cwcFilename = kwUtf16Len(pwszFilename);
+                            if (   cwcFilename > sizeof("generated.h")
+                                && memcmp(&pwszFilename[cwcFilename - sizeof("generated.h") + 1],
+                                          L"generated.h", sizeof(L"generated.h")) == 0)
+                                kwErrPrintf("CreateFileW(%ls) -> ERROR_FILE_NOT_FOUND; (KFSLOOKUPERROR_NOT_FOUND)\n", pwszFilename, pFsObj->fFlags);
+#endif
                             KWFS_LOG(("CreateFileW(%ls) -> INVALID_HANDLE_VALUE, ERROR_FILE_NOT_FOUND\n", pwszFilename));
+                            SetLastError(ERROR_FILE_NOT_FOUND);
                             return INVALID_HANDLE_VALUE;
                         }
                         else if (   enmError == KFSLOOKUPERROR_PATH_COMP_NOT_FOUND
                                  || enmError == KFSLOOKUPERROR_PATH_COMP_NOT_DIR)
                         {
+#if 0
+                            KSIZE cwcFilename = kwUtf16Len(pwszFilename);
+                            if (   cwcFilename > sizeof("generated.h")
+                                && memcmp(&pwszFilename[cwcFilename - sizeof("generated.h") + 1],
+                                          L"generated.h", sizeof(L"generated.h")) == 0)
+                                kwErrPrintf("CreateFileW(%ls) -> ERROR_PATH_NOT_FOUND; (%d)\n", pwszFilename, enmError);
+#endif
                             KWFS_LOG(("CreateFileW(%ls) -> INVALID_HANDLE_VALUE, ERROR_PATH_NOT_FOUND\n", pwszFilename));
+                            SetLastError(ERROR_PATH_NOT_FOUND);
                             return INVALID_HANDLE_VALUE;
                         }
 
@@ -6145,93 +7444,96 @@ static HANDLE WINAPI kwSandbox_Kernel32_CreateFileW(LPCWSTR pwszFilename, DWORD 
      */
     hFile = CreateFileW(pwszFilename, dwDesiredAccess, dwShareMode, pSecAttrs,
                         dwCreationDisposition, dwFlagsAndAttributes, hTemplateFile);
-    if (hFile != INVALID_HANDLE_VALUE)
-    {
-        kHlpAssert(   KW_HANDLE_TO_INDEX(hFile) >= g_Sandbox.cHandles
-                   || g_Sandbox.papHandles[KW_HANDLE_TO_INDEX(hFile)] == NULL);
-    }
+    kHlpAssert(hFile == INVALID_HANDLE_VALUE || kwSandboxHandleLookup(hFile) == NULL);
+
     KWFS_LOG(("CreateFileW(%ls) -> %p\n", pwszFilename, hFile));
     return hFile;
 }
 
 
+
 /** Kernel32 - SetFilePointer */
 static DWORD WINAPI kwSandbox_Kernel32_SetFilePointer(HANDLE hFile, LONG cbMove, PLONG pcbMoveHi, DWORD dwMoveMethod)
 {
-    KUPTR const idxHandle = KW_HANDLE_TO_INDEX(hFile);
-    kHlpAssert(GetCurrentThreadId() == g_Sandbox.idMainThread);
-    if (idxHandle < g_Sandbox.cHandles)
+    PKWHANDLE pHandle = kwSandboxHandleGet(hFile);
+    if (pHandle != NULL)
     {
-        PKWHANDLE pHandle = g_Sandbox.papHandles[idxHandle];
-        if (pHandle != NULL)
+        KU32 cbFile;
+        KI64 offMove = pcbMoveHi ? ((KI64)*pcbMoveHi << 32) | cbMove : cbMove;
+        switch (pHandle->enmType)
         {
-            KU32 cbFile;
-            KI64 offMove = pcbMoveHi ? ((KI64)*pcbMoveHi << 32) | cbMove : cbMove;
-            switch (pHandle->enmType)
-            {
-                case KWHANDLETYPE_FSOBJ_READ_CACHE:
-                    cbFile = pHandle->u.pCachedFile->cbCached;
-                    break;
+            case KWHANDLETYPE_FSOBJ_READ_CACHE:
+                cbFile = pHandle->u.pCachedFile->cbCached;
+                break;
 #ifdef WITH_TEMP_MEMORY_FILES
-                case KWHANDLETYPE_TEMP_FILE:
-                    cbFile = pHandle->u.pTempFile->cbFile;
-                    break;
+            case KWHANDLETYPE_TEMP_FILE:
+                cbFile = pHandle->u.pTempFile->cbFile;
+                break;
+            case KWHANDLETYPE_TEMP_FILE_MAPPING:
 #endif
-                case KWHANDLETYPE_TEMP_FILE_MAPPING:
-                case KWHANDLETYPE_OUTPUT_BUF:
-                default:
-                    kHlpAssertFailed();
-                    SetLastError(ERROR_INVALID_FUNCTION);
-                    return INVALID_SET_FILE_POINTER;
-            }
-
-            switch (dwMoveMethod)
-            {
-                case FILE_BEGIN:
-                    break;
-                case FILE_CURRENT:
-                    offMove += pHandle->offFile;
-                    break;
-                case FILE_END:
-                    offMove += cbFile;
-                    break;
-                default:
-                    KWFS_LOG(("SetFilePointer(%p) - invalid seek method %u! [cached]\n", hFile));
-                    SetLastError(ERROR_INVALID_PARAMETER);
-                    return INVALID_SET_FILE_POINTER;
-            }
-            if (offMove >= 0)
-            {
-                if (offMove >= (KSSIZE)cbFile)
-                {
-                    /* For read-only files, seeking beyond the end isn't useful to us, so clamp it. */
-                    if (pHandle->enmType != KWHANDLETYPE_TEMP_FILE)
-                        offMove = (KSSIZE)cbFile;
-                    /* For writable files, seeking beyond the end is fine, but check that we've got
-                       the type range for the request. */
-                    else if (((KU64)offMove & KU32_MAX) != (KU64)offMove)
-                    {
-                        kHlpAssertMsgFailed(("%#llx\n", offMove));
-                        SetLastError(ERROR_SEEK);
-                        return INVALID_SET_FILE_POINTER;
-                    }
-                }
-                pHandle->offFile = (KU32)offMove;
-            }
-            else
-            {
-                KWFS_LOG(("SetFilePointer(%p) - negative seek! [cached]\n", hFile));
-                SetLastError(ERROR_NEGATIVE_SEEK);
+            case KWHANDLETYPE_OUTPUT_BUF:
+            default:
+                kHlpAssertFailed();
+                kwSandboxHandlePut(pHandle);
+                SetLastError(ERROR_INVALID_FUNCTION);
                 return INVALID_SET_FILE_POINTER;
-            }
-            if (pcbMoveHi)
-                *pcbMoveHi = (KU64)offMove >> 32;
-            KWFS_LOG(("SetFilePointer(%p,%#x,?,%u) -> %#llx [%s]\n", hFile, cbMove, dwMoveMethod, offMove,
-                      pHandle->enmType == KWHANDLETYPE_FSOBJ_READ_CACHE ? "cached" : "temp"));
-            SetLastError(NO_ERROR);
-            return (KU32)offMove;
         }
+
+        switch (dwMoveMethod)
+        {
+            case FILE_BEGIN:
+                break;
+            case FILE_CURRENT:
+                offMove += pHandle->offFile;
+                break;
+            case FILE_END:
+                offMove += cbFile;
+                break;
+            default:
+                KWFS_LOG(("SetFilePointer(%p) - invalid seek method %u! [cached]\n", hFile));
+                kwSandboxHandlePut(pHandle);
+                SetLastError(ERROR_INVALID_PARAMETER);
+                return INVALID_SET_FILE_POINTER;
+        }
+        if (offMove >= 0)
+        {
+            if (offMove >= (KSSIZE)cbFile)
+            {
+#ifdef WITH_TEMP_MEMORY_FILES
+                /* For read-only files, seeking beyond the end isn't useful to us, so clamp it. */
+                if (pHandle->enmType != KWHANDLETYPE_TEMP_FILE)
+#endif
+                    offMove = (KSSIZE)cbFile;
+#ifdef WITH_TEMP_MEMORY_FILES
+                /* For writable files, seeking beyond the end is fine, but check that we've got
+                   the type range for the request. */
+                else if (((KU64)offMove & KU32_MAX) != (KU64)offMove)
+                {
+                    kHlpAssertMsgFailed(("%#llx\n", offMove));
+                    kwSandboxHandlePut(pHandle);
+                    SetLastError(ERROR_SEEK);
+                    return INVALID_SET_FILE_POINTER;
+                }
+#endif
+            }
+            pHandle->offFile = (KU32)offMove;
+        }
+        else
+        {
+            KWFS_LOG(("SetFilePointer(%p) - negative seek! [cached]\n", hFile));
+            kwSandboxHandlePut(pHandle);
+            SetLastError(ERROR_NEGATIVE_SEEK);
+            return INVALID_SET_FILE_POINTER;
+        }
+        if (pcbMoveHi)
+            *pcbMoveHi = (KU64)offMove >> 32;
+        KWFS_LOG(("SetFilePointer(%p,%#x,?,%u) -> %#llx [%s]\n", hFile, cbMove, dwMoveMethod, offMove,
+                  pHandle->enmType == KWHANDLETYPE_FSOBJ_READ_CACHE ? "cached" : "temp"));
+        kwSandboxHandlePut(pHandle);
+        SetLastError(NO_ERROR);
+        return (KU32)offMove;
     }
+
     KWFS_LOG(("SetFilePointer(%p, %d, %p=%d, %d)\n", hFile, cbMove, pcbMoveHi ? *pcbMoveHi : 0, dwMoveMethod));
     return SetFilePointer(hFile, cbMove, pcbMoveHi, dwMoveMethod);
 }
@@ -6241,78 +7543,82 @@ static DWORD WINAPI kwSandbox_Kernel32_SetFilePointer(HANDLE hFile, LONG cbMove,
 static BOOL WINAPI kwSandbox_Kernel32_SetFilePointerEx(HANDLE hFile, LARGE_INTEGER offMove, PLARGE_INTEGER poffNew,
                                                        DWORD dwMoveMethod)
 {
-    KUPTR const idxHandle = KW_HANDLE_TO_INDEX(hFile);
-    kHlpAssert(GetCurrentThreadId() == g_Sandbox.idMainThread);
-    if (idxHandle < g_Sandbox.cHandles)
+    PKWHANDLE pHandle = kwSandboxHandleGet(hFile);
+    if (pHandle != NULL)
     {
-        PKWHANDLE pHandle = g_Sandbox.papHandles[idxHandle];
-        if (pHandle != NULL)
+        KI64 offMyMove = offMove.QuadPart;
+        KU32 cbFile;
+        switch (pHandle->enmType)
         {
-            KI64 offMyMove = offMove.QuadPart;
-            KU32 cbFile;
-            switch (pHandle->enmType)
-            {
-                case KWHANDLETYPE_FSOBJ_READ_CACHE:
-                    cbFile = pHandle->u.pCachedFile->cbCached;
-                    break;
+            case KWHANDLETYPE_FSOBJ_READ_CACHE:
+                cbFile = pHandle->u.pCachedFile->cbCached;
+                break;
 #ifdef WITH_TEMP_MEMORY_FILES
-                case KWHANDLETYPE_TEMP_FILE:
-                    cbFile = pHandle->u.pTempFile->cbFile;
-                    break;
+            case KWHANDLETYPE_TEMP_FILE:
+                cbFile = pHandle->u.pTempFile->cbFile;
+                break;
+            case KWHANDLETYPE_TEMP_FILE_MAPPING:
 #endif
-                case KWHANDLETYPE_TEMP_FILE_MAPPING:
-                case KWHANDLETYPE_OUTPUT_BUF:
-                default:
-                    kHlpAssertFailed();
-                    SetLastError(ERROR_INVALID_FUNCTION);
-                    return INVALID_SET_FILE_POINTER;
-            }
-
-            switch (dwMoveMethod)
-            {
-                case FILE_BEGIN:
-                    break;
-                case FILE_CURRENT:
-                    offMyMove += pHandle->offFile;
-                    break;
-                case FILE_END:
-                    offMyMove += cbFile;
-                    break;
-                default:
-                    KWFS_LOG(("SetFilePointer(%p) - invalid seek method %u! [cached]\n", hFile));
-                    SetLastError(ERROR_INVALID_PARAMETER);
-                    return INVALID_SET_FILE_POINTER;
-            }
-            if (offMyMove >= 0)
-            {
-                if (offMyMove >= (KSSIZE)cbFile)
-                {
-                    /* For read-only files, seeking beyond the end isn't useful to us, so clamp it. */
-                    if (pHandle->enmType != KWHANDLETYPE_TEMP_FILE)
-                        offMyMove = (KSSIZE)cbFile;
-                    /* For writable files, seeking beyond the end is fine, but check that we've got
-                       the type range for the request. */
-                    else if (((KU64)offMyMove & KU32_MAX) != (KU64)offMyMove)
-                    {
-                        kHlpAssertMsgFailed(("%#llx\n", offMyMove));
-                        SetLastError(ERROR_SEEK);
-                        return INVALID_SET_FILE_POINTER;
-                    }
-                }
-                pHandle->offFile = (KU32)offMyMove;
-            }
-            else
-            {
-                KWFS_LOG(("SetFilePointerEx(%p) - negative seek! [cached]\n", hFile));
-                SetLastError(ERROR_NEGATIVE_SEEK);
-                return INVALID_SET_FILE_POINTER;
-            }
-            if (poffNew)
-                poffNew->QuadPart = offMyMove;
-            KWFS_LOG(("SetFilePointerEx(%p,%#llx,,%u) -> TRUE, %#llx [%s]\n", hFile, offMove.QuadPart, dwMoveMethod, offMyMove,
-                      pHandle->enmType == KWHANDLETYPE_FSOBJ_READ_CACHE ? "cached" : "temp"));
-            return TRUE;
+            case KWHANDLETYPE_OUTPUT_BUF:
+            default:
+                kHlpAssertFailed();
+                kwSandboxHandlePut(pHandle);
+                SetLastError(ERROR_INVALID_FUNCTION);
+                return FALSE;
         }
+
+        switch (dwMoveMethod)
+        {
+            case FILE_BEGIN:
+                break;
+            case FILE_CURRENT:
+                offMyMove += pHandle->offFile;
+                break;
+            case FILE_END:
+                offMyMove += cbFile;
+                break;
+            default:
+                KWFS_LOG(("SetFilePointer(%p) - invalid seek method %u! [cached]\n", hFile));
+                kwSandboxHandlePut(pHandle);
+                SetLastError(ERROR_INVALID_PARAMETER);
+                return FALSE;
+        }
+        if (offMyMove >= 0)
+        {
+            if (offMyMove >= (KSSIZE)cbFile)
+            {
+#ifdef WITH_TEMP_MEMORY_FILES
+                /* For read-only files, seeking beyond the end isn't useful to us, so clamp it. */
+                if (pHandle->enmType != KWHANDLETYPE_TEMP_FILE)
+#endif
+                    offMyMove = (KSSIZE)cbFile;
+#ifdef WITH_TEMP_MEMORY_FILES
+                /* For writable files, seeking beyond the end is fine, but check that we've got
+                   the type range for the request. */
+                else if (((KU64)offMyMove & KU32_MAX) != (KU64)offMyMove)
+                {
+                    kHlpAssertMsgFailed(("%#llx\n", offMyMove));
+                    kwSandboxHandlePut(pHandle);
+                    SetLastError(ERROR_SEEK);
+                    return FALSE;
+                }
+#endif
+            }
+            pHandle->offFile = (KU32)offMyMove;
+        }
+        else
+        {
+            KWFS_LOG(("SetFilePointerEx(%p) - negative seek! [cached]\n", hFile));
+            kwSandboxHandlePut(pHandle);
+            SetLastError(ERROR_NEGATIVE_SEEK);
+            return FALSE;
+        }
+        if (poffNew)
+            poffNew->QuadPart = offMyMove;
+        KWFS_LOG(("SetFilePointerEx(%p,%#llx,,%u) -> TRUE, %#llx [%s]\n", hFile, offMove.QuadPart, dwMoveMethod, offMyMove,
+                  pHandle->enmType == KWHANDLETYPE_FSOBJ_READ_CACHE ? "cached" : "temp"));
+        kwSandboxHandlePut(pHandle);
+        return TRUE;
     }
     KWFS_LOG(("SetFilePointerEx(%p)\n", hFile));
     return SetFilePointerEx(hFile, offMove, poffNew, dwMoveMethod);
@@ -6323,119 +7629,117 @@ static BOOL WINAPI kwSandbox_Kernel32_SetFilePointerEx(HANDLE hFile, LARGE_INTEG
 static BOOL WINAPI kwSandbox_Kernel32_ReadFile(HANDLE hFile, LPVOID pvBuffer, DWORD cbToRead, LPDWORD pcbActuallyRead,
                                                LPOVERLAPPED pOverlapped)
 {
-    BOOL        fRet;
-    KUPTR const idxHandle = KW_HANDLE_TO_INDEX(hFile);
+    BOOL      fRet;
+    PKWHANDLE pHandle = kwSandboxHandleGet(hFile);
     g_cReadFileCalls++;
-    kHlpAssert(GetCurrentThreadId() == g_Sandbox.idMainThread);
-    if (idxHandle < g_Sandbox.cHandles)
+    if (pHandle != NULL)
     {
-        PKWHANDLE pHandle = g_Sandbox.papHandles[idxHandle];
-        if (pHandle != NULL)
+        switch (pHandle->enmType)
         {
-            switch (pHandle->enmType)
+            case KWHANDLETYPE_FSOBJ_READ_CACHE:
             {
-                case KWHANDLETYPE_FSOBJ_READ_CACHE:
+                PKFSWCACHEDFILE pCachedFile = pHandle->u.pCachedFile;
+                KU32            cbActually = pCachedFile->cbCached - pHandle->offFile;
+                if (cbActually > cbToRead)
+                    cbActually = cbToRead;
+
+#ifdef WITH_HASH_CACHE
+                if (g_Sandbox.pHashHead)
                 {
-                    PKFSWCACHEDFILE pCachedFile = pHandle->u.pCachedFile;
-                    KU32            cbActually = pCachedFile->cbCached - pHandle->offFile;
+                    g_Sandbox.LastHashRead.pCachedFile = pCachedFile;
+                    g_Sandbox.LastHashRead.offRead     = pHandle->offFile;
+                    g_Sandbox.LastHashRead.cbRead      = cbActually;
+                    g_Sandbox.LastHashRead.pvRead      = pvBuffer;
+                }
+#endif
+
+                kHlpMemCopy(pvBuffer, &pCachedFile->pbCached[pHandle->offFile], cbActually);
+                pHandle->offFile += cbActually;
+
+                kHlpAssert(!pOverlapped); kHlpAssert(pcbActuallyRead);
+                *pcbActuallyRead = cbActually;
+
+                g_cbReadFileFromReadCached += cbActually;
+                g_cbReadFileTotal          += cbActually;
+                g_cReadFileFromReadCached++;
+
+                KWFS_LOG(("ReadFile(%p,,%#x) -> TRUE, %#x bytes [cached]\n", hFile, cbToRead, cbActually));
+                kwSandboxHandlePut(pHandle);
+                return TRUE;
+            }
+
+#ifdef WITH_TEMP_MEMORY_FILES
+            case KWHANDLETYPE_TEMP_FILE:
+            {
+                PKWFSTEMPFILE   pTempFile  = pHandle->u.pTempFile;
+                KU32            cbActually;
+                if (pHandle->offFile < pTempFile->cbFile)
+                {
+                    cbActually = pTempFile->cbFile - pHandle->offFile;
                     if (cbActually > cbToRead)
                         cbActually = cbToRead;
 
-#ifdef WITH_HASH_MD5_CACHE
-                    if (g_Sandbox.pHashHead)
+                    /* Copy the data. */
+                    if (cbActually > 0)
                     {
-                        g_Sandbox.LastHashRead.pCachedFile = pCachedFile;
-                        g_Sandbox.LastHashRead.offRead     = pHandle->offFile;
-                        g_Sandbox.LastHashRead.cbRead      = cbActually;
-                        g_Sandbox.LastHashRead.pvRead      = pvBuffer;
-                    }
-#endif
+                        KU32                    cbLeft;
+                        KU32                    offSeg;
+                        KWFSTEMPFILESEG const  *paSegs = pTempFile->paSegs;
 
-                    kHlpMemCopy(pvBuffer, &pCachedFile->pbCached[pHandle->offFile], cbActually);
-                    pHandle->offFile += cbActually;
+                        /* Locate the segment containing the byte at offFile. */
+                        KU32 iSeg   = pTempFile->cSegs - 1;
+                        kHlpAssert(pTempFile->cSegs > 0);
+                        while (paSegs[iSeg].offData > pHandle->offFile)
+                            iSeg--;
 
-                    kHlpAssert(!pOverlapped); kHlpAssert(pcbActuallyRead);
-                    *pcbActuallyRead = cbActually;
-
-                    g_cbReadFileFromReadCached += cbActually;
-                    g_cbReadFileTotal          += cbActually;
-                    g_cReadFileFromReadCached++;
-
-                    KWFS_LOG(("ReadFile(%p,,%#x) -> TRUE, %#x bytes [cached]\n", hFile, cbToRead, cbActually));
-                    return TRUE;
-                }
-
-#ifdef WITH_TEMP_MEMORY_FILES
-                case KWHANDLETYPE_TEMP_FILE:
-                {
-                    PKWFSTEMPFILE   pTempFile  = pHandle->u.pTempFile;
-                    KU32            cbActually;
-                    if (pHandle->offFile < pTempFile->cbFile)
-                    {
-                        cbActually = pTempFile->cbFile - pHandle->offFile;
-                        if (cbActually > cbToRead)
-                            cbActually = cbToRead;
-
-                        /* Copy the data. */
-                        if (cbActually > 0)
+                        /* Copy out the data. */
+                        cbLeft = cbActually;
+                        offSeg = (pHandle->offFile - paSegs[iSeg].offData);
+                        for (;;)
                         {
-                            KU32                    cbLeft;
-                            KU32                    offSeg;
-                            KWFSTEMPFILESEG const  *paSegs = pTempFile->paSegs;
-
-                            /* Locate the segment containing the byte at offFile. */
-                            KU32 iSeg   = pTempFile->cSegs - 1;
-                            kHlpAssert(pTempFile->cSegs > 0);
-                            while (paSegs[iSeg].offData > pHandle->offFile)
-                                iSeg--;
-
-                            /* Copy out the data. */
-                            cbLeft = cbActually;
-                            offSeg = (pHandle->offFile - paSegs[iSeg].offData);
-                            for (;;)
+                            KU32 cbAvail = paSegs[iSeg].cbDataAlloc - offSeg;
+                            if (cbAvail >= cbLeft)
                             {
-                                KU32 cbAvail = paSegs[iSeg].cbDataAlloc - offSeg;
-                                if (cbAvail >= cbLeft)
-                                {
-                                    kHlpMemCopy(pvBuffer, &paSegs[iSeg].pbData[offSeg], cbLeft);
-                                    break;
-                                }
-
-                                pvBuffer = kHlpMemPCopy(pvBuffer, &paSegs[iSeg].pbData[offSeg], cbAvail);
-                                cbLeft  -= cbAvail;
-                                offSeg   = 0;
-                                iSeg++;
-                                kHlpAssert(iSeg < pTempFile->cSegs);
+                                kHlpMemCopy(pvBuffer, &paSegs[iSeg].pbData[offSeg], cbLeft);
+                                break;
                             }
 
-                            /* Update the file offset. */
-                            pHandle->offFile += cbActually;
+                            pvBuffer = kHlpMemPCopy(pvBuffer, &paSegs[iSeg].pbData[offSeg], cbAvail);
+                            cbLeft  -= cbAvail;
+                            offSeg   = 0;
+                            iSeg++;
+                            kHlpAssert(iSeg < pTempFile->cSegs);
                         }
+
+                        /* Update the file offset. */
+                        pHandle->offFile += cbActually;
                     }
-                    /* Read does not commit file space, so return zero bytes. */
-                    else
-                        cbActually = 0;
-
-                    kHlpAssert(!pOverlapped); kHlpAssert(pcbActuallyRead);
-                    *pcbActuallyRead = cbActually;
-
-                    g_cbReadFileTotal         += cbActually;
-                    g_cbReadFileFromInMemTemp += cbActually;
-                    g_cReadFileFromInMemTemp++;
-
-                    KWFS_LOG(("ReadFile(%p,,%#x) -> TRUE, %#x bytes [temp]\n", hFile, cbToRead, (KU32)cbActually));
-                    return TRUE;
                 }
-#endif /* WITH_TEMP_MEMORY_FILES */
+                /* Read does not commit file space, so return zero bytes. */
+                else
+                    cbActually = 0;
 
-                case KWHANDLETYPE_TEMP_FILE_MAPPING:
-                case KWHANDLETYPE_OUTPUT_BUF:
-                default:
-                    kHlpAssertFailed();
-                    SetLastError(ERROR_INVALID_FUNCTION);
-                    *pcbActuallyRead = 0;
-                    return FALSE;
+                kHlpAssert(!pOverlapped); kHlpAssert(pcbActuallyRead);
+                *pcbActuallyRead = cbActually;
+
+                g_cbReadFileTotal         += cbActually;
+                g_cbReadFileFromInMemTemp += cbActually;
+                g_cReadFileFromInMemTemp++;
+
+                KWFS_LOG(("ReadFile(%p,,%#x) -> TRUE, %#x bytes [temp]\n", hFile, cbToRead, (KU32)cbActually));
+                kwSandboxHandlePut(pHandle);
+                return TRUE;
             }
+
+            case KWHANDLETYPE_TEMP_FILE_MAPPING:
+#endif /* WITH_TEMP_MEMORY_FILES */
+            case KWHANDLETYPE_OUTPUT_BUF:
+            default:
+                kHlpAssertFailed();
+                kwSandboxHandlePut(pHandle);
+                SetLastError(ERROR_INVALID_FUNCTION);
+                *pcbActuallyRead = 0;
+                return FALSE;
         }
     }
 
@@ -6451,16 +7755,7 @@ static BOOL WINAPI kwSandbox_Kernel32_ReadFile(HANDLE hFile, LPVOID pvBuffer, DW
 static BOOL WINAPI kwSandbox_Kernel32_ReadFileEx(HANDLE hFile, LPVOID pvBuffer, DWORD cbToRead, LPOVERLAPPED pOverlapped,
                                                  LPOVERLAPPED_COMPLETION_ROUTINE pfnCompletionRoutine)
 {
-    KUPTR const idxHandle = KW_HANDLE_TO_INDEX(hFile);
-    kHlpAssert(GetCurrentThreadId() == g_Sandbox.idMainThread);
-    if (idxHandle < g_Sandbox.cHandles)
-    {
-        PKWHANDLE pHandle = g_Sandbox.papHandles[idxHandle];
-        if (pHandle != NULL)
-        {
-            kHlpAssertFailed();
-        }
-    }
+    kHlpAssert(kwSandboxHandleLookup(hFile) == NULL);
 
     KWFS_LOG(("ReadFile(%p)\n", hFile));
     return ReadFileEx(hFile, pvBuffer, cbToRead, pOverlapped, pfnCompletionRoutine);
@@ -6529,7 +7824,7 @@ static void kwSandboxOutBufWrite(PKWSANDBOX pSandbox, PKWOUTPUTSTREAMBUF pOutBuf
             if (!pOutBuf->u.Fully.pchBuf)
             {
                 pOutBuf->u.Fully.cchBufAlloc = sizeof(pOutBuf->abPadding);
-                pOutBuf->u.Fully.pchBuf      = pOutBuf->abPadding;
+                pOutBuf->u.Fully.pchBuf      = (char *)&pOutBuf->abPadding[0];
             }
         }
     }
@@ -6661,121 +7956,123 @@ static KBOOL kwFsTempFileEnsureSpace(PKWFSTEMPFILE pTempFile, KU32 offFile, KU32
 static BOOL WINAPI kwSandbox_Kernel32_WriteFile(HANDLE hFile, LPCVOID pvBuffer, DWORD cbToWrite, LPDWORD pcbActuallyWritten,
                                                 LPOVERLAPPED pOverlapped)
 {
+    PKWHANDLE   pHandle = kwSandboxHandleGet(hFile);
     BOOL        fRet;
-    KUPTR const idxHandle = KW_HANDLE_TO_INDEX(hFile);
     g_cWriteFileCalls++;
-    kHlpAssert(GetCurrentThreadId() == g_Sandbox.idMainThread || g_rcCtrlC != 0);
-    if (idxHandle < g_Sandbox.cHandles)
+    if (pHandle != NULL)
     {
-        PKWHANDLE pHandle = g_Sandbox.papHandles[idxHandle];
-        if (pHandle != NULL)
+        switch (pHandle->enmType)
         {
-            switch (pHandle->enmType)
-            {
 # ifdef WITH_TEMP_MEMORY_FILES
-                case KWHANDLETYPE_TEMP_FILE:
+            case KWHANDLETYPE_TEMP_FILE:
+            {
+                PKWFSTEMPFILE   pTempFile  = pHandle->u.pTempFile;
+
+                kHlpAssert(!pOverlapped);
+                kHlpAssert(pcbActuallyWritten);
+
+                if (kwFsTempFileEnsureSpace(pTempFile, pHandle->offFile, cbToWrite))
                 {
-                    PKWFSTEMPFILE   pTempFile  = pHandle->u.pTempFile;
+                    KU32                    cbLeft;
+                    KU32                    offSeg;
 
-                    kHlpAssert(!pOverlapped);
-                    kHlpAssert(pcbActuallyWritten);
+                    /* Locate the segment containing the byte at offFile. */
+                    KWFSTEMPFILESEG const  *paSegs = pTempFile->paSegs;
+                    KU32                    iSeg   = pTempFile->cSegs - 1;
+                    kHlpAssert(pTempFile->cSegs > 0);
+                    while (paSegs[iSeg].offData > pHandle->offFile)
+                        iSeg--;
 
-                    if (kwFsTempFileEnsureSpace(pTempFile, pHandle->offFile, cbToWrite))
+                    /* Copy in the data. */
+                    cbLeft = cbToWrite;
+                    offSeg = (pHandle->offFile - paSegs[iSeg].offData);
+                    for (;;)
                     {
-                        KU32                    cbLeft;
-                        KU32                    offSeg;
-
-                        /* Locate the segment containing the byte at offFile. */
-                        KWFSTEMPFILESEG const  *paSegs = pTempFile->paSegs;
-                        KU32                    iSeg   = pTempFile->cSegs - 1;
-                        kHlpAssert(pTempFile->cSegs > 0);
-                        while (paSegs[iSeg].offData > pHandle->offFile)
-                            iSeg--;
-
-                        /* Copy in the data. */
-                        cbLeft = cbToWrite;
-                        offSeg = (pHandle->offFile - paSegs[iSeg].offData);
-                        for (;;)
+                        KU32 cbAvail = paSegs[iSeg].cbDataAlloc - offSeg;
+                        if (cbAvail >= cbLeft)
                         {
-                            KU32 cbAvail = paSegs[iSeg].cbDataAlloc - offSeg;
-                            if (cbAvail >= cbLeft)
-                            {
-                                kHlpMemCopy(&paSegs[iSeg].pbData[offSeg], pvBuffer, cbLeft);
-                                break;
-                            }
-
-                            kHlpMemCopy(&paSegs[iSeg].pbData[offSeg], pvBuffer, cbAvail);
-                            pvBuffer = (KU8 const *)pvBuffer + cbAvail;
-                            cbLeft  -= cbAvail;
-                            offSeg   = 0;
-                            iSeg++;
-                            kHlpAssert(iSeg < pTempFile->cSegs);
+                            kHlpMemCopy(&paSegs[iSeg].pbData[offSeg], pvBuffer, cbLeft);
+                            break;
                         }
 
-                        /* Update the file offset. */
-                        pHandle->offFile += cbToWrite;
-                        if (pHandle->offFile > pTempFile->cbFile)
-                            pTempFile->cbFile = pHandle->offFile;
-
-                        *pcbActuallyWritten = cbToWrite;
-
-                        g_cbWriteFileTotal += cbToWrite;
-                        g_cbWriteFileToInMemTemp += cbToWrite;
-                        g_cWriteFileToInMemTemp++;
-
-                        KWFS_LOG(("WriteFile(%p,,%#x) -> TRUE [temp]\n", hFile, cbToWrite));
-                        return TRUE;
+                        kHlpMemCopy(&paSegs[iSeg].pbData[offSeg], pvBuffer, cbAvail);
+                        pvBuffer = (KU8 const *)pvBuffer + cbAvail;
+                        cbLeft  -= cbAvail;
+                        offSeg   = 0;
+                        iSeg++;
+                        kHlpAssert(iSeg < pTempFile->cSegs);
                     }
 
-                    kHlpAssertFailed();
-                    *pcbActuallyWritten = 0;
-                    SetLastError(ERROR_NOT_ENOUGH_MEMORY);
-                    return FALSE;
-                }
-# endif
+                    /* Update the file offset. */
+                    pHandle->offFile += cbToWrite;
+                    if (pHandle->offFile > pTempFile->cbFile)
+                        pTempFile->cbFile = pHandle->offFile;
 
-                case KWHANDLETYPE_FSOBJ_READ_CACHE:
-                    kHlpAssertFailed();
-                    SetLastError(ERROR_ACCESS_DENIED);
-                    *pcbActuallyWritten = 0;
-                    return FALSE;
+                    *pcbActuallyWritten = cbToWrite;
 
-# if defined(WITH_STD_OUT_ERR_BUFFERING) || defined(WITH_CONSOLE_OUTPUT_BUFFERING)
-                /*
-                 * Standard output & error.
-                 */
-                case KWHANDLETYPE_OUTPUT_BUF:
-                {
-                    PKWOUTPUTSTREAMBUF pOutBuf = pHandle->u.pOutBuf;
-                    if (pOutBuf->fIsConsole)
-                    {
-                        kwSandboxConsoleWriteA(&g_Sandbox, pOutBuf, (const char *)pvBuffer, cbToWrite);
-                        KWOUT_LOG(("WriteFile(%p [console]) -> TRUE\n", hFile));
-                    }
-                    else
-                    {
-#  ifdef WITH_STD_OUT_ERR_BUFFERING
-                        kwSandboxOutBufWrite(&g_Sandbox, pOutBuf, (const char *)pvBuffer, cbToWrite);
-                        KWOUT_LOG(("WriteFile(%p [std%s], 's*.*', %#x) -> TRUE\n", hFile,
-                                   pOutBuf == &g_Sandbox.StdErr ? "err" : "out", cbToWrite, cbToWrite, pvBuffer, cbToWrite));
-#  else
-                        kHlpAssertFailed();
-#  endif
-                    }
-                    if (pcbActuallyWritten)
-                        *pcbActuallyWritten = cbToWrite;
                     g_cbWriteFileTotal += cbToWrite;
+                    g_cbWriteFileToInMemTemp += cbToWrite;
+                    g_cWriteFileToInMemTemp++;
+
+                    KWFS_LOG(("WriteFile(%p,,%#x) -> TRUE [temp]\n", hFile, cbToWrite));
+                    kwSandboxHandlePut(pHandle);
                     return TRUE;
                 }
+
+                kHlpAssertFailed();
+                kwSandboxHandlePut(pHandle);
+                *pcbActuallyWritten = 0;
+                SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+                return FALSE;
+            }
 # endif
 
-                default:
-                case KWHANDLETYPE_TEMP_FILE_MAPPING:
+            case KWHANDLETYPE_FSOBJ_READ_CACHE:
+                kHlpAssertFailed();
+                kwSandboxHandlePut(pHandle);
+                SetLastError(ERROR_ACCESS_DENIED);
+                *pcbActuallyWritten = 0;
+                return FALSE;
+
+# if defined(WITH_STD_OUT_ERR_BUFFERING) || defined(WITH_CONSOLE_OUTPUT_BUFFERING)
+            /*
+             * Standard output & error.
+             */
+            case KWHANDLETYPE_OUTPUT_BUF:
+            {
+                PKWOUTPUTSTREAMBUF pOutBuf = pHandle->u.pOutBuf;
+                if (pOutBuf->fIsConsole)
+                {
+                    kwSandboxConsoleWriteA(&g_Sandbox, pOutBuf, (const char *)pvBuffer, cbToWrite);
+                    KWOUT_LOG(("WriteFile(%p [console]) -> TRUE\n", hFile));
+                }
+                else
+                {
+#  ifdef WITH_STD_OUT_ERR_BUFFERING
+                    kwSandboxOutBufWrite(&g_Sandbox, pOutBuf, (const char *)pvBuffer, cbToWrite);
+                    KWOUT_LOG(("WriteFile(%p [std%s], 's*.*', %#x) -> TRUE\n", hFile,
+                               pOutBuf == &g_Sandbox.StdErr ? "err" : "out", cbToWrite, cbToWrite, pvBuffer, cbToWrite));
+#  else
                     kHlpAssertFailed();
-                    SetLastError(ERROR_INVALID_FUNCTION);
-                    *pcbActuallyWritten = 0;
-                    return FALSE;
+#  endif
+                }
+                if (pcbActuallyWritten)
+                    *pcbActuallyWritten = cbToWrite;
+                g_cbWriteFileTotal += cbToWrite;
+                kwSandboxHandlePut(pHandle);
+                return TRUE;
             }
+# endif
+
+            default:
+#ifdef WITH_TEMP_MEMORY_FILES
+            case KWHANDLETYPE_TEMP_FILE_MAPPING:
+#endif
+                kHlpAssertFailed();
+                kwSandboxHandlePut(pHandle);
+                SetLastError(ERROR_INVALID_FUNCTION);
+                *pcbActuallyWritten = 0;
+                return FALSE;
         }
     }
 
@@ -6791,16 +8088,7 @@ static BOOL WINAPI kwSandbox_Kernel32_WriteFile(HANDLE hFile, LPCVOID pvBuffer, 
 static BOOL WINAPI kwSandbox_Kernel32_WriteFileEx(HANDLE hFile, LPCVOID pvBuffer, DWORD cbToWrite, LPOVERLAPPED pOverlapped,
                                                   LPOVERLAPPED_COMPLETION_ROUTINE pfnCompletionRoutine)
 {
-    KUPTR const idxHandle = KW_HANDLE_TO_INDEX(hFile);
-    kHlpAssert(GetCurrentThreadId() == g_Sandbox.idMainThread);
-    if (idxHandle < g_Sandbox.cHandles)
-    {
-        PKWHANDLE pHandle = g_Sandbox.papHandles[idxHandle];
-        if (pHandle != NULL)
-        {
-            kHlpAssertFailed();
-        }
-    }
+    kHlpAssert(kwSandboxHandleLookup(hFile) == NULL);
 
     KWFS_LOG(("WriteFileEx(%p)\n", hFile));
     return WriteFileEx(hFile, pvBuffer, cbToWrite, pOverlapped, pfnCompletionRoutine);
@@ -6813,47 +8101,49 @@ static BOOL WINAPI kwSandbox_Kernel32_WriteFileEx(HANDLE hFile, LPCVOID pvBuffer
 /** Kernel32 - SetEndOfFile; */
 static BOOL WINAPI kwSandbox_Kernel32_SetEndOfFile(HANDLE hFile)
 {
-    KUPTR const idxHandle = KW_HANDLE_TO_INDEX(hFile);
-    kHlpAssert(GetCurrentThreadId() == g_Sandbox.idMainThread);
-    if (idxHandle < g_Sandbox.cHandles)
+    PKWHANDLE pHandle = kwSandboxHandleGet(hFile);
+    if (pHandle != NULL)
     {
-        PKWHANDLE pHandle = g_Sandbox.papHandles[idxHandle];
-        if (pHandle != NULL)
+        switch (pHandle->enmType)
         {
-            switch (pHandle->enmType)
+            case KWHANDLETYPE_TEMP_FILE:
             {
-                case KWHANDLETYPE_TEMP_FILE:
+                PKWFSTEMPFILE   pTempFile  = pHandle->u.pTempFile;
+                if (   pHandle->offFile > pTempFile->cbFile
+                    && !kwFsTempFileEnsureSpace(pTempFile, pHandle->offFile, 0))
                 {
-                    PKWFSTEMPFILE   pTempFile  = pHandle->u.pTempFile;
-                    if (   pHandle->offFile > pTempFile->cbFile
-                        && !kwFsTempFileEnsureSpace(pTempFile, pHandle->offFile, 0))
-                    {
-                        kHlpAssertFailed();
-                        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
-                        return FALSE;
-                    }
-
-                    pTempFile->cbFile = pHandle->offFile;
-                    KWFS_LOG(("SetEndOfFile(%p) -> TRUE (cbFile=%#x)\n", hFile, pTempFile->cbFile));
-                    return TRUE;
+                    kHlpAssertFailed();
+                    kwSandboxHandlePut(pHandle);
+                    SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+                    return FALSE;
                 }
 
-                case KWHANDLETYPE_FSOBJ_READ_CACHE:
-                    kHlpAssertFailed();
-                    SetLastError(ERROR_ACCESS_DENIED);
-                    return FALSE;
-
-                case KWHANDLETYPE_OUTPUT_BUF:
-                    kHlpAssertFailed();
-                    SetLastError(pHandle->u.pOutBuf->fIsConsole ? ERROR_INVALID_OPERATION : ERROR_ACCESS_DENIED);
-                    return FALSE;
-
-                default:
-                case KWHANDLETYPE_TEMP_FILE_MAPPING:
-                    kHlpAssertFailed();
-                    SetLastError(ERROR_INVALID_FUNCTION);
-                    return FALSE;
+                pTempFile->cbFile = pHandle->offFile;
+                KWFS_LOG(("SetEndOfFile(%p) -> TRUE (cbFile=%#x)\n", hFile, pTempFile->cbFile));
+                kwSandboxHandlePut(pHandle);
+                return TRUE;
             }
+
+            case KWHANDLETYPE_FSOBJ_READ_CACHE:
+                kHlpAssertFailed();
+                kwSandboxHandlePut(pHandle);
+                SetLastError(ERROR_ACCESS_DENIED);
+                return FALSE;
+
+# ifdef WITH_CONSOLE_OUTPUT_BUFFERING
+            case KWHANDLETYPE_OUTPUT_BUF:
+                kHlpAssertFailed();
+                kwSandboxHandlePut(pHandle);
+                SetLastError(pHandle->u.pOutBuf->fIsConsole ? ERROR_INVALID_OPERATION : ERROR_ACCESS_DENIED);
+                return FALSE;
+# endif
+
+            default:
+            case KWHANDLETYPE_TEMP_FILE_MAPPING:
+                kHlpAssertFailed();
+                kwSandboxHandlePut(pHandle);
+                SetLastError(ERROR_INVALID_FUNCTION);
+                return FALSE;
         }
     }
 
@@ -6865,42 +8155,42 @@ static BOOL WINAPI kwSandbox_Kernel32_SetEndOfFile(HANDLE hFile)
 /** Kernel32 - GetFileType  */
 static BOOL WINAPI kwSandbox_Kernel32_GetFileType(HANDLE hFile)
 {
-    KUPTR const idxHandle = KW_HANDLE_TO_INDEX(hFile);
-    kHlpAssert(GetCurrentThreadId() == g_Sandbox.idMainThread);
-    if (idxHandle < g_Sandbox.cHandles)
+    PKWHANDLE pHandle = kwSandboxHandleGet(hFile);
+    if (pHandle != NULL)
     {
-        PKWHANDLE pHandle = g_Sandbox.papHandles[idxHandle];
-        if (pHandle != NULL)
+        switch (pHandle->enmType)
         {
-            switch (pHandle->enmType)
+            case KWHANDLETYPE_FSOBJ_READ_CACHE:
+                KWFS_LOG(("GetFileType(%p) -> FILE_TYPE_DISK [cached]\n", hFile));
+                kwSandboxHandlePut(pHandle);
+                return FILE_TYPE_DISK;
+
+            case KWHANDLETYPE_TEMP_FILE:
+                KWFS_LOG(("GetFileType(%p) -> FILE_TYPE_DISK [temp]\n", hFile));
+                kwSandboxHandlePut(pHandle);
+                return FILE_TYPE_DISK;
+
+#ifdef WITH_CONSOLE_OUTPUT_BUFFERING
+            case KWHANDLETYPE_OUTPUT_BUF:
             {
-                case KWHANDLETYPE_FSOBJ_READ_CACHE:
-                    KWFS_LOG(("GetFileType(%p) -> FILE_TYPE_DISK [cached]\n", hFile));
-                    return FILE_TYPE_DISK;
-
-                case KWHANDLETYPE_TEMP_FILE:
-                    KWFS_LOG(("GetFileType(%p) -> FILE_TYPE_DISK [temp]\n", hFile));
-                    return FILE_TYPE_DISK;
-
-                case KWHANDLETYPE_OUTPUT_BUF:
+                PKWOUTPUTSTREAMBUF pOutBuf = pHandle->u.pOutBuf;
+                DWORD fRet;
+                if (pOutBuf->fFileType != KU8_MAX)
                 {
-                    PKWOUTPUTSTREAMBUF pOutBuf = pHandle->u.pOutBuf;
-                    DWORD fRet;
-                    if (pOutBuf->fFileType != KU8_MAX)
-                    {
-                        fRet = (pOutBuf->fFileType & 0xf) | ((pOutBuf->fFileType & (FILE_TYPE_REMOTE >> 8)) << 8);
-                        KWFS_LOG(("GetFileType(%p) -> %#x [outbuf]\n", hFile, fRet));
-                    }
-                    else
-                    {
-                        fRet = GetFileType(hFile);
-                        KWFS_LOG(("GetFileType(%p) -> %#x [outbuf, fallback]\n", hFile, fRet));
-                    }
-                    return fRet;
+                    fRet = (pOutBuf->fFileType & 0xf) | ((pOutBuf->fFileType & (FILE_TYPE_REMOTE >> 8)) << 8);
+                    KWFS_LOG(("GetFileType(%p) -> %#x [outbuf]\n", hFile, fRet));
                 }
-
+                else
+                {
+                    fRet = GetFileType(hFile);
+                    KWFS_LOG(("GetFileType(%p) -> %#x [outbuf, fallback]\n", hFile, fRet));
+                }
+                kwSandboxHandlePut(pHandle);
+                return fRet;
             }
+#endif
         }
+        kwSandboxHandlePut(pHandle);
     }
 
     KWFS_LOG(("GetFileType(%p)\n", hFile));
@@ -6911,36 +8201,35 @@ static BOOL WINAPI kwSandbox_Kernel32_GetFileType(HANDLE hFile)
 /** Kernel32 - GetFileSize  */
 static DWORD WINAPI kwSandbox_Kernel32_GetFileSize(HANDLE hFile, LPDWORD pcbHighDword)
 {
-    KUPTR const idxHandle = KW_HANDLE_TO_INDEX(hFile);
-    kHlpAssert(GetCurrentThreadId() == g_Sandbox.idMainThread);
-    if (idxHandle < g_Sandbox.cHandles)
+    PKWHANDLE pHandle = kwSandboxHandleGet(hFile);
+    if (pHandle != NULL)
     {
-        PKWHANDLE pHandle = g_Sandbox.papHandles[idxHandle];
-        if (pHandle != NULL)
+        if (pcbHighDword)
+            *pcbHighDword = 0;
+        SetLastError(NO_ERROR);
+        switch (pHandle->enmType)
         {
-            if (pcbHighDword)
-                *pcbHighDword = 0;
-            SetLastError(NO_ERROR);
-            switch (pHandle->enmType)
-            {
-                case KWHANDLETYPE_FSOBJ_READ_CACHE:
-                    KWFS_LOG(("GetFileSize(%p) -> %#x [cached]\n", hFile, pHandle->u.pCachedFile->cbCached));
-                    return pHandle->u.pCachedFile->cbCached;
+            case KWHANDLETYPE_FSOBJ_READ_CACHE:
+                KWFS_LOG(("GetFileSize(%p) -> %#x [cached]\n", hFile, pHandle->u.pCachedFile->cbCached));
+                kwSandboxHandlePut(pHandle);
+                return pHandle->u.pCachedFile->cbCached;
 
-                case KWHANDLETYPE_TEMP_FILE:
-                    KWFS_LOG(("GetFileSize(%p) -> %#x [temp]\n", hFile, pHandle->u.pTempFile->cbFile));
-                    return pHandle->u.pTempFile->cbFile;
+            case KWHANDLETYPE_TEMP_FILE:
+                KWFS_LOG(("GetFileSize(%p) -> %#x [temp]\n", hFile, pHandle->u.pTempFile->cbFile));
+                kwSandboxHandlePut(pHandle);
+                return pHandle->u.pTempFile->cbFile;
 
-                case KWHANDLETYPE_OUTPUT_BUF:
-                    /* do default */
-                    break;
+            case KWHANDLETYPE_OUTPUT_BUF:
+                /* do default */
+                break;
 
-                default:
-                    kHlpAssertFailed();
-                    SetLastError(ERROR_INVALID_FUNCTION);
-                    return INVALID_FILE_SIZE;
-            }
+            default:
+                kHlpAssertFailed();
+                kwSandboxHandlePut(pHandle);
+                SetLastError(ERROR_INVALID_FUNCTION);
+                return INVALID_FILE_SIZE;
         }
+        kwSandboxHandlePut(pHandle);
     }
 
     KWFS_LOG(("GetFileSize(%p,)\n", hFile));
@@ -6951,35 +8240,34 @@ static DWORD WINAPI kwSandbox_Kernel32_GetFileSize(HANDLE hFile, LPDWORD pcbHigh
 /** Kernel32 - GetFileSizeEx  */
 static BOOL WINAPI kwSandbox_Kernel32_GetFileSizeEx(HANDLE hFile, PLARGE_INTEGER pcbFile)
 {
-    KUPTR const idxHandle = KW_HANDLE_TO_INDEX(hFile);
-    kHlpAssert(GetCurrentThreadId() == g_Sandbox.idMainThread);
-    if (idxHandle < g_Sandbox.cHandles)
+    PKWHANDLE pHandle = kwSandboxHandleGet(hFile);
+    if (pHandle != NULL)
     {
-        PKWHANDLE pHandle = g_Sandbox.papHandles[idxHandle];
-        if (pHandle != NULL)
+        switch (pHandle->enmType)
         {
-            switch (pHandle->enmType)
-            {
-                case KWHANDLETYPE_FSOBJ_READ_CACHE:
-                    KWFS_LOG(("GetFileSizeEx(%p) -> TRUE, %#x [cached]\n", hFile, pHandle->u.pCachedFile->cbCached));
-                    pcbFile->QuadPart = pHandle->u.pCachedFile->cbCached;
-                    return TRUE;
+            case KWHANDLETYPE_FSOBJ_READ_CACHE:
+                KWFS_LOG(("GetFileSizeEx(%p) -> TRUE, %#x [cached]\n", hFile, pHandle->u.pCachedFile->cbCached));
+                pcbFile->QuadPart = pHandle->u.pCachedFile->cbCached;
+                kwSandboxHandlePut(pHandle);
+                return TRUE;
 
-                case KWHANDLETYPE_TEMP_FILE:
-                    KWFS_LOG(("GetFileSizeEx(%p) -> TRUE, %#x [temp]\n", hFile, pHandle->u.pTempFile->cbFile));
-                    pcbFile->QuadPart = pHandle->u.pTempFile->cbFile;
-                    return TRUE;
+            case KWHANDLETYPE_TEMP_FILE:
+                KWFS_LOG(("GetFileSizeEx(%p) -> TRUE, %#x [temp]\n", hFile, pHandle->u.pTempFile->cbFile));
+                pcbFile->QuadPart = pHandle->u.pTempFile->cbFile;
+                kwSandboxHandlePut(pHandle);
+                return TRUE;
 
-                case KWHANDLETYPE_OUTPUT_BUF:
-                    /* do default */
-                    break;
+            case KWHANDLETYPE_OUTPUT_BUF:
+                /* do default */
+                break;
 
-                default:
-                    kHlpAssertFailed();
-                    SetLastError(ERROR_INVALID_FUNCTION);
-                    return INVALID_FILE_SIZE;
-            }
+            default:
+                kHlpAssertFailed();
+                kwSandboxHandlePut(pHandle);
+                SetLastError(ERROR_INVALID_FUNCTION);
+                return INVALID_FILE_SIZE;
         }
+        kwSandboxHandlePut(pHandle);
     }
 
     KWFS_LOG(("GetFileSizeEx(%p,)\n", hFile));
@@ -6993,69 +8281,69 @@ static HANDLE WINAPI kwSandbox_Kernel32_CreateFileMappingW(HANDLE hFile, LPSECUR
                                                            DWORD dwMaximumSizeLow, LPCWSTR pwszName)
 {
     HANDLE      hMapping;
-    KUPTR const idxHandle = KW_HANDLE_TO_INDEX(hFile);
-    kHlpAssert(GetCurrentThreadId() == g_Sandbox.idMainThread);
-    if (idxHandle < g_Sandbox.cHandles)
+    PKWHANDLE   pHandle = kwSandboxHandleGet(hFile);
+    if (pHandle != NULL)
     {
-        PKWHANDLE pHandle = g_Sandbox.papHandles[idxHandle];
-        if (pHandle != NULL)
+        switch (pHandle->enmType)
         {
-            switch (pHandle->enmType)
+            case KWHANDLETYPE_TEMP_FILE:
             {
-                case KWHANDLETYPE_TEMP_FILE:
+                PKWFSTEMPFILE pTempFile = pHandle->u.pTempFile;
+                if (   (   fProtect == PAGE_READONLY
+                        || fProtect == PAGE_EXECUTE_READ)
+                    && dwMaximumSizeHigh == 0
+                    &&  (   dwMaximumSizeLow == 0
+                         || dwMaximumSizeLow == pTempFile->cbFile)
+                    && pwszName == NULL)
                 {
-                    PKWFSTEMPFILE pTempFile = pHandle->u.pTempFile;
-                    if (   (   fProtect == PAGE_READONLY
-                            || fProtect == PAGE_EXECUTE_READ)
-                        && dwMaximumSizeHigh == 0
-                        &&  (   dwMaximumSizeLow == 0
-                             || dwMaximumSizeLow == pTempFile->cbFile)
-                        && pwszName == NULL)
-                    {
-                        hMapping = kwFsTempFileCreateHandle(pHandle->u.pTempFile, GENERIC_READ, K_TRUE /*fMapping*/);
-                        KWFS_LOG(("CreateFileMappingW(%p, %u) -> %p [temp]\n", hFile, fProtect, hMapping));
-                        return hMapping;
-                    }
-                    kHlpAssertMsgFailed(("fProtect=%#x cb=%#x'%08x name=%p\n",
-                                         fProtect, dwMaximumSizeHigh, dwMaximumSizeLow, pwszName));
-                    SetLastError(ERROR_ACCESS_DENIED);
-                    return INVALID_HANDLE_VALUE;
+                    hMapping = kwFsTempFileCreateHandle(pHandle->u.pTempFile, GENERIC_READ, K_TRUE /*fMapping*/);
+                    KWFS_LOG(("CreateFileMappingW(%p, %u) -> %p [temp]\n", hFile, fProtect, hMapping));
+                    kwSandboxHandlePut(pHandle);
+                    return hMapping;
                 }
+                kHlpAssertMsgFailed(("fProtect=%#x cb=%#x'%08x name=%p\n",
+                                     fProtect, dwMaximumSizeHigh, dwMaximumSizeLow, pwszName));
+                kwSandboxHandlePut(pHandle);
+                SetLastError(ERROR_ACCESS_DENIED);
+                return INVALID_HANDLE_VALUE;
+            }
 
-                /* moc.exe benefits from this. */
-                case KWHANDLETYPE_FSOBJ_READ_CACHE:
+            /* moc.exe benefits from this. */
+            case KWHANDLETYPE_FSOBJ_READ_CACHE:
+            {
+                PKFSWCACHEDFILE pCachedFile = pHandle->u.pCachedFile;
+                if (   (   fProtect == PAGE_READONLY
+                        || fProtect == PAGE_EXECUTE_READ)
+                    && dwMaximumSizeHigh == 0
+                    &&  (   dwMaximumSizeLow == 0
+                         || dwMaximumSizeLow == pCachedFile->cbCached)
+                    && pwszName == NULL)
                 {
-                    PKFSWCACHEDFILE pCachedFile = pHandle->u.pCachedFile;
-                    if (   (   fProtect == PAGE_READONLY
-                            || fProtect == PAGE_EXECUTE_READ)
-                        && dwMaximumSizeHigh == 0
-                        &&  (   dwMaximumSizeLow == 0
-                             || dwMaximumSizeLow == pCachedFile->cbCached)
-                        && pwszName == NULL)
-                    {
-                        if (kwFsObjCacheCreateFileHandle(pCachedFile, GENERIC_READ, FALSE /*fInheritHandle*/,
-                                                         K_FALSE /*fIsFileHandle*/, &hMapping))
-                        { /* likely */ }
-                        else
-                            hMapping = NULL;
-                        KWFS_LOG(("CreateFileMappingW(%p, %u) -> %p [cached]\n", hFile, fProtect, hMapping));
-                        return hMapping;
-                    }
-
-                    /* Do fallback (for .pch). */
-                    kHlpAssertMsg(fProtect == PAGE_WRITECOPY,
-                                  ("fProtect=%#x cb=%#x'%08x name=%p\n",
-                                   fProtect, dwMaximumSizeHigh, dwMaximumSizeLow, pwszName));
-
-                    hMapping = CreateFileMappingW(hFile, pSecAttrs, fProtect, dwMaximumSizeHigh, dwMaximumSizeLow, pwszName);
-                    KWFS_LOG(("CreateFileMappingW(%p, %p, %#x, %#x, %#x, %p) -> %p [cached-fallback]\n",
-                              hFile, pSecAttrs, fProtect, dwMaximumSizeHigh, dwMaximumSizeLow, pwszName, hMapping));
+                    if (kwFsObjCacheCreateFileHandle(pCachedFile, GENERIC_READ, FALSE /*fInheritHandle*/,
+                                                     K_FALSE /*fIsFileHandle*/, &hMapping))
+                    { /* likely */ }
+                    else
+                        hMapping = NULL;
+                    KWFS_LOG(("CreateFileMappingW(%p, %u) -> %p [cached]\n", hFile, fProtect, hMapping));
+                    kwSandboxHandlePut(pHandle);
                     return hMapping;
                 }
 
-                /** @todo read cached memory mapped files too for moc.   */
+                /* Do fallback (for .pch). */
+                kHlpAssertMsg(fProtect == PAGE_WRITECOPY,
+                              ("fProtect=%#x cb=%#x'%08x name=%p\n",
+                               fProtect, dwMaximumSizeHigh, dwMaximumSizeLow, pwszName));
+
+                hMapping = CreateFileMappingW(hFile, pSecAttrs, fProtect, dwMaximumSizeHigh, dwMaximumSizeLow, pwszName);
+                KWFS_LOG(("CreateFileMappingW(%p, %p, %#x, %#x, %#x, %p) -> %p [cached-fallback]\n",
+                          hFile, pSecAttrs, fProtect, dwMaximumSizeHigh, dwMaximumSizeLow, pwszName, hMapping));
+                kwSandboxHandlePut(pHandle);
+                return hMapping;
             }
+
+            /** @todo read cached memory mapped files too for moc.   */
         }
+        kwSandboxHandlePut(pHandle);
     }
 
     hMapping = CreateFileMappingW(hFile, pSecAttrs, fProtect, dwMaximumSizeHigh, dwMaximumSizeLow, pwszName);
@@ -7070,154 +8358,154 @@ static PVOID WINAPI kwSandbox_Kernel32_MapViewOfFile(HANDLE hSection, DWORD dwDe
                                                      DWORD offFileHigh, DWORD offFileLow, SIZE_T cbToMap)
 {
     PVOID       pvRet;
-    KUPTR const idxHandle = KW_HANDLE_TO_INDEX(hSection);
-    kHlpAssert(GetCurrentThreadId() == g_Sandbox.idMainThread);
-    if (idxHandle < g_Sandbox.cHandles)
+    PKWHANDLE   pHandle = kwSandboxHandleGet(hSection);
+    if (pHandle != NULL)
     {
-        PKWHANDLE pHandle = g_Sandbox.papHandles[idxHandle];
-        if (pHandle != NULL)
-        {
-            KU32 idxMapping;
+        KU32 idxMapping;
 
-            /*
-             * Ensure one free entry in the mapping tracking table first,
-             * since this is common to both temporary and cached files.
-             */
-            if (g_Sandbox.cMemMappings + 1 <= g_Sandbox.cMemMappingsAlloc)
-            { /* likely */ }
+        /*
+         * Ensure one free entry in the mapping tracking table first,
+         * since this is common to both temporary and cached files.
+         */
+        if (g_Sandbox.cMemMappings + 1 <= g_Sandbox.cMemMappingsAlloc)
+        { /* likely */ }
+        else
+        {
+            void *pvNew;
+            KU32 cNew = g_Sandbox.cMemMappingsAlloc;
+            if (cNew)
+                cNew *= 2;
+            else
+                cNew = 32;
+            pvNew = kHlpRealloc(g_Sandbox.paMemMappings, cNew * sizeof(g_Sandbox.paMemMappings[0]));
+            if (pvNew)
+                g_Sandbox.paMemMappings = (PKWMEMMAPPING)pvNew;
             else
             {
-                void *pvNew;
-                KU32 cNew = g_Sandbox.cMemMappingsAlloc;
-                if (cNew)
-                    cNew *= 2;
-                else
-                    cNew = 32;
-                pvNew = kHlpRealloc(g_Sandbox.paMemMappings, cNew * sizeof(g_Sandbox.paMemMappings));
-                if (pvNew)
-                    g_Sandbox.paMemMappings = (PKWMEMMAPPING)pvNew;
-                else
-                {
-                    kwErrPrintf("Failed to grow paMemMappings from %#x to %#x!\n", g_Sandbox.cMemMappingsAlloc, cNew);
-                    SetLastError(ERROR_NOT_ENOUGH_MEMORY);
-                    return NULL;
-                }
-                g_Sandbox.cMemMappingsAlloc = cNew;
+                kwErrPrintf("Failed to grow paMemMappings from %#x to %#x!\n", g_Sandbox.cMemMappingsAlloc, cNew);
+                kwSandboxHandlePut(pHandle);
+                SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+                return NULL;
             }
+            g_Sandbox.cMemMappingsAlloc = cNew;
+        }
 
-            /*
-             * Type specific work.
-             */
-            switch (pHandle->enmType)
+        /*
+         * Type specific work.
+         */
+        switch (pHandle->enmType)
+        {
+            case KWHANDLETYPE_FSOBJ_READ_CACHE:
+            case KWHANDLETYPE_TEMP_FILE:
+            case KWHANDLETYPE_OUTPUT_BUF:
+            default:
+                kHlpAssertFailed();
+                kwSandboxHandlePut(pHandle);
+                SetLastError(ERROR_INVALID_OPERATION);
+                return NULL;
+
+            case KWHANDLETYPE_TEMP_FILE_MAPPING:
             {
-                case KWHANDLETYPE_FSOBJ_READ_CACHE:
-                case KWHANDLETYPE_TEMP_FILE:
-                case KWHANDLETYPE_OUTPUT_BUF:
-                default:
-                    kHlpAssertFailed();
-                    SetLastError(ERROR_INVALID_OPERATION);
-                    return NULL;
-
-                case KWHANDLETYPE_TEMP_FILE_MAPPING:
+                PKWFSTEMPFILE pTempFile = pHandle->u.pTempFile;
+                if (   dwDesiredAccess == FILE_MAP_READ
+                    && offFileHigh == 0
+                    && offFileLow  == 0
+                    && (cbToMap == 0 || cbToMap == pTempFile->cbFile) )
                 {
-                    PKWFSTEMPFILE pTempFile = pHandle->u.pTempFile;
-                    if (   dwDesiredAccess == FILE_MAP_READ
-                        && offFileHigh == 0
-                        && offFileLow  == 0
-                        && (cbToMap == 0 || cbToMap == pTempFile->cbFile) )
+                    kHlpAssert(pTempFile->cMappings == 0 || pTempFile->cSegs == 1);
+                    if (pTempFile->cSegs != 1)
                     {
-                        kHlpAssert(pTempFile->cMappings == 0 || pTempFile->cSegs == 1);
-                        if (pTempFile->cSegs != 1)
+                        KU32    iSeg;
+                        KU32    cbLeft;
+                        KU32    cbAll = pTempFile->cbFile ? (KU32)K_ALIGN_Z(pTempFile->cbFile, 0x2000) : 0x1000;
+                        KU8    *pbAll = NULL;
+                        int rc = kHlpPageAlloc((void **)&pbAll, cbAll, KPROT_READWRITE, K_FALSE);
+                        if (rc != 0)
                         {
-                            KU32    iSeg;
-                            KU32    cbLeft;
-                            KU32    cbAll = pTempFile->cbFile ? (KU32)K_ALIGN_Z(pTempFile->cbFile, 0x2000) : 0x1000;
-                            KU8    *pbAll = NULL;
-                            int rc = kHlpPageAlloc((void **)&pbAll, cbAll, KPROT_READWRITE, K_FALSE);
-                            if (rc != 0)
-                            {
-                                kHlpAssertFailed();
-                                SetLastError(ERROR_NOT_ENOUGH_MEMORY);
-                                return NULL;
-                            }
-
-                            cbLeft = pTempFile->cbFile;
-                            for (iSeg = 0; iSeg < pTempFile->cSegs && cbLeft > 0; iSeg++)
-                            {
-                                KU32 cbToCopy = K_MIN(cbLeft, pTempFile->paSegs[iSeg].cbDataAlloc);
-                                kHlpMemCopy(&pbAll[pTempFile->paSegs[iSeg].offData], pTempFile->paSegs[iSeg].pbData, cbToCopy);
-                                cbLeft -= cbToCopy;
-                            }
-
-                            for (iSeg = 0; iSeg < pTempFile->cSegs; iSeg++)
-                            {
-                                kHlpPageFree(pTempFile->paSegs[iSeg].pbData, pTempFile->paSegs[iSeg].cbDataAlloc);
-                                pTempFile->paSegs[iSeg].pbData = NULL;
-                                pTempFile->paSegs[iSeg].cbDataAlloc = 0;
-                            }
-
-                            pTempFile->cSegs                 = 1;
-                            pTempFile->cbFileAllocated       = cbAll;
-                            pTempFile->paSegs[0].cbDataAlloc = cbAll;
-                            pTempFile->paSegs[0].pbData      = pbAll;
-                            pTempFile->paSegs[0].offData     = 0;
+                            kHlpAssertFailed();
+                            SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+                            return NULL;
                         }
 
-                        pTempFile->cMappings++;
-                        kHlpAssert(pTempFile->cMappings == 1);
+                        cbLeft = pTempFile->cbFile;
+                        for (iSeg = 0; iSeg < pTempFile->cSegs && cbLeft > 0; iSeg++)
+                        {
+                            KU32 cbToCopy = K_MIN(cbLeft, pTempFile->paSegs[iSeg].cbDataAlloc);
+                            kHlpMemCopy(&pbAll[pTempFile->paSegs[iSeg].offData], pTempFile->paSegs[iSeg].pbData, cbToCopy);
+                            cbLeft -= cbToCopy;
+                        }
 
-                        pvRet = pTempFile->paSegs[0].pbData;
-                        KWFS_LOG(("CreateFileMappingW(%p) -> %p [temp]\n", hSection, pvRet));
-                        break;
+                        for (iSeg = 0; iSeg < pTempFile->cSegs; iSeg++)
+                        {
+                            kHlpPageFree(pTempFile->paSegs[iSeg].pbData, pTempFile->paSegs[iSeg].cbDataAlloc);
+                            pTempFile->paSegs[iSeg].pbData = NULL;
+                            pTempFile->paSegs[iSeg].cbDataAlloc = 0;
+                        }
+
+                        pTempFile->cSegs                 = 1;
+                        pTempFile->cbFileAllocated       = cbAll;
+                        pTempFile->paSegs[0].cbDataAlloc = cbAll;
+                        pTempFile->paSegs[0].pbData      = pbAll;
+                        pTempFile->paSegs[0].offData     = 0;
                     }
 
-                    kHlpAssertMsgFailed(("dwDesiredAccess=%#x offFile=%#x'%08x cbToMap=%#x (cbFile=%#x)\n",
-                                         dwDesiredAccess, offFileHigh, offFileLow, cbToMap, pTempFile->cbFile));
-                    SetLastError(ERROR_NOT_ENOUGH_MEMORY);
-                    return NULL;
+                    pTempFile->cMappings++;
+                    kHlpAssert(pTempFile->cMappings == 1);
+
+                    pvRet = pTempFile->paSegs[0].pbData;
+                    KWFS_LOG(("CreateFileMappingW(%p) -> %p [temp]\n", hSection, pvRet));
+                    break;
                 }
 
-                /*
-                 * This is simple in comparison to the above temporary file code.
-                 */
-                case KWHANDLETYPE_FSOBJ_READ_CACHE_MAPPING:
-                {
-                    PKFSWCACHEDFILE pCachedFile = pHandle->u.pCachedFile;
-                    if (   dwDesiredAccess == FILE_MAP_READ
-                        && offFileHigh == 0
-                        && offFileLow  == 0
-                        && (cbToMap == 0 || cbToMap == pCachedFile->cbCached) )
-                    {
-                        pvRet = pCachedFile->pbCached;
-                        KWFS_LOG(("CreateFileMappingW(%p) -> %p [cached]\n", hSection, pvRet));
-                        break;
-                    }
-                    kHlpAssertMsgFailed(("dwDesiredAccess=%#x offFile=%#x'%08x cbToMap=%#x (cbFile=%#x)\n",
-                                         dwDesiredAccess, offFileHigh, offFileLow, cbToMap, pCachedFile->cbCached));
-                    SetLastError(ERROR_NOT_ENOUGH_MEMORY);
-                    return NULL;
-                }
+                kHlpAssertMsgFailed(("dwDesiredAccess=%#x offFile=%#x'%08x cbToMap=%#x (cbFile=%#x)\n",
+                                     dwDesiredAccess, offFileHigh, offFileLow, cbToMap, pTempFile->cbFile));
+                kwSandboxHandlePut(pHandle);
+                SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+                return NULL;
             }
 
             /*
-             * Insert into the mapping tracking table.  This is common
-             * and we should only get here with a non-NULL pvRet.
-             *
-             * Note! We could look for duplicates and do ref counting, but it's
-             *       easier to just append for now.
+             * This is simple in comparison to the above temporary file code.
              */
-            kHlpAssert(pvRet != NULL);
-            idxMapping = g_Sandbox.cMemMappings;
-            kHlpAssert(idxMapping < g_Sandbox.cMemMappingsAlloc);
-
-            g_Sandbox.paMemMappings[idxMapping].cRefs         = 1;
-            g_Sandbox.paMemMappings[idxMapping].pvMapping     = pvRet;
-            g_Sandbox.paMemMappings[idxMapping].enmType       = pHandle->enmType;
-            g_Sandbox.paMemMappings[idxMapping].u.pCachedFile = pHandle->u.pCachedFile;
-            g_Sandbox.cMemMappings++;
-
-            return pvRet;
+            case KWHANDLETYPE_FSOBJ_READ_CACHE_MAPPING:
+            {
+                PKFSWCACHEDFILE pCachedFile = pHandle->u.pCachedFile;
+                if (   dwDesiredAccess == FILE_MAP_READ
+                    && offFileHigh == 0
+                    && offFileLow  == 0
+                    && (cbToMap == 0 || cbToMap == pCachedFile->cbCached) )
+                {
+                    pvRet = pCachedFile->pbCached;
+                    KWFS_LOG(("CreateFileMappingW(%p) -> %p [cached]\n", hSection, pvRet));
+                    break;
+                }
+                kHlpAssertMsgFailed(("dwDesiredAccess=%#x offFile=%#x'%08x cbToMap=%#x (cbFile=%#x)\n",
+                                     dwDesiredAccess, offFileHigh, offFileLow, cbToMap, pCachedFile->cbCached));
+                kwSandboxHandlePut(pHandle);
+                SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+                return NULL;
+            }
         }
+
+        /*
+         * Insert into the mapping tracking table.  This is common
+         * and we should only get here with a non-NULL pvRet.
+         *
+         * Note! We could look for duplicates and do ref counting, but it's
+         *       easier to just append for now.
+         */
+        kHlpAssert(pvRet != NULL);
+        idxMapping = g_Sandbox.cMemMappings;
+        kHlpAssert(idxMapping < g_Sandbox.cMemMappingsAlloc);
+
+        g_Sandbox.paMemMappings[idxMapping].cRefs         = 1;
+        g_Sandbox.paMemMappings[idxMapping].pvMapping     = pvRet;
+        g_Sandbox.paMemMappings[idxMapping].enmType       = pHandle->enmType;
+        g_Sandbox.paMemMappings[idxMapping].u.pCachedFile = pHandle->u.pCachedFile;
+        g_Sandbox.cMemMappings++;
+
+        kwSandboxHandlePut(pHandle);
+        return pvRet;
     }
 
     pvRet = MapViewOfFile(hSection, dwDesiredAccess, offFileHigh, offFileLow, cbToMap);
@@ -7232,41 +8520,46 @@ static PVOID WINAPI kwSandbox_Kernel32_MapViewOfFileEx(HANDLE hSection, DWORD dw
                                                        DWORD offFileHigh, DWORD offFileLow, SIZE_T cbToMap, PVOID pvMapAddr)
 {
     PVOID       pvRet;
-    KUPTR const idxHandle = KW_HANDLE_TO_INDEX(hSection);
-    kHlpAssert(GetCurrentThreadId() == g_Sandbox.idMainThread);
-    if (idxHandle < g_Sandbox.cHandles)
+    PKWHANDLE   pHandle = kwSandboxHandleGet(hSection);
+    if (pHandle != NULL)
     {
-        PKWHANDLE pHandle = g_Sandbox.papHandles[idxHandle];
-        if (pHandle != NULL)
+        switch (pHandle->enmType)
         {
-            switch (pHandle->enmType)
-            {
-                case KWHANDLETYPE_TEMP_FILE_MAPPING:
-                    KWFS_LOG(("MapViewOfFileEx(%p, %#x, %#x, %#x, %#x, %p) - temporary file!\n",
-                              hSection, dwDesiredAccess, offFileHigh, offFileLow, cbToMap, pvMapAddr));
-                    if (!pvMapAddr)
-                        return kwSandbox_Kernel32_MapViewOfFile(hSection, dwDesiredAccess, offFileHigh, offFileLow, cbToMap);
+            case KWHANDLETYPE_TEMP_FILE_MAPPING:
+                KWFS_LOG(("MapViewOfFileEx(%p, %#x, %#x, %#x, %#x, %p) - temporary file!\n",
+                          hSection, dwDesiredAccess, offFileHigh, offFileLow, cbToMap, pvMapAddr));
+                if (!pvMapAddr)
+                    pvRet = kwSandbox_Kernel32_MapViewOfFile(hSection, dwDesiredAccess, offFileHigh, offFileLow, cbToMap);
+                else
+                {
                     kHlpAssertFailed();
                     SetLastError(ERROR_NOT_ENOUGH_MEMORY);
-                    return NULL;
+                }
+                kwSandboxHandlePut(pHandle);
+                return NULL;
 
-                case KWHANDLETYPE_FSOBJ_READ_CACHE_MAPPING:
-                    KWFS_LOG(("MapViewOfFileEx(%p, %#x, %#x, %#x, %#x, %p) - read cached file!\n",
-                              hSection, dwDesiredAccess, offFileHigh, offFileLow, cbToMap, pvMapAddr));
-                    if (!pvMapAddr)
-                        return kwSandbox_Kernel32_MapViewOfFile(hSection, dwDesiredAccess, offFileHigh, offFileLow, cbToMap);
-                    /* We can use fallback here as the handle is an actual section handle. */
-                    break;
+            case KWHANDLETYPE_FSOBJ_READ_CACHE_MAPPING:
+                KWFS_LOG(("MapViewOfFileEx(%p, %#x, %#x, %#x, %#x, %p) - read cached file!\n",
+                          hSection, dwDesiredAccess, offFileHigh, offFileLow, cbToMap, pvMapAddr));
+                if (!pvMapAddr)
+                {
+                    pvRet = kwSandbox_Kernel32_MapViewOfFile(hSection, dwDesiredAccess, offFileHigh, offFileLow, cbToMap);
+                    kwSandboxHandlePut(pHandle);
+                    return pvRet;
+                }
+                /* We can use fallback here as the handle is an actual section handle. */
+                break;
 
-                case KWHANDLETYPE_FSOBJ_READ_CACHE:
-                case KWHANDLETYPE_TEMP_FILE:
-                case KWHANDLETYPE_OUTPUT_BUF:
-                default:
-                    kHlpAssertFailed();
-                    SetLastError(ERROR_INVALID_OPERATION);
-                    return NULL;
-            }
+            case KWHANDLETYPE_FSOBJ_READ_CACHE:
+            case KWHANDLETYPE_TEMP_FILE:
+            case KWHANDLETYPE_OUTPUT_BUF:
+            default:
+                kHlpAssertFailed();
+                kwSandboxHandlePut(pHandle);
+                SetLastError(ERROR_INVALID_OPERATION);
+                return NULL;
         }
+        kwSandboxHandlePut(pHandle);
     }
 
     pvRet = MapViewOfFileEx(hSection, dwDesiredAccess, offFileHigh, offFileLow, cbToMap, pvMapAddr);
@@ -7327,36 +8620,32 @@ static BOOL WINAPI kwSandbox_Kernel32_DuplicateHandle(HANDLE hSrcProc, HANDLE hS
      */
     if (hSrcProc == GetCurrentProcess())
     {
-        KUPTR const idxHandle = KW_HANDLE_TO_INDEX(hSrc);
-        kHlpAssert(GetCurrentThreadId() == g_Sandbox.idMainThread);
-        if (idxHandle < g_Sandbox.cHandles)
+        PKWHANDLE pHandle = kwSandboxHandleGet(hSrc);
+        if (pHandle)
         {
-            PKWHANDLE pHandle = g_Sandbox.papHandles[idxHandle];
-            if (pHandle)
+            fRet = DuplicateHandle(hSrcProc, hSrc, hDstProc, phNew, dwDesiredAccess, fInheritHandle, dwOptions);
+            if (fRet)
             {
-                fRet = DuplicateHandle(hSrcProc, hSrc, hDstProc, phNew, dwDesiredAccess, fInheritHandle, dwOptions);
-                if (fRet)
+                if (kwSandboxHandleTableEnter(&g_Sandbox, pHandle, *phNew))
                 {
-                    if (kwSandboxHandleTableEnter(&g_Sandbox, pHandle, *phNew))
-                    {
-                        pHandle->cRefs++;
-                        KWFS_LOG(("DuplicateHandle(%p, %p, %p, , %#x, %d, %#x) -> TRUE, %p [intercepted handle] enmType=%d cRef=%d\n",
-                                  hSrcProc, hSrc, hDstProc, dwDesiredAccess, fInheritHandle, dwOptions, *phNew,
-                                  pHandle->enmType, pHandle->cRefs));
-                    }
-                    else
-                    {
-                        fRet = FALSE;
-                        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
-                        KWFS_LOG(("DuplicateHandle(%p, %p, %p, , %#x, %d, %#x) -> !FALSE!, %p [intercepted handle] enmType=%d\n",
-                                  hSrcProc, hSrc, hDstProc, dwDesiredAccess, fInheritHandle, dwOptions, *phNew, pHandle->enmType));
-                    }
+                    pHandle->cRefs++;
+                    KWFS_LOG(("DuplicateHandle(%p, %p, %p, , %#x, %d, %#x) -> TRUE, %p [intercepted handle] enmType=%d cRef=%d\n",
+                              hSrcProc, hSrc, hDstProc, dwDesiredAccess, fInheritHandle, dwOptions, *phNew,
+                              pHandle->enmType, pHandle->cRefs));
                 }
                 else
-                    KWFS_LOG(("DuplicateHandle(%p, %p, %p, , %#x, %d, %#x) -> FALSE [intercepted handle] enmType=%d\n",
-                              hSrcProc, hSrc, hDstProc, dwDesiredAccess, fInheritHandle, dwOptions, pHandle->enmType));
-                return fRet;
+                {
+                    fRet = FALSE;
+                    SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+                    KWFS_LOG(("DuplicateHandle(%p, %p, %p, , %#x, %d, %#x) -> !FALSE!, %p [intercepted handle] enmType=%d\n",
+                              hSrcProc, hSrc, hDstProc, dwDesiredAccess, fInheritHandle, dwOptions, *phNew, pHandle->enmType));
+                }
             }
+            else
+                KWFS_LOG(("DuplicateHandle(%p, %p, %p, , %#x, %d, %#x) -> FALSE [intercepted handle] enmType=%d\n",
+                          hSrcProc, hSrc, hDstProc, dwDesiredAccess, fInheritHandle, dwOptions, pHandle->enmType));
+            kwSandboxHandlePut(pHandle);
+            return fRet;
         }
     }
 
@@ -7375,49 +8664,55 @@ static BOOL WINAPI kwSandbox_Kernel32_CloseHandle(HANDLE hObject)
 {
     BOOL        fRet;
     KUPTR const idxHandle = KW_HANDLE_TO_INDEX(hObject);
-    kHlpAssert(GetCurrentThreadId() == g_Sandbox.idMainThread || g_rcCtrlC != 0);
-    if (idxHandle < g_Sandbox.cHandles)
+    PKWHANDLE   pHandle   = kwSandboxHandleGet(hObject);
+    if (pHandle)
     {
-        PKWHANDLE pHandle = g_Sandbox.papHandles[idxHandle];
-        if (pHandle)
+        /* Prevent the closing of the standard output and error handles. */
+        if (   pHandle->enmType != KWHANDLETYPE_OUTPUT_BUF
+            || idxHandle != KW_HANDLE_TO_INDEX(pHandle->hHandle) /* why this?!? */)
         {
-            /* Prevent the closing of the standard output and error handles. */
-            if (   pHandle->enmType != KWHANDLETYPE_OUTPUT_BUF
-                || idxHandle != KW_HANDLE_TO_INDEX(pHandle->hHandle))
+            fRet = CloseHandle(hObject);
+            if (fRet)
             {
-                fRet = CloseHandle(hObject);
-                if (fRet)
+                EnterCriticalSection(&g_Sandbox.HandlesLock);
+                pHandle = g_Sandbox.papHandles[idxHandle];
+                g_Sandbox.papHandles[idxHandle] = NULL;
+                g_Sandbox.cActiveHandles--;
+                kHlpAssert(g_Sandbox.cActiveHandles >= g_Sandbox.cFixedHandles);
+                if (--pHandle->cRefs == 0)
                 {
-                    PKWHANDLE pHandle = g_Sandbox.papHandles[idxHandle];
-                    g_Sandbox.papHandles[idxHandle] = NULL;
-                    g_Sandbox.cActiveHandles--;
-                    kHlpAssert(g_Sandbox.cActiveHandles >= g_Sandbox.cFixedHandles);
-                    if (--pHandle->cRefs == 0)
-                    {
 #ifdef WITH_TEMP_MEMORY_FILES
-                        if (pHandle->enmType == KWHANDLETYPE_TEMP_FILE)
-                        {
-                            kHlpAssert(pHandle->u.pTempFile->cActiveHandles > 0);
-                            pHandle->u.pTempFile->cActiveHandles--;
-                        }
-#endif
-                        kHlpFree(pHandle);
-                        KWFS_LOG(("CloseHandle(%p) -> TRUE [intercepted handle, freed]\n", hObject));
+                    if (pHandle->enmType == KWHANDLETYPE_TEMP_FILE)
+                    {
+                        kHlpAssert(pHandle->u.pTempFile->cActiveHandles > 0);
+                        pHandle->u.pTempFile->cActiveHandles--;
                     }
-                    else
-                        KWFS_LOG(("CloseHandle(%p) -> TRUE [intercepted handle, not freed]\n", hObject));
+#endif
+                    kHlpFree(pHandle);
+                    KWFS_LOG(("CloseHandle(%p) -> TRUE [intercepted handle, freed]\n", hObject));
                 }
                 else
-                    KWFS_LOG(("CloseHandle(%p) -> FALSE [intercepted handle] err=%u!\n", hObject, GetLastError()));
+                {
+                    KWFS_LOG(("CloseHandle(%p) -> TRUE [intercepted handle, not freed]\n", hObject));
+                    kwSandboxHandlePut(pHandle);
+                }
+                LeaveCriticalSection(&g_Sandbox.HandlesLock);
+                return fRet;
             }
-            else
-            {
-                KWFS_LOG(("CloseHandle(%p) -> TRUE [intercepted handle] Ignored closing of std%s!\n",
-                          hObject, hObject == g_Sandbox.StdErr.hOutput ? "err" : "out"));
-                fRet = TRUE;
-            }
-            return fRet;
+            KWFS_LOG(("CloseHandle(%p) -> FALSE [intercepted handle] err=%u!\n", hObject, GetLastError()));
         }
+        else
+        {
+#ifdef WITH_CONSOLE_OUTPUT_BUFFERING
+            KWFS_LOG(("CloseHandle(%p) -> TRUE [intercepted handle] Ignored closing of std%s!\n",
+                      hObject, hObject == g_Sandbox.StdErr.hOutput ? "err" : "out"));
+#else
+            KWFS_LOG(("CloseHandle(%p) -> TRUE [intercepted handle] Ignored closing of stdXXX!\n", hObject));
+#endif
+            fRet = TRUE;
+        }
+        kwSandboxHandlePut(pHandle);
+        return fRet;
     }
 
     fRet = CloseHandle(hObject);
@@ -7482,13 +8777,161 @@ static DWORD WINAPI kwSandbox_Kernel32_GetFileAttributesW(LPCWSTR pwszFilename)
             SetLastError(kwFsLookupErrorToWindowsError(enmError));
             fRet = INVALID_FILE_ATTRIBUTES;
         }
-
+#ifndef NDEBUG
+        {
+            DWORD fCheck = GetFileAttributesW(pwszFilename);
+            kHlpAssertMsg(fCheck == fRet, ("fCheck=%x vs fRet=%#x diff=%#x; %ls\n", fCheck, fRet, fCheck ^ fRet, pwszFilename));
+        }
+#endif
         KWFS_LOG(("GetFileAttributesW(%ls) -> %#x [cached]\n", pwszFilename, fRet));
         return fRet;
     }
 
     fRet = GetFileAttributesW(pwszFilename);
     KWFS_LOG(("GetFileAttributesW(%ls) -> %#x\n", pwszFilename, fRet));
+    return fRet;
+}
+
+
+/** Kernel32 - GetFileAttributesExA. */
+static BOOL WINAPI kwSandbox_Kernel32_GetFileAttributesExA(LPCSTR pszFilename, GET_FILEEX_INFO_LEVELS enmLevel,
+                                                           WIN32_FILE_ATTRIBUTE_DATA *pData)
+{
+    BOOL fRet;
+    const char *pszExt = kHlpGetExt(pszFilename);
+    if (kwFsIsCacheableExtensionA(pszExt, K_TRUE /*fAttrQuery*/))
+    {
+        KFSLOOKUPERROR enmError;
+        PKFSOBJ pFsObj;
+        kHlpAssert(GetCurrentThreadId() == g_Sandbox.idMainThread);
+
+        pFsObj = kFsCacheLookupNoMissingA(g_pFsCache, pszFilename, &enmError);
+        if (pFsObj)
+        {
+            kHlpAssert(pFsObj->fHaveStats);
+            if (enmLevel == GetFileExInfoStandard)
+            {
+                pData->dwFileAttributes              = pFsObj->Stats.st_attribs;
+                pData->nFileSizeHigh                 = (KU64)pFsObj->Stats.st_size >> 32;
+                pData->nFileSizeLow                  = (KU32)pFsObj->Stats.st_size;
+                *(KU64 *)&pData->ftCreationTime   = birdNtTimeFromTimeSpec(&pFsObj->Stats.st_birthtim);
+                *(KU64 *)&pData->ftLastAccessTime = birdNtTimeFromTimeSpec(&pFsObj->Stats.st_atim);
+                *(KU64 *)&pData->ftLastWriteTime  = birdNtTimeFromTimeSpec(&pFsObj->Stats.st_mtim);
+                kFsCacheObjRelease(g_pFsCache, pFsObj);
+                fRet = TRUE;
+            }
+            else
+            {
+                kFsCacheObjRelease(g_pFsCache, pFsObj);
+                fRet = GetFileAttributesExA(pszFilename, enmLevel, pData);
+            }
+        }
+        else
+        {
+            SetLastError(kwFsLookupErrorToWindowsError(enmError));
+            fRet = FALSE;
+        }
+
+#ifdef K_STRICT
+        {
+            WIN32_FILE_ATTRIBUTE_DATA CheckData = { 0 };
+            DWORD const dwErrSaved = GetLastError();
+            BOOL const fRetCheck = GetFileAttributesExA(pszFilename, enmLevel, &CheckData);
+            kHlpAssertMsg(fRet == fRetCheck, ("fRet=%d fRetCheck=%d; %s\n", fRet, fRetCheck, pszFilename));
+            if (fRetCheck && fRet)
+            {
+# define ASSERT_FS_FIELD_EQUAL_A(pResult, pExpected, pszFilename, Field, szFmt) \
+    kHlpAssertMsg((pResult)->Field == (pExpected)->Field, (#Field ": " szFmt " , expected " szFmt "; %s\n", (pResult)->Field, (pExpected)->Field, pszFilename))
+                ASSERT_FS_FIELD_EQUAL_A(pData, &CheckData, pszFilename, dwFileAttributes, "%#x");
+                ASSERT_FS_FIELD_EQUAL_A(pData, &CheckData, pszFilename, nFileSizeHigh, "%#x");
+                ASSERT_FS_FIELD_EQUAL_A(pData, &CheckData, pszFilename, nFileSizeLow, "%#x");
+                ASSERT_FS_FIELD_EQUAL_A(pData, &CheckData, pszFilename, ftCreationTime.dwHighDateTime, "%#x");
+                ASSERT_FS_FIELD_EQUAL_A(pData, &CheckData, pszFilename, ftCreationTime.dwLowDateTime, "%#x");
+                ASSERT_FS_FIELD_EQUAL_A(pData, &CheckData, pszFilename, ftLastWriteTime.dwHighDateTime, "%#x");
+                ASSERT_FS_FIELD_EQUAL_A(pData, &CheckData, pszFilename, ftLastWriteTime.dwLowDateTime, "%#x");
+            }
+            else
+                kHlpAssertMsg(dwErrSaved == GetLastError(), ("%u, expected %u; %s\n", dwErrSaved, GetLastError(), pszFilename));
+            SetLastError(dwErrSaved);
+        }
+#endif
+        KWFS_LOG(("GetFileAttributesA(%s,%d,) -> %d [cached]\n", pszFilename, enmLevel, fRet));
+        return fRet;
+    }
+
+    fRet = GetFileAttributesExA(pszFilename, enmLevel, pData);
+    KWFS_LOG(("GetFileAttributesExA(%s,%d,) -> %d\n", pszFilename, enmLevel, fRet));
+    return fRet;
+}
+
+
+/** Kernel32 - GetFileAttributesExW. */
+static BOOL WINAPI kwSandbox_Kernel32_GetFileAttributesExW(LPCWSTR pwszFilename, GET_FILEEX_INFO_LEVELS enmLevel,
+                                                           WIN32_FILE_ATTRIBUTE_DATA *pData)
+{
+    BOOL fRet;
+    if (kwFsIsCacheablePathExtensionW(pwszFilename, K_TRUE /*fAttrQuery*/))
+    {
+        KFSLOOKUPERROR enmError;
+        PKFSOBJ pFsObj;
+        kHlpAssert(GetCurrentThreadId() == g_Sandbox.idMainThread);
+
+        pFsObj = kFsCacheLookupNoMissingW(g_pFsCache, pwszFilename, &enmError);
+        if (pFsObj)
+        {
+            kHlpAssert(pFsObj->fHaveStats);
+            if (enmLevel == GetFileExInfoStandard)
+            {
+                pData->dwFileAttributes              = pFsObj->Stats.st_attribs;
+                pData->nFileSizeHigh                 = (KU64)pFsObj->Stats.st_size >> 32;
+                pData->nFileSizeLow                  = (KU32)pFsObj->Stats.st_size;
+                *(KU64 *)&pData->ftCreationTime   = birdNtTimeFromTimeSpec(&pFsObj->Stats.st_birthtim);
+                *(KU64 *)&pData->ftLastAccessTime = birdNtTimeFromTimeSpec(&pFsObj->Stats.st_atim);
+                *(KU64 *)&pData->ftLastWriteTime  = birdNtTimeFromTimeSpec(&pFsObj->Stats.st_mtim);
+                kFsCacheObjRelease(g_pFsCache, pFsObj);
+                fRet = TRUE;
+            }
+            else
+            {
+                kFsCacheObjRelease(g_pFsCache, pFsObj);
+                fRet = GetFileAttributesExW(pwszFilename, enmLevel, pData);
+            }
+        }
+        else
+        {
+            SetLastError(kwFsLookupErrorToWindowsError(enmError));
+            fRet = FALSE;
+        }
+
+#ifdef K_STRICT
+        {
+            WIN32_FILE_ATTRIBUTE_DATA CheckData = { 0 };
+            DWORD const dwErrSaved = GetLastError();
+            BOOL const fRetCheck = GetFileAttributesExW(pwszFilename, enmLevel, &CheckData);
+            kHlpAssertMsg(fRet == fRetCheck, ("fRet=%d fRetCheck=%d; %ls\n", fRet, fRetCheck, pwszFilename));
+            if (fRetCheck && fRet)
+            {
+# define ASSERT_FS_FIELD_EQUAL_W(pResult, pExpected, pszFilename, Field, szFmt) \
+    kHlpAssertMsg((pResult)->Field == (pExpected)->Field, (#Field ": " szFmt " , expected " szFmt "; %ls\n", (pResult)->Field, (pExpected)->Field, pwszFilename))
+                ASSERT_FS_FIELD_EQUAL_W(pData, &CheckData, pwszFilename, dwFileAttributes, "%#x");
+                ASSERT_FS_FIELD_EQUAL_W(pData, &CheckData, pwszFilename, nFileSizeHigh, "%#x");
+                ASSERT_FS_FIELD_EQUAL_W(pData, &CheckData, pwszFilename, nFileSizeLow, "%#x");
+                ASSERT_FS_FIELD_EQUAL_W(pData, &CheckData, pwszFilename, ftCreationTime.dwHighDateTime, "%#x");
+                ASSERT_FS_FIELD_EQUAL_W(pData, &CheckData, pwszFilename, ftCreationTime.dwLowDateTime, "%#x");
+                ASSERT_FS_FIELD_EQUAL_W(pData, &CheckData, pwszFilename, ftLastWriteTime.dwHighDateTime, "%#x");
+                ASSERT_FS_FIELD_EQUAL_W(pData, &CheckData, pwszFilename, ftLastWriteTime.dwLowDateTime, "%#x");
+            }
+            else
+                kHlpAssertMsg(dwErrSaved == GetLastError(), ("%u, expected %u; %ls\n", dwErrSaved, GetLastError(), pwszFilename));
+            SetLastError(dwErrSaved);
+        }
+#endif
+        KWFS_LOG(("GetFileAttributesExW(%ls,%d,) -> %d [cached]\n", pwszFilename, enmLevel, fRet));
+        return fRet;
+    }
+
+    fRet = GetFileAttributesExW(pwszFilename, enmLevel, pData);
+    KWFS_LOG(("GetFileAttributesExW(%ls,%d,) -> %d\n", pwszFilename, enmLevel, fRet));
     return fRet;
 }
 
@@ -7789,7 +9232,7 @@ static void kwSandboxConsoleFlushAll(PKWSANDBOX pSandbox)
     }
 
     /*
-     * Flush the two line buffer, the the combined buffer.
+     * Flush the two line buffer, then the combined buffer.
      */
     kwSandboxConsoleFinalFlushLineBuf(pSandbox, &pSandbox->StdErr, "StdErr");
     kwSandboxConsoleFinalFlushLineBuf(pSandbox, &pSandbox->StdOut, "StdOut");
@@ -8195,7 +9638,17 @@ static PVOID WINAPI kwSandbox_Kernel32_VirtualAlloc(PVOID pvAddr, SIZE_T cb, DWO
             pvMem = VirtualAlloc(pvAddr, cb, fAllocType, fProt);
             KW_LOG(("VirtualAlloc: pvAddr=%p cb=%p type=%#x prot=%#x -> %p (last=%d)\n",
                     pvAddr, cb, fAllocType, fProt, pvMem, GetLastError()));
-            if (pvAddr && pvAddr != pvMem)
+            if (   pvAddr
+                && pvAddr != pvMem
+                && !(   fAllocType == MEM_RESERVE /* After mapping the PCH, VS2019 ends up here (happens */
+                     && fProt == PAGE_READWRITE   /* in real cl.exe runs too). Just shut it up to avoid confusion. */
+#if K_ARCH_BITS >= 64
+                     && cb > 0x10000000 /* seen 67c00000, 33e00000, ++ */
+#else
+                     && cb > 0x04000000 /* no idea */
+#endif
+                   )
+               )
                 kwErrPrintf("VirtualAlloc %p LB %#x (%#x,%#x) failed: %p / %u\n",
                             pvAddr, cb, fAllocType, fProt, pvMem, GetLastError());
         }
@@ -8206,12 +9659,13 @@ static PVOID WINAPI kwSandbox_Kernel32_VirtualAlloc(PVOID pvAddr, SIZE_T cb, DWO
              * Track it.
              */
             PKWVIRTALLOC pTracker;
-            kHlpAssert(GetCurrentThreadId() == g_Sandbox.idMainThread);
 
+            EnterCriticalSection(&g_Sandbox.VirtualAllocLock);
             pTracker = g_Sandbox.pVirtualAllocHead;
             while (   pTracker
                    && (KUPTR)pvMem - (KUPTR)pTracker->pvAlloc >= pTracker->cbAlloc)
                 pTracker = pTracker->pNext;
+            LeaveCriticalSection(&g_Sandbox.VirtualAllocLock);
             if (!pTracker)
             {
                 DWORD dwErr = GetLastError();
@@ -8221,8 +9675,10 @@ static PVOID WINAPI kwSandbox_Kernel32_VirtualAlloc(PVOID pvAddr, SIZE_T cb, DWO
                     pTracker->pvAlloc           = pvMem;
                     pTracker->cbAlloc           = cb;
                     pTracker->idxPreAllocated   = idxPreAllocated;
+                    EnterCriticalSection(&g_Sandbox.VirtualAllocLock);
                     pTracker->pNext             = g_Sandbox.pVirtualAllocHead;
                     g_Sandbox.pVirtualAllocHead = pTracker;
+                    LeaveCriticalSection(&g_Sandbox.VirtualAllocLock);
                 }
                 SetLastError(dwErr);
             }
@@ -8245,7 +9701,9 @@ static BOOL WINAPI kwSandbox_Kernel32_VirtualFree(PVOID pvAddr, SIZE_T cb, DWORD
         kHlpAssert(GetCurrentThreadId() == g_Sandbox.idMainThread);
         if (dwFreeType & MEM_RELEASE)
         {
-            PKWVIRTALLOC pTracker = g_Sandbox.pVirtualAllocHead;
+            PKWVIRTALLOC pTracker;
+            EnterCriticalSection(&g_Sandbox.VirtualAllocLock);
+            pTracker = g_Sandbox.pVirtualAllocHead;
             if (pTracker)
             {
                 if (pTracker->pvAlloc == pvAddr)
@@ -8267,6 +9725,7 @@ static BOOL WINAPI kwSandbox_Kernel32_VirtualFree(PVOID pvAddr, SIZE_T cb, DWORD
                     if (pTracker->idxPreAllocated != KU32_MAX)
                     {
                         kwSandboxResetFixedAllocation(pTracker->idxPreAllocated);
+                        LeaveCriticalSection(&g_Sandbox.VirtualAllocLock);
                         KW_LOG(("VirtualFree: pvAddr=%p cb=%p type=%#x -> TRUE [pre allocated #%u]\n",
                                 pvAddr, cb, dwFreeType, pTracker->idxPreAllocated));
                         kHlpFree(pTracker);
@@ -8282,12 +9741,14 @@ static BOOL WINAPI kwSandbox_Kernel32_VirtualFree(PVOID pvAddr, SIZE_T cb, DWORD
                         pTracker->pNext = g_Sandbox.pVirtualAllocHead;
                         g_Sandbox.pVirtualAllocHead = pTracker;
                     }
+                    LeaveCriticalSection(&g_Sandbox.VirtualAllocLock);
                     KW_LOG(("VirtualFree: pvAddr=%p cb=%p type=%#x -> %d\n", pvAddr, cb, dwFreeType, fRc));
                     return fRc;
                 }
 
                 KW_LOG(("VirtualFree: pvAddr=%p not found!\n", pvAddr));
             }
+            LeaveCriticalSection(&g_Sandbox.VirtualAllocLock);
         }
     }
 
@@ -8520,7 +9981,44 @@ BOOL WINAPI kwSandbox_Kernel32_TlsFree(DWORD idxTls)
  * via ReadFile, same buffers and sizes.
  */
 
-#ifdef WITH_HASH_MD5_CACHE
+#ifdef WITH_HASH_CACHE
+
+/**
+ * Gets our crypto provider context/instance, creating it if needed.
+ */
+static HCRYPTPROV kwSandboxGetCryptoProvider(ALG_ID idAlg)
+{
+    DWORD       dwProvider;
+    HCRYPTPROV *phCryptProv;
+    HCRYPTPROV  hCryptProv;
+    if (   idAlg == CALG_SHA_256
+        || idAlg == CALG_SHA_512)
+    {
+        phCryptProv = &g_Sandbox.hCryptProvAes;
+        dwProvider = PROV_RSA_AES;
+    }
+    else
+    {
+        phCryptProv = &g_Sandbox.hCryptProvRsa;
+        dwProvider = PROV_RSA_FULL;
+    }
+    hCryptProv = *phCryptProv;
+    if (hCryptProv)
+        return hCryptProv;
+
+    /* Create it. */
+    if (CryptAcquireContextW(&hCryptProv, NULL, NULL, dwProvider, CRYPT_VERIFYCONTEXT))
+    {
+        kHlpAssert(hCryptProv != 0);
+        kHlpAssert(hCryptProv != KUPTR_MAX);
+        *phCryptProv = hCryptProv;
+        return hCryptProv;
+    }
+
+    kwErrPrintf("kwSandboxGetCryptoProvider: CryptAcquireContext(,,,%#x, CRYPT_VERIFYCONTEXT) failed! %u\n",
+                dwProvider, GetLastError());
+    return (HCRYPTPROV)NULL;
+}
 
 /** AdvApi32 - CryptCreateHash */
 static BOOL WINAPI kwSandbox_Advapi32_CryptCreateHash(HCRYPTPROV hProv, ALG_ID idAlg, HCRYPTKEY hKey, DWORD dwFlags,
@@ -8533,39 +10031,72 @@ static BOOL WINAPI kwSandbox_Advapi32_CryptCreateHash(HCRYPTPROV hProv, ALG_ID i
      */
     if (g_Sandbox.pTool->u.Sandboxed.enmHint == KWTOOLHINT_VISUAL_CPP_CL)
     {
-        if (idAlg == CALG_MD5)
+        KU32        cbDigest;
+        const char *pszName;
+        switch (idAlg)
+        {
+            case CALG_MD5:
+                cbDigest = 128/8;
+                pszName  = "MD5";
+                g_cHashesMd5++;
+                break;
+            case CALG_SHA1:
+                cbDigest = 160/8;
+                pszName  = "SHA1";
+                g_cHashesSha1++;
+                break;
+            case CALG_SHA_256:
+                cbDigest = 256/8;
+                pszName  = "SHA-256";
+                g_cHashesSha256++;
+                break;
+            case CALG_SHA_512:
+                cbDigest = 512/8;
+                pszName  = "SHA-512";
+                g_cHashesSha512++;
+                break;
+            default:
+                cbDigest = 0;
+                pszName  = NULL;
+                break;
+        }
+
+        if (cbDigest)
         {
             if (hKey == 0)
             {
                 if (dwFlags == 0)
                 {
-                    PKWHASHMD5 pHash = (PKWHASHMD5)kHlpAllocZ(sizeof(*pHash));
+                    PKWCRYPTHASH pHash = (PKWCRYPTHASH)kHlpAllocZ(sizeof(*pHash));
                     if (pHash)
                     {
                         kHlpAssert(GetCurrentThreadId() == g_Sandbox.idMainThread);
-                        pHash->uMagic        = KWHASHMD5_MAGIC;
+                        pHash->uMagic        = KWCRYPTHASH_MAGIC;
                         pHash->cbHashed      = 0;
                         pHash->fGoneBad      = K_FALSE;
-                        pHash->fFallbackMode = K_FALSE;
                         pHash->fFinal        = K_FALSE;
+                        pHash->hFallback     = KUPTR_MAX;
+                        pHash->idAlg         = idAlg;
+                        pHash->pszAlgName    = pszName;
+                        pHash->cbDigest      = cbDigest;
 
                         /* link it. */
                         pHash->pNext         = g_Sandbox.pHashHead;
                         g_Sandbox.pHashHead  = pHash;
 
                         *phHash = (KUPTR)pHash;
-                        KWCRYPT_LOG(("CryptCreateHash(hProv=%p, idAlg=CALG_MD5, 0, 0, *phHash=%p) -> %d [cached]\n",
-                                     hProv, *phHash, TRUE));
+                        KWCRYPT_LOG(("CryptCreateHash(hProv=%p, idAlg=%s, 0, 0, *phHash=%p) -> %d [cached]\n",
+                                     hProv, pszName, *phHash, TRUE));
                         return TRUE;
                     }
 
                     kwErrPrintf("CryptCreateHash: out of memory!\n");
                 }
                 else
-                    kwErrPrintf("CryptCreateHash: dwFlags=%p is not supported with CALG_MD5\n", hKey);
+                    kwErrPrintf("CryptCreateHash: dwFlags=%p is not supported with %s\n", hKey, pszName);
             }
             else
-                kwErrPrintf("CryptCreateHash: hKey=%p is not supported with CALG_MD5\n", hKey);
+                kwErrPrintf("CryptCreateHash: hKey=%p is not supported with %s\n", hKey, pszName);
         }
         else
             kwErrPrintf("CryptCreateHash: idAlg=%#x is not supported\n", idAlg);
@@ -8584,8 +10115,8 @@ static BOOL WINAPI kwSandbox_Advapi32_CryptCreateHash(HCRYPTPROV hProv, ALG_ID i
 /** AdvApi32 - CryptHashData */
 static BOOL WINAPI kwSandbox_Advapi32_CryptHashData(HCRYPTHASH hHash, CONST BYTE *pbData, DWORD cbData, DWORD dwFlags)
 {
-    BOOL        fRc;
-    PKWHASHMD5  pHash = g_Sandbox.pHashHead;
+    BOOL         fRc;
+    PKWCRYPTHASH pHash = g_Sandbox.pHashHead;
     kHlpAssert(GetCurrentThreadId() == g_Sandbox.idMainThread);
     while (pHash && (KUPTR)pHash != hHash)
         pHash = pHash->pNext;
@@ -8596,10 +10127,11 @@ static BOOL WINAPI kwSandbox_Advapi32_CryptHashData(HCRYPTHASH hHash, CONST BYTE
         /*
          * Validate the state.
          */
-        if (   pHash->uMagic == KWHASHMD5_MAGIC
-            && !pHash->fFinal)
+        if (   pHash->uMagic == KWCRYPTHASH_MAGIC
+            && !pHash->fFinal
+            && !pHash->fGoneBad)
         {
-            if (!pHash->fFallbackMode)
+            if (pHash->hFallback == KUPTR_MAX)
             {
                 /*
                  * Does this match the previous ReadFile call to a cached file?
@@ -8639,7 +10171,7 @@ static BOOL WINAPI kwSandbox_Advapi32_CryptHashData(HCRYPTHASH hHash, CONST BYTE
                                         pHash->cbHashed, g_Sandbox.LastHashRead.offRead);
                     }
                     else if (!pCachedFile)
-                        kwErrPrintf("CryptHashData: Last pCachedFile is NULL when buffer address and size matches!\n");
+                        KWCRYPT_LOG(("CryptHashData: Last pCachedFile is NULL when buffer address and size matches!\n"));
                     else
                         kwErrPrintf("CryptHashData: First 64 bytes of the buffer doesn't match the cache.\n");
                 }
@@ -8647,17 +10179,31 @@ static BOOL WINAPI kwSandbox_Advapi32_CryptHashData(HCRYPTHASH hHash, CONST BYTE
                     kwErrPrintf("CryptHashData: Expected cbRead=%#x and pbData=%p, got %#x and %p instead\n",
                                 g_Sandbox.LastHashRead.cbRead, g_Sandbox.LastHashRead.pvRead, cbData, pbData);
                 if (pHash->cbHashed == 0)
-                    pHash->fFallbackMode = K_TRUE;
-                if (pHash->fFallbackMode)
                 {
                     /* Initiate fallback mode (file that we don't normally cache, like .c/.cpp). */
-                    pHash->fFallbackMode = K_TRUE;
-                    MD5Init(&pHash->Md5Ctx);
-                    MD5Update(&pHash->Md5Ctx, pbData, cbData);
-                    pHash->cbHashed = cbData;
-                    KWCRYPT_LOG(("CryptHashData(hHash=%p/fallback, pbData=%p, cbData=%#x, dwFlags=%#x) -> 1 [fallback!]\n",
-                                 hHash, pbData, cbData, dwFlags));
-                    return TRUE;
+                    HCRYPTPROV hCryptProv = kwSandboxGetCryptoProvider(pHash->idAlg);
+                    if (hCryptProv)
+                    {
+                        HCRYPTHASH hCryptHash = KUPTR_MAX;
+                        if (CryptCreateHash(hCryptProv, pHash->idAlg, 0, 0, &hCryptHash))
+                        {
+                            kHlpAssert(hCryptHash != KUPTR_MAX);
+                            pHash->hFallback = hCryptHash;
+                            fRc = CryptHashData(hCryptHash, pbData, cbData, dwFlags);
+                            if (fRc)
+                                pHash->cbHashed = cbData;
+                            g_cHashesFallbacks++;
+                            KWCRYPT_LOG(("CryptHashData(hHash=%p/fallback, pbData=%p, cbData=%#x, dwFlags=%#x) -> %d (%u) [fallback!]\n",
+                                         hHash, pbData, cbData, dwFlags, fRc, GetLastError()));
+                        }
+                        else
+                        {
+                            kwErrPrintf("kwSandbox_Advapi32_CryptHashData: Fallback CryptCreateHash(%u) failed: %u\n",
+                                        pHash->idAlg, GetLastError());
+                            fRc = FALSE;
+                        }
+                        return fRc;
+                    }
                 }
                 pHash->fGoneBad = K_TRUE;
                 SetLastError(ERROR_INVALID_PARAMETER);
@@ -8666,11 +10212,11 @@ static BOOL WINAPI kwSandbox_Advapi32_CryptHashData(HCRYPTHASH hHash, CONST BYTE
             else
             {
                 /* fallback. */
-                MD5Update(&pHash->Md5Ctx, pbData, cbData);
-                pHash->cbHashed += cbData;
-                fRc = TRUE;
-                KWCRYPT_LOG(("CryptHashData(hHash=%p/fallback, pbData=%p, cbData=%#x, dwFlags=%#x) -> 1 [fallback]\n",
-                             hHash, pbData, cbData, dwFlags));
+                fRc = CryptHashData(pHash->hFallback, pbData, cbData, dwFlags);
+                if (fRc)
+                    pHash->cbHashed += cbData;
+                KWCRYPT_LOG(("CryptHashData(hHash=%p/fallback, pbData=%p, cbData=%#x, dwFlags=%#x) -> %d [fallback]\n",
+                             hHash, pbData, cbData, dwFlags, fRc));
             }
         }
         /*
@@ -8678,11 +10224,11 @@ static BOOL WINAPI kwSandbox_Advapi32_CryptHashData(HCRYPTHASH hHash, CONST BYTE
          */
         else
         {
-            if (pHash->uMagic != KWHASHMD5_MAGIC)
+            if (pHash->uMagic != KWCRYPTHASH_MAGIC)
                 kwErrPrintf("CryptHashData: Invalid cached hash handle!!\n");
             else
                 kwErrPrintf("CryptHashData: Hash is already finalized!!\n");
-            SetLastError(NTE_BAD_HASH);
+            SetLastError((DWORD)NTE_BAD_HASH);
             fRc = FALSE;
         }
     }
@@ -8696,18 +10242,62 @@ static BOOL WINAPI kwSandbox_Advapi32_CryptHashData(HCRYPTHASH hHash, CONST BYTE
 }
 
 
+/** Helper for simpe data hashing.   */
+static BOOL kwSandboxCalcHash(ALG_ID idAlg, void const *pvData, KSIZE cbData, KU8 *pbDigest, KSIZE cbDigest)
+{
+    BOOL fRet = FALSE;
+    if (idAlg == CALG_MD5)
+    {
+        struct MD5Context Ctx;
+        MD5Init(&Ctx);
+        MD5Update(&Ctx, (unsigned char const *)pvData, (unsigned)cbData);
+        MD5Final(pbDigest, &Ctx);
+        fRet = TRUE;
+    }
+    else
+    {
+        HCRYPTPROV hCryptProv = kwSandboxGetCryptoProvider(idAlg);
+        if (hCryptProv)
+        {
+            HCRYPTHASH hCryptHash = KUPTR_MAX;
+            if (CryptCreateHash(hCryptProv, idAlg, 0, 0, &hCryptHash))
+            {
+                if (CryptHashData(hCryptHash, (const BYTE *)pvData, (DWORD)cbData, 0))
+                {
+                    DWORD cbActual = (DWORD)cbDigest;
+                    if (CryptGetHashParam(hCryptHash, HP_HASHVAL, pbDigest, &cbActual, 0))
+                    {
+                        fRet = TRUE;
+                        kHlpAssert(cbActual == cbDigest);
+                    }
+                    else
+                        kwErrPrintf("CryptGetHashParam([%#x],HP_HASHVAL,%p,%#x,0) failed: %u\n",
+                                    idAlg, pbDigest, cbDigest, GetLastError());
+                }
+                else
+                    kwErrPrintf("CryptHashData([%#x],%p,%#x,0) failed: %u\n", idAlg, pvData, cbData, GetLastError());
+                CryptDestroyHash(hCryptHash);
+            }
+            else
+                kwErrPrintf("CryptCreateHash(%#x) failed: %u\n", idAlg, GetLastError());
+        }
+    }
+    return fRet;
+}
+
+
 /** AdvApi32 - CryptGetHashParam */
 static BOOL WINAPI kwSandbox_Advapi32_CryptGetHashParam(HCRYPTHASH hHash, DWORD dwParam,
                                                         BYTE *pbData, DWORD *pcbData, DWORD dwFlags)
 {
-    BOOL        fRc;
-    PKWHASHMD5  pHash = g_Sandbox.pHashHead;
+    BOOL            fRc;
+    PKWCRYPTHASH    pHash = g_Sandbox.pHashHead;
     kHlpAssert(GetCurrentThreadId() == g_Sandbox.idMainThread);
     while (pHash && (KUPTR)pHash != hHash)
         pHash = pHash->pNext;
     if (pHash)
     {
-        if (pHash->uMagic == KWHASHMD5_MAGIC)
+        if (pHash->uMagic == KWCRYPTHASH_MAGIC)
         {
             if (dwFlags == 0)
             {
@@ -8724,22 +10314,51 @@ static BOOL WINAPI kwSandbox_Advapi32_CryptGetHashParam(HCRYPTHASH hHash, DWORD 
                     {
                         /* Check the hash progress. */
                         PKFSWCACHEDFILE pCachedFile = pHash->pCachedFile;
+                        g_cHashes++;
                         if (pCachedFile)
                         {
                             if (   pCachedFile->cbCached == pHash->cbHashed
                                 && !pHash->fGoneBad)
                             {
-                                if (pCachedFile->fValidMd5)
+                                KBOOL *pfValid;
+                                switch (pHash->idAlg)
+                                {
+                                    case CALG_MD5:
+                                        pfValid = &pCachedFile->fValidMd5;
+                                        pvRet   = pCachedFile->abMd5Digest;
+                                        break;
+                                    case CALG_SHA1:
+                                        pfValid = &pCachedFile->fValidSha1;
+                                        pvRet   = pCachedFile->abSha1Digest;
+                                        break;
+                                    case CALG_SHA_256:
+                                        pfValid = &pCachedFile->fValidSha256;
+                                        pvRet   = pCachedFile->abSha256Digest;
+                                        break;
+                                    case CALG_SHA_512:
+                                        pfValid = &pCachedFile->fValidSha512;
+                                        pvRet   = pCachedFile->abSha512Digest;
+                                        break;
+                                    default:
+                                        kwErrPrintf("Invalid idAlg value: %#x\n", pHash->idAlg);
+                                        SetLastError(ERROR_INVALID_SERVER_STATE);
+                                        return FALSE;
+                                }
+
+                                if (*pfValid)
+                                {
                                     KWCRYPT_LOG(("Already calculated hash for %p/%s! [hit]\n", pCachedFile, pCachedFile->szPath));
+                                    g_cHashesCached++;
+                                }
                                 else
                                 {
-                                    MD5Init(&pHash->Md5Ctx);
-                                    MD5Update(&pHash->Md5Ctx, pCachedFile->pbCached, pCachedFile->cbCached);
-                                    MD5Final(pCachedFile->abMd5Digest, &pHash->Md5Ctx);
-                                    pCachedFile->fValidMd5 = K_TRUE;
+                                    fRc = kwSandboxCalcHash(pHash->idAlg, pCachedFile->pbCached, pCachedFile->cbCached,
+                                                            pvRet, pHash->cbDigest);
+                                    if (!fRc)
+                                        return FALSE;
+                                    *pfValid = K_TRUE;
                                     KWCRYPT_LOG(("Calculated hash for %p/%s.\n", pCachedFile, pCachedFile->szPath));
                                 }
-                                pvRet = pCachedFile->abMd5Digest;
                             }
                             else
                             {
@@ -8748,27 +10367,36 @@ static BOOL WINAPI kwSandbox_Advapi32_CryptGetHashParam(HCRYPTHASH hHash, DWORD 
                                 KWCRYPT_LOG(("CryptGetHashParam/HP_HASHVAL: Not at end of cached file! cbCached=%#x cbHashed=%#x fGoneBad=%d (%p/%p/%s)\n",
                                              pHash->pCachedFile->cbCached, pHash->cbHashed, pHash->fGoneBad,
                                              pHash, pCachedFile, pCachedFile->szPath));
-                                pHash->fFallbackMode = K_TRUE;
-                                pHash->pCachedFile   = NULL;
-                                MD5Init(&pHash->Md5Ctx);
-                                MD5Update(&pHash->Md5Ctx, pCachedFile->pbCached, pHash->cbHashed);
-                                MD5Final(pHash->abDigest, &pHash->Md5Ctx);
+                                g_cHashesPartial++;
+                                pHash->pCachedFile = NULL;
                                 pvRet = pHash->abDigest;
+                                fRc = kwSandboxCalcHash(pHash->idAlg, pCachedFile->pbCached, pHash->cbHashed,
+                                                        pvRet, pHash->cbDigest);
+                                if (!fRc)
+                                {
+                                    pHash->fGoneBad = K_TRUE;
+                                    return FALSE;
+                                }
                             }
                             pHash->fFinal = K_TRUE;
-                            cbRet = 16;
+                            cbRet = pHash->cbDigest;
                             break;
                         }
-                        else if (pHash->fFallbackMode)
-                        {
-                            if (!pHash->fFinal)
-                            {
-                                pHash->fFinal = K_TRUE;
-                                MD5Final(pHash->abDigest, &pHash->Md5Ctx);
-                            }
-                            pvRet = pHash->abDigest;
-                            cbRet = 16;
+
+                        pvRet = pHash->abDigest;
+                        cbRet = pHash->cbDigest;
+                        if (pHash->fFinal)
                             break;
+                        if (pHash->hFallback != KUPTR_MAX)
+                        {
+                            DWORD cbActual = (DWORD)pHash->cbDigest;
+                            if (CryptGetHashParam(pHash->hFallback, HP_HASHVAL, pHash->abDigest, &cbActual, 0))
+                            {
+                                kHlpAssert(cbActual == pHash->cbDigest);
+                                pHash->fFinal = K_TRUE;
+                                break;
+                            }
+                            kwErrPrintf("CryptGetHashParam/HP_HASHVAL: Fallback CryptGetHashParam failed: %u!!\n", GetLastError());
                         }
                         else
                         {
@@ -8779,20 +10407,20 @@ static BOOL WINAPI kwSandbox_Advapi32_CryptGetHashParam(HCRYPTHASH hHash, DWORD 
                     }
 
                     case HP_HASHSIZE:
-                        uBuf.dw = 16;
+                        uBuf.dw = pHash->cbDigest;
                         pvRet = &uBuf;
                         cbRet = sizeof(DWORD);
                         break;
 
                     case HP_ALGID:
-                        uBuf.dw = CALG_MD5;
+                        uBuf.dw = pHash->idAlg;
                         pvRet = &uBuf;
                         cbRet = sizeof(DWORD);
                         break;
 
                     default:
                         kwErrPrintf("CryptGetHashParam: Unknown dwParam=%#x\n", dwParam);
-                        SetLastError(NTE_BAD_TYPE);
+                        SetLastError((DWORD)NTE_BAD_TYPE);
                         return FALSE;
                 }
 
@@ -8815,6 +10443,25 @@ static BOOL WINAPI kwSandbox_Advapi32_CryptGetHashParam(HCRYPTHASH hHash, DWORD 
                                          pbData[4],  pbData[5],  pbData[6],  pbData[7],
                                          pbData[8],  pbData[9],  pbData[10], pbData[11],
                                          pbData[12], pbData[13], pbData[14], pbData[15]));
+                        else if (cbRet == 20)
+                            KWCRYPT_LOG(("CryptGetHashParam/%#x/%p/%p: TRUE, cbRet=%#x data=%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x [cached]\n",
+                                         dwParam, pHash, pHash->pCachedFile, cbRet,
+                                         pbData[0],  pbData[1],  pbData[2],  pbData[3],
+                                         pbData[4],  pbData[5],  pbData[6],  pbData[7],
+                                         pbData[8],  pbData[9],  pbData[10], pbData[11],
+                                         pbData[12], pbData[13], pbData[14], pbData[15],
+                                         pbData[16], pbData[17], pbData[18], pbData[19] ));
+                        else if (cbRet >= 32)
+                            KWCRYPT_LOG(("CryptGetHashParam/%#x/%p/%p: TRUE, cbRet=%#x data=%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%s [cached]\n",
+                                         dwParam, pHash, pHash->pCachedFile, cbRet,
+                                         pbData[0],  pbData[1],  pbData[2],  pbData[3],
+                                         pbData[4],  pbData[5],  pbData[6],  pbData[7],
+                                         pbData[8],  pbData[9],  pbData[10], pbData[11],
+                                         pbData[12], pbData[13], pbData[14], pbData[15],
+                                         pbData[16], pbData[17], pbData[18], pbData[19],
+                                         pbData[20], pbData[21], pbData[22], pbData[23],
+                                         pbData[24], pbData[25], pbData[26], pbData[27],
+                                         pbData[28], pbData[29], pbData[30], pbData[31], cbRet > 32 ? "..." : ""));
                         else
                             KWCRYPT_LOG(("CryptGetHashParam/%#x%/p%/%p: TRUE, cbRet=%#x [cached]\n",
                                          dwParam, pHash, pHash->pCachedFile, cbRet));
@@ -8830,13 +10477,13 @@ static BOOL WINAPI kwSandbox_Advapi32_CryptGetHashParam(HCRYPTHASH hHash, DWORD 
             else
             {
                 kwErrPrintf("CryptGetHashParam: dwFlags is not zero: %#x!\n", dwFlags);
-                SetLastError(NTE_BAD_FLAGS);
+                SetLastError((DWORD)NTE_BAD_FLAGS);
             }
         }
         else
         {
             kwErrPrintf("CryptGetHashParam: Invalid cached hash handle!!\n");
-            SetLastError(NTE_BAD_HASH);
+            SetLastError((DWORD)NTE_BAD_HASH);
         }
         fRc = FALSE;
     }
@@ -8857,9 +10504,9 @@ static BOOL WINAPI kwSandbox_Advapi32_CryptGetHashParam(HCRYPTHASH hHash, DWORD 
 /** AdvApi32 - CryptDestroyHash */
 static BOOL WINAPI kwSandbox_Advapi32_CryptDestroyHash(HCRYPTHASH hHash)
 {
-    BOOL        fRc;
-    PKWHASHMD5  pPrev = NULL;
-    PKWHASHMD5  pHash = g_Sandbox.pHashHead;
+    BOOL            fRc;
+    PKWCRYPTHASH    pPrev = NULL;
+    PKWCRYPTHASH    pHash = g_Sandbox.pHashHead;
     kHlpAssert(GetCurrentThreadId() == g_Sandbox.idMainThread);
     while (pHash && (KUPTR)pHash != hHash)
     {
@@ -8868,7 +10515,7 @@ static BOOL WINAPI kwSandbox_Advapi32_CryptDestroyHash(HCRYPTHASH hHash)
     }
     if (pHash)
     {
-        if (pHash->uMagic == KWHASHMD5_MAGIC)
+        if (pHash->uMagic == KWCRYPTHASH_MAGIC)
         {
             pHash->uMagic = 0;
             if (!pPrev)
@@ -8898,7 +10545,7 @@ static BOOL WINAPI kwSandbox_Advapi32_CryptDestroyHash(HCRYPTHASH hHash)
     return fRc;
 }
 
-#endif /* WITH_HASH_MD5_CACHE */
+#endif /* WITH_HASH_CACHE */
 
 
 /*
@@ -9182,7 +10829,7 @@ static VOID WINAPI kwSandbox_ntdll_RtlUnwind(struct _EXCEPTION_REGISTRATION_RECO
         {
             pXcptRec = (PEXCEPTION_RECORD)alloca(sizeof(*pXcptRec));
             kHlpMemSet(pXcptRec, 0, sizeof(*pXcptRec));
-            pXcptRec->ExceptionCode  = STATUS_UNWIND;
+            pXcptRec->ExceptionCode  = (DWORD)STATUS_UNWIND;
             pXcptRec->ExceptionFlags = EH_UNWINDING;
         }
         if (!pStopXcptRec)
@@ -9264,13 +10911,18 @@ static void * __cdecl kwSandbox_msvcrt_memset(void *pvDst, int bFiller, size_t c
     KU8       *pbDst = (KU8 *)pvDst;
     KSIZE      cbLeft = cb;
     while (cbLeft-- > 0)
-        *pbDst++ = bFiller;
+        *pbDst++ = (KU8)bFiller;
     return pvDst;
 }
 
 #endif /* NDEBUG */
 
 
+/** @todo consider hooking NtQueryDirectoryFile as c1xx.dll/c1.dll in 2019
+ *        uses it directly to read the content of include directories, however
+ *        they do it one file at the time.  We already have the info in the
+ *        cache (where we do bulk reads).  There are a lot of calls for the
+ *        SDK include directories, as one can imagine. */
 
 /**
  * Functions that needs replacing for sandboxed execution.
@@ -9336,13 +10988,17 @@ KWREPLACEMENTFUNCTION const g_aSandboxReplacements[] =
     { TUPLE("CloseHandle"),                 NULL,       (KUPTR)kwSandbox_Kernel32_CloseHandle },
     { TUPLE("GetFileAttributesA"),          NULL,       (KUPTR)kwSandbox_Kernel32_GetFileAttributesA },
     { TUPLE("GetFileAttributesW"),          NULL,       (KUPTR)kwSandbox_Kernel32_GetFileAttributesW },
+    { TUPLE("GetFileAttributesExA"),        NULL,       (KUPTR)kwSandbox_Kernel32_GetFileAttributesExA },
+    { TUPLE("GetFileAttributesExW"),        NULL,       (KUPTR)kwSandbox_Kernel32_GetFileAttributesExW },
     { TUPLE("GetShortPathNameW"),           NULL,       (KUPTR)kwSandbox_Kernel32_GetShortPathNameW },
 #ifdef WITH_TEMP_MEMORY_FILES
     { TUPLE("DeleteFileW"),                 NULL,       (KUPTR)kwSandbox_Kernel32_DeleteFileW },
 #endif
 
+#ifdef WITH_CONSOLE_OUTPUT_BUFFERING
     { TUPLE("WriteConsoleA"),               NULL,       (KUPTR)kwSandbox_Kernel32_WriteConsoleA },
     { TUPLE("WriteConsoleW"),               NULL,       (KUPTR)kwSandbox_Kernel32_WriteConsoleW },
+#endif
 
     { TUPLE("VirtualAlloc"),                NULL,       (KUPTR)kwSandbox_Kernel32_VirtualAlloc },
     { TUPLE("VirtualFree"),                 NULL,       (KUPTR)kwSandbox_Kernel32_VirtualFree },
@@ -9361,7 +11017,7 @@ KWREPLACEMENTFUNCTION const g_aSandboxReplacements[] =
     { TUPLE("RtlUnwind"),                   NULL,       (KUPTR)kwSandbox_ntdll_RtlUnwind },
 #endif
 
-#ifdef WITH_HASH_MD5_CACHE
+#ifdef WITH_HASH_CACHE
     { TUPLE("CryptCreateHash"),             NULL,       (KUPTR)kwSandbox_Advapi32_CryptCreateHash },
     { TUPLE("CryptHashData"),               NULL,       (KUPTR)kwSandbox_Advapi32_CryptHashData },
     { TUPLE("CryptGetHashParam"),           NULL,       (KUPTR)kwSandbox_Advapi32_CryptGetHashParam },
@@ -9389,7 +11045,7 @@ KWREPLACEMENTFUNCTION const g_aSandboxReplacements[] =
     { TUPLE("atexit"),                      NULL,       (KUPTR)kwSandbox_msvcrt_atexit,             K_TRUE /*fOnlyExe*/ },
 
     { TUPLE("_beginthread"),                NULL,       (KUPTR)kwSandbox_msvcrt__beginthread },
-    { TUPLE("_beginthreadex"),              NULL,       (KUPTR)kwSandbox_msvcrt__beginthreadex },
+    { TUPLE("_beginthreadex"),              NULL,       (KUPTR)kwSandbox_msvcrt__beginthreadex, K_FALSE /*fOnlyExe*/, K_TRUE /*fCrtSlotArray*/ },
     { TUPLE("_beginthreadex"),          "msvcr120.dll", (KUPTR)kwSandbox_msvcr120__beginthreadex }, /* higher priority last */
 
     { TUPLE("__argc"),                      NULL,       (KUPTR)&g_Sandbox.cArgs },
@@ -9449,6 +11105,9 @@ KWREPLACEMENTFUNCTION const g_aSandboxNativeReplacements[] =
     { TUPLE("ExitProcess"),                 NULL,       (KUPTR)kwSandbox_Kernel32_ExitProcess },
     { TUPLE("TerminateProcess"),            NULL,       (KUPTR)kwSandbox_Kernel32_TerminateProcess },
 
+    { TUPLE("GetCommandLineA"),             NULL,       (KUPTR)kwSandbox_Kernel32_GetCommandLineA },
+    { TUPLE("GetCommandLineW"),             NULL,       (KUPTR)kwSandbox_Kernel32_GetCommandLineW },
+
 #if 0
     { TUPLE("CreateThread"),                NULL,       (KUPTR)kwSandbox_Kernel32_CreateThread },
 #endif
@@ -9475,17 +11134,25 @@ KWREPLACEMENTFUNCTION const g_aSandboxNativeReplacements[] =
     { TUPLE("CloseHandle"),                 NULL,       (KUPTR)kwSandbox_Kernel32_CloseHandle },
     { TUPLE("GetFileAttributesA"),          NULL,       (KUPTR)kwSandbox_Kernel32_GetFileAttributesA },
     { TUPLE("GetFileAttributesW"),          NULL,       (KUPTR)kwSandbox_Kernel32_GetFileAttributesW },
+    { TUPLE("GetFileAttributesExA"),        NULL,       (KUPTR)kwSandbox_Kernel32_GetFileAttributesExA },
+    { TUPLE("GetFileAttributesExW"),        NULL,       (KUPTR)kwSandbox_Kernel32_GetFileAttributesExW },
     { TUPLE("GetShortPathNameW"),           NULL,       (KUPTR)kwSandbox_Kernel32_GetShortPathNameW },
 #ifdef WITH_TEMP_MEMORY_FILES
     { TUPLE("DeleteFileW"),                 NULL,       (KUPTR)kwSandbox_Kernel32_DeleteFileW },
 #endif
     { TUPLE("SetConsoleCtrlHandler"),       NULL,       (KUPTR)kwSandbox_Kernel32_SetConsoleCtrlHandler },
     { TUPLE("LoadLibraryExA"),              NULL,       (KUPTR)kwSandbox_Kernel32_Native_LoadLibraryExA },
+    { TUPLE("LoadLibraryExW"),              NULL,       (KUPTR)kwSandbox_Kernel32_Native_LoadLibraryExW },
+#ifndef NDEBUG
+    { TUPLE("GetProcAddress"),              NULL,       (KUPTR)kwSandbox_Kernel32_Native_GetProcAddress },
+#endif
 
+#ifdef WITH_CONSOLE_OUTPUT_BUFFERING
     { TUPLE("WriteConsoleA"),               NULL,       (KUPTR)kwSandbox_Kernel32_WriteConsoleA },
     { TUPLE("WriteConsoleW"),               NULL,       (KUPTR)kwSandbox_Kernel32_WriteConsoleW },
+#endif
 
-#ifdef WITH_HASH_MD5_CACHE
+#ifdef WITH_HASH_CACHE
     { TUPLE("CryptCreateHash"),             NULL,       (KUPTR)kwSandbox_Advapi32_CryptCreateHash },
     { TUPLE("CryptHashData"),               NULL,       (KUPTR)kwSandbox_Advapi32_CryptHashData },
     { TUPLE("CryptGetHashParam"),           NULL,       (KUPTR)kwSandbox_Advapi32_CryptGetHashParam },
@@ -9507,6 +11174,7 @@ KWREPLACEMENTFUNCTION const g_aSandboxNativeReplacements[] =
     { TUPLE("_c_exit"),                     NULL,       (KUPTR)kwSandbox_msvcrt__c_exit },
     { TUPLE("_amsg_exit"),                  NULL,       (KUPTR)kwSandbox_msvcrt__amsg_exit },
     { TUPLE("terminate"),                   NULL,       (KUPTR)kwSandbox_msvcrt_terminate },
+    { TUPLE("_wdupenv_s"),                  NULL,       (KUPTR)kwSandbox_msvcrt__wdupenv_s, K_FALSE /*fOnlyExe*/, K_TRUE /*fCrtSlotArray*/ },
 
 #if 0 /* used by mspdbXXX.dll */
     { TUPLE("_beginthread"),                NULL,       (KUPTR)kwSandbox_msvcrt__beginthread },
@@ -9602,6 +11270,21 @@ static BOOL WINAPI kwSandboxCtrlHandler(DWORD dwCtrlType)
 }
 
 
+#if 0
+/**
+ * Resets the KWMODULE::fVisited flag for _all_ known modules.
+ */
+static void kwSandboxResetModuleVisited(void)
+{
+    PKWMODULE pMod = g_pModuleHead;
+    while (pMod)
+    {
+        pMod->fVisited = K_FALSE;
+        pMod = pMod->pNextList;
+    }
+}
+
+
 /**
  * Used by kwSandboxExec to reset the state of the module tree.
  *
@@ -9611,16 +11294,92 @@ static BOOL WINAPI kwSandboxCtrlHandler(DWORD dwCtrlType)
  */
 static void kwSandboxResetModuleState(PKWMODULE pMod)
 {
-    if (   !pMod->fNative
-        && pMod->u.Manual.enmState != KWMODSTATE_NEEDS_BITS)
+    KWLDR_LOG(("kwSandboxResetModuleState: %d %d %s\n", pMod->fNative, pMod->fVisited, pMod->pszPath));
+    if (!pMod->fNative)
     {
-        KSIZE iImp;
         pMod->u.Manual.enmState = KWMODSTATE_NEEDS_BITS;
-        iImp = pMod->u.Manual.cImpMods;
-        while (iImp-- > 0)
-            kwSandboxResetModuleState(pMod->u.Manual.apImpMods[iImp]);
+        if (!pMod->fVisited) /* Avoid loops. */
+        {
+            KSIZE iImp;
+            pMod->fVisited = K_TRUE;
+            iImp = pMod->u.Manual.cImpMods;
+            while (iImp-- > 0)
+                kwSandboxResetModuleState(pMod->u.Manual.apImpMods[iImp]);
+        }
+    }
+    /* Hack: Re-init mspdbXXX.dll when we want to use a different mspdbsrv.exe instance. */
+    else if (pMod->fReInitOnMsPdbSrvEndpointChange)
+    {
+        const char *pszValue = kwSandboxDoGetEnvA(&g_Sandbox, TUPLE("_MSPDBSRV_ENDPOINT_"));
+        if (pMod->fReInitOnMsPdbSrvEndpointChange == 1)
+        {
+            pMod->fReInitOnMsPdbSrvEndpointChange = 2;
+            pMod->pszMsPdbSrvEndpoint = pszValue ? kHlpStrDup(pszValue) : NULL;
+            KWLDR_LOG(("Not re-initing '%s': first time used (_MSPDBSRV_ENDPOINT_ is '%s')\n",
+                       pMod->pszPath, pszValue ? pszValue : "<null>"));
+        }
+        else if (   (pszValue == NULL && pMod->pszMsPdbSrvEndpoint == NULL)
+                 || (pszValue != NULL && pMod->pszMsPdbSrvEndpoint != NULL && kHlpStrComp(pszValue, pMod->pszMsPdbSrvEndpoint) == 0))
+            KWLDR_LOG(("Not re-initing '%s': _MSPDBSRV_ENDPOINT_ unchanged ('%s')\n",
+                       pMod->pszPath, pszValue ? pszValue : "<null>"));
+        else
+        {
+            KWLDR_LOG(("Re-initing '%s': _MSPDBSRV_ENDPOINT_ changed from '%s' to '%s'\n", pMod->pszPath,
+                       pMod->pszMsPdbSrvEndpoint ? pMod->pszMsPdbSrvEndpoint : "<null>", pszValue ? pszValue : "<null>"));
+            kHlpFree(pMod->pszMsPdbSrvEndpoint);
+            if (pszValue != NULL)
+                pMod->pszMsPdbSrvEndpoint = kHlpStrDup(pszValue);
+            else
+                pMod->pszMsPdbSrvEndpoint = NULL;
+            pMod->fNeedReInit = K_TRUE;
+        }
     }
 }
+#else
+/**
+ * Used by kwSandboxExec to reset the state of the module tree.
+ */
+static void kwSandboxResetModuleState(void)
+{
+    PKWMODULE pMod = g_pModuleHead;
+    while (pMod)
+    {
+        if (!pMod->fNative)
+            pMod->u.Manual.enmState = K_MIN(pMod->u.Manual.enmReInitState, pMod->u.Manual.enmState);
+        /* Hack: Re-init mspdbXXX.dll when we want to use a different mspdbsrv.exe instance. */
+        else if (   pMod->fReInitOnMsPdbSrvEndpointChange
+                 && (   g_Sandbox.pTool->u.Sandboxed.enmHint == KWTOOLHINT_VISUAL_CPP_CL
+                     || g_Sandbox.pTool->u.Sandboxed.enmHint == KWTOOLHINT_VISUAL_CPP_LINK))
+        {
+            const char *pszValue = kwSandboxDoGetEnvA(&g_Sandbox, TUPLE("_MSPDBSRV_ENDPOINT_"));
+            if (pMod->fReInitOnMsPdbSrvEndpointChange == 1)
+            {
+                pMod->fReInitOnMsPdbSrvEndpointChange = 2;
+                pMod->pszMsPdbSrvEndpoint = pszValue ? kHlpStrDup(pszValue) : NULL;
+                KWLDR_LOG(("Not re-initing '%s': first time used (_MSPDBSRV_ENDPOINT_ is '%s')\n",
+                           pMod->pszPath, pszValue ? pszValue : "<null>"));
+            }
+            else if (   (pszValue == NULL && pMod->pszMsPdbSrvEndpoint == NULL)
+                     || (pszValue != NULL && pMod->pszMsPdbSrvEndpoint != NULL && kHlpStrComp(pszValue, pMod->pszMsPdbSrvEndpoint) == 0))
+                KWLDR_LOG(("Not re-initing '%s': _MSPDBSRV_ENDPOINT_ unchanged ('%s')\n",
+                           pMod->pszPath, pszValue ? pszValue : "<null>"));
+            else
+            {
+                KWLDR_LOG(("Re-initing '%s': _MSPDBSRV_ENDPOINT_ changed from '%s' to '%s'\n", pMod->pszPath,
+                           pMod->pszMsPdbSrvEndpoint ? pMod->pszMsPdbSrvEndpoint : "<null>", pszValue ? pszValue : "<null>"));
+                kHlpFree(pMod->pszMsPdbSrvEndpoint);
+                if (pszValue != NULL)
+                    pMod->pszMsPdbSrvEndpoint = kHlpStrDup(pszValue);
+                else
+                    pMod->pszMsPdbSrvEndpoint = NULL;
+                pMod->fNeedReInit = K_TRUE;
+            }
+        }
+
+        pMod = pMod->pNextList;
+    }
+}
+#endif
 
 static PPEB kwSandboxGetProcessEnvironmentBlock(void)
 {
@@ -9648,6 +11407,8 @@ static KBOOL kwSandboxHandleTableEnter(PKWSANDBOX pSandbox, PKWHANDLE pHandle, H
     KUPTR const idxHandle = KW_HANDLE_TO_INDEX(hHandle);
     kHlpAssertReturn(idxHandle < KW_HANDLE_MAX, K_FALSE);
 
+    EnterCriticalSection(&g_Sandbox.HandlesLock);
+
     /*
      * Grow handle table.
      */
@@ -9660,6 +11421,7 @@ static KBOOL kwSandboxHandleTableEnter(PKWSANDBOX pSandbox, PKWHANDLE pHandle, H
         pvNew = kHlpRealloc(pSandbox->papHandles, cHandles * sizeof(pSandbox->papHandles[0]));
         if (!pvNew)
         {
+            LeaveCriticalSection(&g_Sandbox.HandlesLock);
             KW_LOG(("Out of memory growing handle table to %u handles\n", cHandles));
             return K_FALSE;
         }
@@ -9672,10 +11434,71 @@ static KBOOL kwSandboxHandleTableEnter(PKWSANDBOX pSandbox, PKWHANDLE pHandle, H
     /*
      * Check that the entry is unused then insert it.
      */
-    kHlpAssertReturn(pSandbox->papHandles[idxHandle] == NULL, K_FALSE);
+    kHlpAssertStmtReturn(pSandbox->papHandles[idxHandle] == NULL, LeaveCriticalSection(&g_Sandbox.HandlesLock), K_FALSE);
     pSandbox->papHandles[idxHandle] = pHandle;
     pSandbox->cActiveHandles++;
+    LeaveCriticalSection(&g_Sandbox.HandlesLock);
     return K_TRUE;
+}
+
+
+/**
+ * Safely looks up a handle, does not get it and it must not be 'put'.
+ *
+ * @returns Pointer to the handle structure if found, otherwise NULL.
+ * @param   hFile               The handle to resolve.
+ */
+static PKWHANDLE kwSandboxHandleLookup(HANDLE hFile)
+{
+    KUPTR const idxHandle = KW_HANDLE_TO_INDEX(hFile);
+    EnterCriticalSection(&g_Sandbox.HandlesLock);
+    if (idxHandle < g_Sandbox.cHandles)
+    {
+        PKWHANDLE pHandle = g_Sandbox.papHandles[idxHandle];
+        LeaveCriticalSection(&g_Sandbox.HandlesLock);
+        return pHandle;
+    }
+    LeaveCriticalSection(&g_Sandbox.HandlesLock);
+    return NULL;
+}
+
+
+/**
+ * Safely gets a handle, must be "put" when done with it.
+ *
+ * @returns Pointer to the handle structure if found, otherwise NULL.
+ * @param   hFile               The handle to resolve.
+ */
+static PKWHANDLE kwSandboxHandleGet(HANDLE hFile)
+{
+    KUPTR const idxHandle = KW_HANDLE_TO_INDEX(hFile);
+    EnterCriticalSection(&g_Sandbox.HandlesLock);
+    if (idxHandle < g_Sandbox.cHandles)
+    {
+        PKWHANDLE pHandle = g_Sandbox.papHandles[idxHandle];
+        if (pHandle)
+        {
+            kHlpAssertMsg(pHandle->tidOwner == KU32_MAX, ("hFile=%p tidOwner=%#x\n", hFile, pHandle->tidOwner));
+            pHandle->tidOwner = GetCurrentThreadId();
+            LeaveCriticalSection(&g_Sandbox.HandlesLock);
+            return pHandle;
+        }
+    }
+    LeaveCriticalSection(&g_Sandbox.HandlesLock);
+    return NULL;
+}
+
+
+/**
+ * Puts a handle returned by kwSandboxHandleGet.
+ *
+ * @param   pHandle             The handle to "put".
+ */
+K_INLINE void kwSandboxHandlePut(PKWHANDLE pHandle)
+{
+    kHlpAssertMsg(pHandle->tidOwner == GetCurrentThreadId(),
+                  ("hFile tidOwner=%#x tidMe=%#x\n", pHandle->hHandle, pHandle->tidOwner, GetCurrentThreadId()));
+    pHandle->tidOwner = KU32_MAX;
 }
 
 
@@ -9887,8 +11710,8 @@ static void kwSandboxCleanupLate(PKWSANDBOX pSandbox)
     PKWVIRTALLOC                pTracker;
     PKWHEAP                     pHeap;
     PKWLOCALSTORAGE             pLocalStorage;
-#ifdef WITH_HASH_MD5_CACHE
-    PKWHASHMD5                  pHash;
+#ifdef WITH_HASH_CACHE
+    PKWCRYPTHASH                pHash;
 #endif
 #ifdef WITH_TEMP_MEMORY_FILES
     PKWFSTEMPFILE               pTempFile;
@@ -9951,6 +11774,7 @@ static void kwSandboxCleanupLate(PKWSANDBOX pSandbox)
      */
 
     /* Open handles, except fixed handles (stdout and stderr). */
+    EnterCriticalSection(&pSandbox->HandlesLock);
     if (pSandbox->cActiveHandles > pSandbox->cFixedHandles)
     {
         KU32 idxHandle = pSandbox->cHandles;
@@ -9980,6 +11804,7 @@ static void kwSandboxCleanupLate(PKWSANDBOX pSandbox)
                             KWFS_LOG(("Closing leaked output buf handle: %#x/%p cRefs=%d\n",
                                       idxHandle, pHandle->hHandle, pHandle->cRefs));
                             break;
+#ifdef WITH_TEMP_MEMORY_FILES
                         case KWHANDLETYPE_TEMP_FILE:
                             KWFS_LOG(("Closing leaked temp file  handle: %#x/%p cRefs=%d\n",
                                       idxHandle, pHandle->hHandle, pHandle->cRefs));
@@ -9990,6 +11815,7 @@ static void kwSandboxCleanupLate(PKWSANDBOX pSandbox)
                                       idxHandle, pHandle->hHandle, pHandle->cRefs));
                             pHandle->u.pTempFile->cActiveHandles--;
                             break;
+#endif
                         default:
                             kHlpAssertFailed();
                     }
@@ -10001,6 +11827,7 @@ static void kwSandboxCleanupLate(PKWSANDBOX pSandbox)
             }
         kHlpAssert(pSandbox->cActiveHandles == pSandbox->cFixedHandles);
     }
+    LeaveCriticalSection(&pSandbox->HandlesLock);
 
     /* Reset memory mappings - This assumes none of the DLLs keeps any of our mappings open! */
     g_Sandbox.cMemMappings = 0;
@@ -10035,8 +11862,10 @@ static void kwSandboxCleanupLate(PKWSANDBOX pSandbox)
     }
 
     /* Free left behind VirtualAlloc leaks. */
+    EnterCriticalSection(&g_Sandbox.VirtualAllocLock);
     pTracker = g_Sandbox.pVirtualAllocHead;
     g_Sandbox.pVirtualAllocHead = NULL;
+    LeaveCriticalSection(&g_Sandbox.VirtualAllocLock);
     while (pTracker)
     {
         PKWVIRTALLOC pNext = pTracker->pNext;
@@ -10067,7 +11896,7 @@ static void kwSandboxCleanupLate(PKWSANDBOX pSandbox)
         pSandbox->papwszEnvVars[0] = NULL;
     }
 
-#ifdef WITH_HASH_MD5_CACHE
+#ifdef WITH_HASH_CACHE
     /*
      * Hash handles.
      */
@@ -10075,8 +11904,10 @@ static void kwSandboxCleanupLate(PKWSANDBOX pSandbox)
     pSandbox->pHashHead = NULL;
     while (pHash)
     {
-        PKWHASHMD5 pNext = pHash->pNext;
+        PKWCRYPTHASH pNext = pHash->pNext;
         KWCRYPT_LOG(("Freeing leaked hash instance %#p\n", pHash));
+        if (pHash->hFallback != KUPTR_MAX)
+            CryptDestroyHash(pHash->hFallback);
         kHlpFree(pHash);
         pHash = pNext;
     }
@@ -10186,8 +12017,10 @@ static void kwSandboxCleanup(PKWSANDBOX pSandbox)
     PPEB pPeb = kwSandboxGetProcessEnvironmentBlock();
     PMY_RTL_USER_PROCESS_PARAMETERS pProcParams = (PMY_RTL_USER_PROCESS_PARAMETERS)pPeb->ProcessParameters;
     pProcParams->CommandLine    = pSandbox->SavedCommandLine;
+#ifdef WITH_CONSOLE_OUTPUT_BUFFERING
     pProcParams->StandardOutput = pSandbox->StdOut.hOutput;
     pProcParams->StandardError  = pSandbox->StdErr.hOutput; /* CL.EXE messes with this one. */
+#endif
 }
 
 
@@ -10203,10 +12036,18 @@ static int kwSandboxExec(PKWSANDBOX pSandbox, PKWTOOL pTool, KU32 cArgs, const c
     rc = kwSandboxInit(&g_Sandbox, pTool, cArgs, papszArgs, fWatcomBrainDamange, cEnvVars, papszEnvVars, fNoPchCaching);
     if (rc == 0)
     {
+        if (g_cVerbose > 2)
+            fprintf(stderr, "kWorker: info: Executing (sandboxed): %s\n", g_Sandbox.pszCmdLine);
+
         /*
          * Do module initialization.
          */
-        kwSandboxResetModuleState(pTool->u.Sandboxed.pExe);
+#if 0
+        //kwSandboxResetModuleVisited();
+        //kwSandboxResetModuleState(pTool->u.Sandboxed.pExe);
+#else
+        kwSandboxResetModuleState();
+#endif
         rc = kwLdrModuleInitTree(pTool->u.Sandboxed.pExe);
         if (rc == 0)
         {
@@ -10291,6 +12132,7 @@ static int kwSandboxExec(PKWSANDBOX pSandbox, PKWTOOL pTool, KU32 cArgs, const c
         kwSandboxConsoleFlushAll(&g_Sandbox);
 #endif
         kwSandboxCleanup(&g_Sandbox);
+        /** @todo Flush sandboxed native CRTs too. */
     }
     else
         rcExit = 42 + 3;
@@ -10322,7 +12164,161 @@ static int kSubmitHandleJobPostCmd(KU32 cPostCmdArgs, const char **papszPostCmdA
         return kmk_builtin_kDepObj(cPostCmdArgs, (char **)papszPostCmdArgs, NULL, &Ctx);
     }
 
-    return kwErrPrintfRc(42 + 5 , "Unknown post command: '%s'\n", pszCmd);
+    return kwErrPrintfRc(42 + 5, "Unknown post command: '%s'\n", pszCmd);
+}
+
+
+/**
+ * Helper for kSubmitHandleSpecialEnvVar that gets the current process group.
+ */
+static unsigned kwGetCurrentProcessorGroup(void)
+{
+    typedef BOOL (WINAPI *PFNGETTHREADGROUPAFFINITY)(HANDLE, GROUP_AFFINITY *);
+    HMODULE                   hmodKernel32 = GetModuleHandleW(L"KERNEL32.DLL");
+    PFNGETTHREADGROUPAFFINITY pfnGetter    = (PFNGETTHREADGROUPAFFINITY)GetProcAddress(hmodKernel32, "GetThreadGroupAffinity");
+    if (pfnGetter)
+    {
+        GROUP_AFFINITY GroupAffinity;
+        memset(&GroupAffinity, 0, sizeof(GroupAffinity));
+        if (pfnGetter(GetCurrentThread(), &GroupAffinity))
+            return GroupAffinity.Group;
+    }
+    return 0;
+}
+
+
+/**
+ * Helper for kSubmitHandleSpecialEnvVar that gets the current process group.
+ */
+static KSIZE kwGetCurrentAuthenticationIdAsString(char *pszValue)
+{
+    KSIZE  cchRet = 0;
+    HANDLE hToken;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken))
+    {
+        DWORD cbRet;
+        TOKEN_STATISTICS TokenStats;
+        memset(&TokenStats, 0, sizeof(TokenStats));
+        if (GetTokenInformation(hToken, TokenStatistics, &TokenStats, sizeof(TokenStats), &cbRet))
+            cchRet = sprintf(pszValue, "%" KX64_PRI,
+                             ((KU64)TokenStats.AuthenticationId.HighPart << 32) | TokenStats.AuthenticationId.LowPart);
+        else
+            kwErrPrintf("GetTokenInformation/TokenStatistics failed: %u\n", GetLastError());
+        CloseHandle(hToken);
+    }
+    else
+        kwErrPrintf("OpenProcessToken failed: %u\n", GetLastError());
+    return cchRet;
+}
+
+
+/** 
+ * Look for and expand the special environment variable. 
+ *  
+ * We the special variable contains elements like "@@VAR_NAME@@" that kmk 
+ * couldn't accuratly determine.  Currently the following variables are 
+ * implemented: 
+ *     - "@@PROCESSOR_GROUP@@"   - The processor group number.
+ *     - "@@AUTHENTICATION_ID@@" - The authentication ID from the process token.
+ *     - "@@PID@@"               - The kWorker process ID.
+ *     - "@@@@"                  - Escaped "@@".
+ *     - "@@DEBUG_COUNTER@@"     - An ever increasing counter (starts at zero).
+ */  
+static int kSubmitHandleSpecialEnvVar(KU32 cEnvVars, const char **papszEnvVars, const char *pszSpecialEnv, char **ppszToFree)
+{
+    KSIZE const cchSpecialEnv = kHlpStrLen(pszSpecialEnv);
+    KU32 i = cEnvVars;
+    while (i-- > 0)
+        if (   kHlpStrNComp(papszEnvVars[i], pszSpecialEnv, cchSpecialEnv) == 0
+            && papszEnvVars[i][cchSpecialEnv] == '=')
+        {
+            /* We will expand stuff like @@NAME@@ */
+            const char *pszValue = papszEnvVars[i];
+            KSIZE       offDst   = 0;
+            char        szTmp[1024];
+            for (;;)
+            {
+                const char *pszAt = kHlpStrChr(pszValue, '@');
+                while (pszAt && pszAt[1] != '@')
+                    pszAt = kHlpStrChr(pszAt + 1, '@');
+                if (pszAt)
+                {
+                    KSIZE cchSrc = pszAt - pszValue;
+                    if (offDst + cchSrc < sizeof(szTmp))
+                    {
+                        char szSrc[64];
+
+                        kHlpMemCopy(&szTmp[offDst], pszValue, cchSrc);
+                        offDst += cchSrc;
+                        pszValue = pszAt + 2;
+
+                        if (kHlpStrNComp(pszValue, "PROCESS_GROUP@@", 15) == 0)
+                        {
+                            pszValue += 15;
+                            if (g_iProcessGroup == -1)
+                                g_iProcessGroup = kwGetCurrentProcessorGroup();
+                            cchSrc = sprintf(szSrc, "%u", g_iProcessGroup);
+                        }
+                        else if (kHlpStrNComp(pszValue, "AUTHENTICATION_ID@@", 19) == 0)
+                        {
+                            pszValue += 19;
+                            cchSrc = kwGetCurrentAuthenticationIdAsString(szSrc);
+                        }
+                        else if (kHlpStrNComp(pszValue, "PID@@", 5) == 0)
+                        {
+                            pszValue += 5;
+                            cchSrc = sprintf(szSrc, "%d", getpid());
+                        }
+                        else if (kHlpStrNComp(pszValue, "@@", 2) == 0)
+                        {
+                            pszValue += 2;
+                            szSrc[0] = '@';
+                            szSrc[1] = '@';
+                            szSrc[2] = '\0';
+                            cchSrc = 2;
+                        }
+                        else if (kHlpStrNComp(pszValue, "DEBUG_COUNTER@@", 15) == 0)
+                        {
+                            static unsigned int s_iCounter = 0;
+                            pszValue += 15;
+                            cchSrc = sprintf(szSrc, "%u", s_iCounter++);
+                        }
+                        else
+                            return kwErrPrintfRc(42 + 6, "Special environment variable contains unknown reference: '%s'!\n",
+                                                 pszValue - 2);
+                        if (offDst + cchSrc < sizeof(szTmp))
+                        {
+                            kHlpMemCopy(&szTmp[offDst], szSrc, cchSrc);
+                            offDst += cchSrc;
+                            continue;
+                        }
+                    }
+                }
+                else
+                {
+                    KSIZE cchSrc = kHlpStrLen(pszValue);
+                    if (offDst + cchSrc < sizeof(szTmp))
+                    {
+                        kHlpMemCopy(&szTmp[offDst], pszValue, cchSrc);
+                        offDst += cchSrc;
+                        break;
+                    }
+                }
+                return kwErrPrintfRc(42 + 6, "Special environment variable value too long!\n");
+            }
+            szTmp[offDst] = '\0';
+
+            /* Return a copy of it: */
+            papszEnvVars[i] = *ppszToFree = kHlpDup(szTmp, offDst + 1);
+            if (papszEnvVars[i])
+            {
+                SetEnvironmentVariableA(pszSpecialEnv, kHlpStrChr(papszEnvVars[i], '=') + 1); /* hack */
+                return 0;
+            }
+            return kwErrPrintfRc(42 + 6, "Special environment variable: out of memory\n");
+        }
+
+    return kwErrPrintfRc(42 + 6, "Special environment variable not found: '%s'\n", pszSpecialEnv);
 }
 
 
@@ -10337,6 +12333,8 @@ static int kSubmitHandleJobPostCmd(KU32 cPostCmdArgs, const char **papszPostCmdA
  * @param   fWatcomBrainDamange Whether to apply watcom rules while quoting.
  * @param   cEnvVars            The number of environment variables.
  * @param   papszEnvVars        The environment vector.
+ * @param   pszSpecialEnv       Name of special environment variable that
+ *                              requires selective expansion here.
  * @param   fNoPchCaching       Whether to disable precompiled header file
  *                              caching.  Avoid trouble when creating them.
  * @param   cPostCmdArgs        Number of post command arguments (includes cmd).
@@ -10344,11 +12342,12 @@ static int kSubmitHandleJobPostCmd(KU32 cPostCmdArgs, const char **papszPostCmdA
  */
 static int kSubmitHandleJobUnpacked(const char *pszExecutable, const char *pszCwd,
                                     KU32 cArgs, const char **papszArgs, KBOOL fWatcomBrainDamange,
-                                    KU32 cEnvVars, const char **papszEnvVars, KBOOL fNoPchCaching,
-                                    KU32 cPostCmdArgs, const char **papszPostCmdArgs)
+                                    KU32 cEnvVars, const char **papszEnvVars, const char *pszSpecialEnv,
+                                    KBOOL fNoPchCaching, KU32 cPostCmdArgs, const char **papszPostCmdArgs)
 {
     int rcExit;
     PKWTOOL pTool;
+    char *pszSpecialEnvFree = NULL;
 
     KW_LOG(("\n\nkSubmitHandleJobUnpacked: '%s' in '%s' cArgs=%u cEnvVars=%u cPostCmdArgs=%u\n",
             pszExecutable, pszCwd, cArgs, cEnvVars, cPostCmdArgs));
@@ -10364,8 +12363,21 @@ static int kSubmitHandleJobUnpacked(const char *pszExecutable, const char *pszCw
     g_cJobs++;
 
     /*
+     * Expand pszSpecialEnv if present.
+     */
+    if (pszSpecialEnv && *pszSpecialEnv)
+    {
+        rcExit = kSubmitHandleSpecialEnvVar(cEnvVars, papszEnvVars, pszSpecialEnv, &pszSpecialEnvFree);
+        if (!rcExit)
+        { /* likely */ }
+        else
+            return rcExit;
+    }
+
+    /*
      * Lookup the tool.
      */
+    g_Sandbox.pTool = NULL; /* Avoid confusion between the SetDllDirectoryW hacks. */
     pTool = kwToolLookup(pszExecutable, cEnvVars, papszEnvVars);
     if (pTool)
     {
@@ -10433,6 +12445,11 @@ static int kSubmitHandleJobUnpacked(const char *pszExecutable, const char *pszCw
     }
     else
         rcExit = 42 + 1;
+    if (pszSpecialEnvFree)
+    {
+        SetEnvironmentVariableA(pszSpecialEnv, NULL); /* hack */
+        kHlpFree(pszSpecialEnvFree);
+    }
     return rcExit;
 }
 
@@ -10543,56 +12560,68 @@ static int kSubmitHandleJob(const char *pszMsg, KSIZE cbMsg)
                                     KBOOL fNoPchCaching = *pszMsg++;
                                     cbMsg -= 2;
 
-                                    /* Post command argument count (can be zero). */
-                                    if (cbMsg >= sizeof(KU32))
+                                    /* Name of special enviornment variable requiring selective expansion. */
+                                    if (cbMsg >= 1)
                                     {
-                                        KU32 cPostCmdArgs;
-                                        kHlpMemCopy(&cPostCmdArgs, pszMsg, sizeof(cPostCmdArgs));
-                                        pszMsg += sizeof(cPostCmdArgs);
-                                        cbMsg  -= sizeof(cPostCmdArgs);
+                                        const char *pszSpecialEnv = pszMsg;
+                                        cbTmp = kHlpStrLen(pszMsg);
+                                        pszMsg += cbTmp + 1;
+                                        cbMsg  -= K_MIN(cbMsg, cbTmp + 1);
 
-                                        if (cPostCmdArgs >= 0 && cPostCmdArgs < 32)
+                                        /* Post command argument count (can be zero). */
+                                        if (cbMsg >= sizeof(KU32))
                                         {
-                                            char const *apszPostCmdArgs[32+1];
-                                            for (i = 0; i < cPostCmdArgs; i++)
-                                            {
-                                                apszPostCmdArgs[i] = pszMsg;
-                                                cbTmp = kHlpStrLen(pszMsg) + 1;
-                                                pszMsg += cbTmp;
-                                                if (   cbTmp < cbMsg
-                                                    || (cbTmp == cbMsg && i + 1 == cPostCmdArgs))
-                                                    cbMsg -= cbTmp;
-                                                else
-                                                {
-                                                    cbMsg = KSIZE_MAX;
-                                                    break;
-                                                }
-                                            }
-                                            if (cbMsg == 0)
-                                            {
-                                                apszPostCmdArgs[cPostCmdArgs] = NULL;
+                                            KU32 cPostCmdArgs;
+                                            kHlpMemCopy(&cPostCmdArgs, pszMsg, sizeof(cPostCmdArgs));
+                                            pszMsg += sizeof(cPostCmdArgs);
+                                            cbMsg  -= sizeof(cPostCmdArgs);
 
-                                                /*
-                                                 * The next step.
-                                                 */
-                                                rcExit = kSubmitHandleJobUnpacked(pszExecutable, pszCwd,
-                                                                                  cArgs, papszArgs, fWatcomBrainDamange,
-                                                                                  cEnvVars, papszEnvVars, fNoPchCaching,
-                                                                                  cPostCmdArgs, apszPostCmdArgs);
+                                            if (cPostCmdArgs >= 0 && cPostCmdArgs < 32)
+                                            {
+                                                char const *apszPostCmdArgs[32+1];
+                                                for (i = 0; i < cPostCmdArgs; i++)
+                                                {
+                                                    apszPostCmdArgs[i] = pszMsg;
+                                                    cbTmp = kHlpStrLen(pszMsg) + 1;
+                                                    pszMsg += cbTmp;
+                                                    if (   cbTmp < cbMsg
+                                                        || (cbTmp == cbMsg && i + 1 == cPostCmdArgs))
+                                                        cbMsg -= cbTmp;
+                                                    else
+                                                    {
+                                                        cbMsg = KSIZE_MAX;
+                                                        break;
+                                                    }
+                                                }
+                                                if (cbMsg == 0)
+                                                {
+                                                    apszPostCmdArgs[cPostCmdArgs] = NULL;
+
+                                                    /*
+                                                     * The next step.
+                                                     */
+                                                    rcExit = kSubmitHandleJobUnpacked(pszExecutable, pszCwd,
+                                                                                      cArgs, papszArgs, fWatcomBrainDamange,
+                                                                                      cEnvVars, papszEnvVars, pszSpecialEnv,
+                                                                                      fNoPchCaching,
+                                                                                      cPostCmdArgs, apszPostCmdArgs);
+                                                }
+                                                else if (cbMsg == KSIZE_MAX)
+                                                    kwErrPrintf("Detected bogus message unpacking post command and its arguments!\n");
+                                                else
+                                                    kwErrPrintf("Message has %u bytes unknown trailing bytes\n", cbMsg);
                                             }
-                                            else if (cbMsg == KSIZE_MAX)
-                                                kwErrPrintf("Detected bogus message unpacking post command and its arguments!\n");
                                             else
-                                                kwErrPrintf("Message has %u bytes unknown trailing bytes\n", cbMsg);
+                                                kwErrPrintf("Bogus post command argument count: %u %#x\n", cPostCmdArgs, cPostCmdArgs);
                                         }
                                         else
-                                            kwErrPrintf("Bogus post command argument count: %u %#x\n", cPostCmdArgs, cPostCmdArgs);
+                                            kwErrPrintf("Detected bogus message looking for the post command argument count!\n");
                                     }
                                     else
-                                        kwErrPrintf("Detected bogus message looking for the post command argument count!\n");
+                                        kwErrPrintf("Detected bogus message unpacking special environment variable!\n");
                                 }
                                 else
-                                    kwErrPrintf("Detected bogus message unpacking environment variables!\n");
+                                    kwErrPrintf("Detected bogus message unpacking flags!\n");
                                 kHlpFree((void *)papszEnvVars);
                             }
                             else
@@ -10822,6 +12851,16 @@ static void kwPrintStats(void)
                    kwFmtU64(sz2, g_pFsCache->cNameGrowths),
                    (unsigned)(g_pFsCache->cNameGrowths * 100 / K_MAX(g_pFsCache->cNameChanges, 1)) );
 
+#ifdef WITH_HASH_CACHE
+    off += sprintf(&szBuf[off], "%s %14s hashes calculated, %s cache hits (%u%%), %s fallbacks, %s partial\n", szPrf,
+                   kwFmtU64(sz1, g_cHashes),
+                   kwFmtU64(sz2, g_cHashesCached),
+                   (unsigned)(g_cHashesCached * 100 / K_MAX(g_cHashes, 1)),
+                   kwFmtU64(sz3, g_cHashesFallbacks),
+                   kwFmtU64(sz4, g_cHashesPartial));
+    off += sprintf(&szBuf[off], "%s %14s MD5: %s  SHA-1: %s  SHA-256: %s  SHA-512: %s\n", szPrf, "", kwFmtU64(sz1, g_cHashesMd5),
+                   kwFmtU64(sz2, g_cHashesSha1), kwFmtU64(sz3, g_cHashesSha256), kwFmtU64(sz4, g_cHashesSha512));
+#endif
 
     /*
      * Process & Memory details.
@@ -10888,6 +12927,9 @@ static int kwTestRun(int argc, char **argv)
     char        szCwd[MAX_PATH];
     const char *pszCwd = getcwd(szCwd, sizeof(szCwd));
     KU32        cEnvVars;
+    char      **papszEnvVars;
+    const char *pszSpecialEnv = "";
+    const char *pszSpecialEnvFull = NULL;
     KBOOL       fWatcomBrainDamange = K_FALSE;
     KBOOL       fNoPchCaching = K_FALSE;
 
@@ -10933,6 +12975,20 @@ static int kwTestRun(int argc, char **argv)
             i++;
         }
 
+        /* Optional directory change. */
+        if (   i < argc
+            && (   strcmp(argv[i], "--set-special") == 0
+                || strcmp(argv[i], "-s")      == 0 ) )
+        {
+            i++;
+            if (i >= argc)
+                return kwErrPrintfRc(2, "--set-special takes an argument!\n");
+            pszSpecialEnvFull = argv[i++];
+            putenv(pszSpecialEnvFull);
+            pszSpecialEnv = strdup(pszSpecialEnvFull);
+            *strchr(pszSpecialEnv, '=') = '\0';
+        }
+
         /* Trigger breakpoint */
         if (   i < argc
             && strcmp(argv[i], "--breakpoint") == 0)
@@ -10957,17 +13013,23 @@ static int kwTestRun(int argc, char **argv)
         return kwErrPrintfRc(2, "Nothing to execute after '--'!\n");
 
     /*
-     * Do the job.
+     * Duplicate the environment.
      */
     cEnvVars = 0;
     while (environ[cEnvVars] != NULL)
         cEnvVars++;
+    papszEnvVars = (char **)kHlpAllocZ(sizeof(papszEnvVars[0]) * (cEnvVars + 2));
 
+    /*
+     * Do the job.
+     */
+    rcExit = 0;
     for (j = 0; j < cRepeats; j++)
     {
+        memcpy(papszEnvVars, environ, sizeof(papszEnvVars[0]) * cEnvVars);
         rcExit = kSubmitHandleJobUnpacked(argv[i], pszCwd,
                                           argc - i, &argv[i], fWatcomBrainDamange,
-                                          cEnvVars, environ, fNoPchCaching,
+                                          cEnvVars, papszEnvVars, pszSpecialEnv, fNoPchCaching,
                                           0, NULL);
         KW_LOG(("rcExit=%d\n", rcExit));
         kwSandboxCleanupLate(&g_Sandbox);
@@ -10984,25 +13046,465 @@ static int kwTestRun(int argc, char **argv)
 }
 
 
+/**
+ * Reads @a pszFile into memory and chops it up into an argument vector.
+ *
+ * @returns Pointer to the argument vector on success, NULL on failure.
+ * @param   pszFile         The file to load.
+ * @param   pcArgs          Where to return the number of arguments.
+ * @param   ppszFileContent Where to return the allocation.
+ */
+static char **kwFullTestLoadArgvFile(const char *pszFile, int *pcArgs, char **ppszFileContent)
+{
+    char **papszArgs = NULL;
+    FILE  *pFile     = fopen(pszFile, "r");
+    if (pFile)
+    {
+        long cbFile;
+        if (   fseek(pFile, 0, SEEK_END) == 0
+            && (cbFile = ftell(pFile)) >= 0
+            && fseek(pFile, 0, SEEK_SET) == 0)
+        {
+            char *pszFile = kHlpAllocZ(cbFile + 3);
+            if (pszFile)
+            {
+                size_t cbRead = fread(pszFile, 1, cbFile + 1, pFile);
+                if (   feof(pFile)
+                    && !ferror(pFile))
+                {
+                    size_t off        = 0;
+                    int    cArgs      = 0;
+                    int    cAllocated = 0;
+                    char   ch;
+
+                    pszFile[cbRead]     = '\0';
+                    pszFile[cbRead + 1] = '\0';
+                    pszFile[cbRead + 2] = '\0';
+
+                    while ((ch = pszFile[off]) != '\0')
+                    {
+                        char *pszArg;
+                        switch (ch)
+                        {
+                            case ' ':
+                            case '\t':
+                            case '\n':
+                            case '\r':
+                                off++;
+                                continue;
+
+                            case '\\':
+                                if (pszFile[off + 1] == '\n' || pszFile[off + 1] == '\r')
+                                {
+                                    off += 2;
+                                    continue;
+                                }
+                                /* fall thru */
+                            default:
+                                pszArg = &pszFile[off];
+                                do
+                                    ch = pszFile[++off];
+                                while (ch != '\0' && ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r');
+                                pszFile[off++] = '\0';
+                                break;
+
+                            case '\'':
+                                pszArg = &pszFile[++off];
+                                while ((ch = pszFile[off]) != '\0' && ch != '\'')
+                                    off++;
+                                pszFile[off++] = '\0';
+                                break;
+
+                            case '\"': /** @todo escape sequences */
+                                pszArg = &pszFile[++off];
+                                while ((ch = pszFile[off]) != '\0' && ch != '"')
+                                    off++;
+                                pszFile[off++] = '\0';
+                                break;
+                        }
+                        if (cArgs + 1 >= cAllocated)
+                        {
+                            void *pvNew;
+                            cAllocated = cAllocated ? cAllocated * 2 : 16;
+                            pvNew = kHlpRealloc(papszArgs, cAllocated * sizeof(papszArgs[0]));
+                            if (pvNew)
+                                papszArgs = (char **)pvNew;
+                            else
+                            {
+                                kHlpFree(papszArgs);
+                                papszArgs = NULL;
+                                break;
+                            }
+                        }
+                        papszArgs[cArgs] = pszArg;
+                        papszArgs[++cArgs] = NULL;
+                    }
+                    *pcArgs = cArgs;
+                }
+                else
+                    kwErrPrintf("Error reading '%s'!\n", pszFile);
+            }
+            else
+                kwErrPrintf("Error allocating %lu bytes!\n", cbFile + 2);
+        }
+        else
+            kwErrPrintf("Error seeking '%s'!\n", pszFile);
+        fclose(pFile);
+    }
+    else
+        kwErrPrintf("Error opening '%s'!\n", pszFile);
+    return papszArgs;
+}
+
+/**
+ * Appends a string to an string vector (arguments or enviornment).
+ *
+ * @returns 0 on success, non-zero on failure (exit code).
+ * @param   ppapszVector    Pointer to the string pointer array.
+ * @param   pcEntries       Pointer to the array size.
+ * @param   pszAppend       The string to append.
+ */
+static int kwFullTestVectorAppend(const char ***ppapszVector, KU32 *pcEntries, char const *pszAppend)
+{
+    KU32 cEntries = *pcEntries;
+    if (!(cEntries & 15))
+    {
+        void *pvNew = kHlpRealloc((void *)*ppapszVector, sizeof(char *) * (cEntries + 16 + 1));
+        if (pvNew)
+            *ppapszVector = (const char **)pvNew;
+        else
+            return kwErrPrintfRc(2, "Out of memory!\n");
+    }
+    (*ppapszVector)[cEntries] = pszAppend;
+    (*ppapszVector)[++cEntries] = NULL;
+    *pcEntries = cEntries;
+    return 0;
+}
+
+
+/**
+ * Parses arguments for --full-test.
+ *
+ * @returns 0 on success, non-zero on failure (exit code).
+ */
+static int kwFullTestRunParseArgs(PKWONETEST *ppHead, int *piState, int argc, char **argv,
+                                  const char *pszDefaultCwd, int cRecursions, const char *pszJobSrc)
+{
+    PKWONETEST pCur = *ppHead;
+    int i;
+    for (i = 0; i < argc; i++)
+    {
+        int         rc     = 0;
+        const char *pszArg = argv[i];
+        if (*pszArg == 'k')
+        {
+            if (kHlpStrComp(pszArg, "kSubmit") == 0)
+            {
+                if (*piState != 0)
+                {
+                    pCur = (PKWONETEST)kHlpAllocZ(sizeof(*pCur));
+                    if (!pCur)
+                        return kwErrPrintfRc(2, "Out of memory!\n");
+                    pCur->fVirgin   = K_TRUE;
+                    pCur->pszCwd    = pszDefaultCwd;
+                    pCur->cRuns     = 1;
+                    pCur->pNext     = *ppHead;
+                    *ppHead = pCur;
+                    *piState = 0;
+                }
+                else if (!pCur->fVirgin)
+                    return kwErrPrintfRc(2, "Unexpected 'kSubmit' as argument #%u\n", i);
+                pCur->pszJobSrc = pszJobSrc;
+                pCur->iJobSrc   = i;
+                continue; /* (to stay virgin) */
+            }
+
+            /* Ignore "kWorker 378172/62:" sequences that kmk/kSubmit spews out on failure. */
+            if (   kHlpStrComp(pszArg, "kWorker") == 0
+                && i + 1 < argc
+                && (unsigned)(argv[i + 1][0] - '0') <= 9)
+            {
+                i++;
+                continue;
+            }
+        }
+
+        if (   *pszArg == '-'
+            && (   *piState == 0
+                || pszArg[1] == '@'))
+        {
+            const char *pszValue = NULL;
+            char        ch       = *++pszArg;
+            pszArg++;
+            if (ch == '-')
+            {
+                ch = '\0';
+                if (*pszArg == '\0') /* -- */
+                    *piState = 2;
+                /* Translate or handle long options: */
+                else if (kHlpStrComp(pszArg, "putenv") == 0 || kHlpStrComp(pszArg, "set") == 0)
+                    ch = 'E';
+                else if (kHlpStrComp(pszArg, "special-env") == 0)
+                    ch = 's';
+                else if (kHlpStrComp(pszArg, "default-env") == 0)
+                {
+                    unsigned i;
+                    pCur->cEnvVars = 0;
+                    for (i = 0; environ[i] && rc == 0; i++)
+                        rc = kwFullTestVectorAppend(&pCur->papszEnvVars, &pCur->cEnvVars, kHlpStrDup(environ[i])); /* leaks; unchecked */
+                }
+                else if (kHlpStrComp(pszArg, "chdir") == 0)
+                    ch = 'C';
+                else if (kHlpStrComp(pszArg, "post-cmd") == 0)
+                    ch = 'P';
+                else if (kHlpStrComp(pszArg, "response-file") == 0)
+                    ch = '@';
+                else if (kHlpStrComp(pszArg, "runs") == 0)
+                    ch = 'R';
+                else if (kHlpStrComp(pszArg, "watcom-brain-damage") == 0)
+                    pCur->fWatcomBrainDamange = K_TRUE;
+                else if (kHlpStrComp(pszArg, "no-pch-caching") == 0)
+                    pCur->fNoPchCaching = K_TRUE;
+                else if (kHlpStrComp(pszArg, "executable") == 0)
+                    ch = 'e';
+                else if (kHlpStrComp(pszArg, "breakpoint") == 0)
+                {
+                    __debugbreak();
+                    continue; /* (to stay virgin) */
+                }
+                else
+                    return kwErrPrintfRc(2, "Unknown option: --%s\n", pszArg);
+                pszArg = "";
+            }
+
+            while (ch != '\0' && rc == 0)
+            {
+                /* Fetch value if needed: */
+                switch (ch)
+                {
+                    case '@':
+                    case 'e':
+                    case 'E':
+                    case 's':
+                    case 'C':
+                    case 'R':
+                        if (*pszArg == ':' || *pszArg == '=')
+                            pszValue = &pszArg[1];
+                        else if (*pszArg)
+                            pszValue = pszArg;
+                        else if (i + 1 < argc)
+                            pszValue = argv[++i];
+                        else
+                            return kwErrPrintfRc(2, "Option -%c takes a value\n", ch);
+                        pszArg = "";
+                        break;
+                }
+
+                /* Handle the option: */
+                switch (ch)
+                {
+                    case 'E':
+                        rc = kwFullTestVectorAppend(&pCur->papszEnvVars, &pCur->cEnvVars, pszValue);
+                        break;
+                    case 'C':
+                        pCur->pszCwd = pszValue;
+                        break;
+                    case 's':
+                        pCur->pszSpecialEnv = pszValue;
+                        break;
+                    case 'e':
+                        pCur->pszExecutable = pszValue;
+                        break;
+                    case 'P':
+                        *piState = 1;
+                        if (*pszArg)
+                            return kwErrPrintfRc(2, "Option -P cannot be followed by other options!\n");
+                        break;
+                    case 'R':
+                        pCur->cRuns = atoi(pszValue);
+                        if ((int)pCur->cRuns < 0)
+                            return kwErrPrintfRc(2, "Option -R takes a positive (or zero) integer as value: %s\n", pszValue);
+                        break;
+                    case '@':
+                        if (cRecursions < 5)
+                        {
+                            char    *pszLeaked = NULL;
+                            int      cArgs     = 0;
+                            char   **papszArgsLeaked = kwFullTestLoadArgvFile(pszValue, &cArgs, &pszLeaked);
+                            if (papszArgsLeaked)
+                            {
+                                rc = kwFullTestRunParseArgs(ppHead, piState, cArgs, papszArgsLeaked, pszDefaultCwd,
+                                                            cRecursions + 1, pszValue);
+                                pCur = *ppHead;
+                            }
+                            else
+                                return 2;
+                        }
+                        else
+                            return kwErrPrintfRc(2, "Too deep response file nesting!\n");
+                        break;
+                }
+
+                /* next */
+                ch = *pszArg++;
+            }
+        }
+        else if (*piState == 2)
+            rc = kwFullTestVectorAppend(&pCur->papszArgs, &pCur->cArgs, pszArg);
+        else if (*piState == 1)
+        {
+            if (pszArg[0] != '-' || pszArg[1] != '-' || pszArg[2] != '\0')
+                rc = kwFullTestVectorAppend(&pCur->papszPostCmdArgs, &pCur->cPostCmdArgs, pszArg);
+            else
+                *piState = 2;
+        }
+        else
+            return kwErrPrintfRc(2, "Unexpected argument: %s\n", pszArg);
+        if (rc)
+            return rc;
+        pCur->fVirgin = K_FALSE;
+    }
+    return 0;
+}
+
+
+/**
+ * Handles what comes after --full-test.
+ *
+ * @returns Exit code.
+ * @param   argc                Number of arguments after --full-test.
+ * @param   argv                Arguments after --full-test.
+ */
+static int kwFullTestRun(int argc, char **argv)
+{
+    char        szDefaultCwd[MAX_PATH];
+    const char *pszDefaultCwd = getcwd(szDefaultCwd, sizeof(szDefaultCwd));
+    KWONETEST   FirstTest;
+    PKWONETEST  pHead = &FirstTest;
+    PKWONETEST  pCur;
+    int         iState = 0;
+    int         rcExit;
+
+    /*
+     * Parse arguments.
+     */
+    kHlpMemSet(&FirstTest, 0, sizeof(FirstTest));
+    FirstTest.pszJobSrc = "command-line";
+    FirstTest.iJobSrc   = 1;
+    FirstTest.fVirgin   = K_TRUE;
+    FirstTest.pszCwd    = pszDefaultCwd;
+    FirstTest.cRuns     = 1;
+
+    rcExit = kwFullTestRunParseArgs(&pHead, &iState, argc, argv, pszDefaultCwd, 0, "command-line");
+    if (rcExit)
+        return rcExit;
+
+    /*
+     * Do the job.  LIFO ordering (see kSubmit).
+     */
+    for (pCur = pHead; pCur; pCur = pCur->pNext)
+    {
+        if (!pCur->pszExecutable && pCur->papszArgs)
+            pCur->pszExecutable = pCur->papszArgs[0];
+        if (   pCur->pszExecutable
+            && pCur->cArgs > 0
+            && pCur->cEnvVars > 0)
+        {
+            size_t const    cbEnvVarCopy     = sizeof(pCur->papszEnvVars[0]) * (pCur->cEnvVars + 1);
+            char ** const   papszEnvVarsCopy = (char **)kHlpDup(pCur->papszEnvVars, cbEnvVarCopy);
+            unsigned        iRun;
+
+            for (iRun = 0; iRun < pCur->cRuns; iRun++)
+            {
+                rcExit = kSubmitHandleJobUnpacked(pCur->pszExecutable, pCur->pszCwd,
+                                                  pCur->cArgs, pCur->papszArgs, pCur->fWatcomBrainDamange,
+                                                  pCur->cEnvVars, pCur->papszEnvVars, pCur->pszSpecialEnv,
+                                                  pCur->fNoPchCaching, pCur->cPostCmdArgs, pCur->papszPostCmdArgs);
+
+                KW_LOG(("rcExit=%d\n", rcExit));
+                kwSandboxCleanupLate(&g_Sandbox);
+
+                memcpy((void *)pCur->papszEnvVars, papszEnvVarsCopy, cbEnvVarCopy);
+            }
+            kHlpFree(papszEnvVarsCopy);
+        }
+        else
+            rcExit = kwErrPrintfRc(2, "Job is underspecified! %s%s%s (Job started with argument #%u, %s)\n",
+                                   pCur->pszExecutable ? "" : " No executable!",
+                                   pCur->cArgs < 1 ? " No arguments!" : "",
+                                   pCur->cEnvVars < 1 ? " No environment!" : "",
+                                   pCur->iJobSrc, pCur->pszJobSrc);
+    }
+
+    if (getenv("KWORKER_STATS") != NULL)
+        kwPrintStats();
+
+# ifdef WITH_LOG_FILE
+    if (g_hLogFile != INVALID_HANDLE_VALUE && g_hLogFile != NULL)
+        CloseHandle(g_hLogFile);
+# endif
+    return rcExit;
+}
+
+
+/**
+ * Helper for main() argument handling that sets the processor group if
+ * possible.
+ */
+static void kwSetProcessorGroup(unsigned long uGroup)
+{
+    typedef BOOL (WINAPI *PFNSETTHREADGROUPAFFINITY)(HANDLE, const GROUP_AFFINITY*, GROUP_AFFINITY *);
+    HMODULE             const hmodKernel32 = GetModuleHandleW(L"KERNEL32.DLL");
+    PFNSETTHREADGROUPAFFINITY pfnSetThreadGroupAffinity;
+
+    pfnSetThreadGroupAffinity = (PFNSETTHREADGROUPAFFINITY)GetProcAddress(hmodKernel32, "SetThreadGroupAffinity");
+    if (pfnSetThreadGroupAffinity)
+    {
+        GROUP_AFFINITY OldAff = { 0,            0, 0, 0, 0 };
+        GROUP_AFFINITY NewAff = { 0, (WORD)uGroup, 0, 0, 0 };
+        NewAff.Mask = win_get_processor_group_active_mask((WORD)uGroup);
+        if (NewAff.Mask && (WORD)uGroup == uGroup)
+        {
+            if (!pfnSetThreadGroupAffinity(GetCurrentThread(), &NewAff, &OldAff))
+                kwErrPrintf("Failed to set processor group to %lu (%p): %u\n", uGroup, NewAff.Mask, GetLastError());
+        }
+        else if (GetLastError() == NO_ERROR)
+            kwErrPrintf("Cannot set processor group to %lu: No active processors in group!\n", uGroup);
+        else
+            kwErrPrintf("Cannot set processor group to %lu: GetLogicalProcessorInformationEx failed: %u\n",
+                        uGroup, GetLastError());
+    }
+    else
+    {
+        OSVERSIONINFOA VerInfo = {0};
+        if (VerInfo.dwMajorVersion > 6 || (VerInfo.dwMajorVersion == 6 && VerInfo.dwMinorVersion >= 1))
+            kwErrPrintf("Cannot set processor group to %lu: SetThreadGroupAffinity no found! (Windows version %lu.%lu)\n",
+                        uGroup, VerInfo.dwMajorVersion, VerInfo.dwMinorVersion);
+    }
+}
+
+
 int main(int argc, char **argv)
 {
+#if defined(KBUILD_OS_WINDOWS) && defined(KBUILD_ARCH_X86)
+    PVOID                           pvVecXcptHandler = AddVectoredExceptionHandler(0 /*called last*/,
+                                                                                   kwSandboxVecXcptEmulateChained);
+#endif
     KSIZE                           cbMsgBuf = 0;
     KU8                            *pbMsgBuf = NULL;
     int                             i;
     HANDLE                          hPipe = INVALID_HANDLE_VALUE;
     const char                     *pszTmp;
     KFSLOOKUPERROR                  enmIgnored;
-#if defined(KBUILD_OS_WINDOWS) && defined(KBUILD_ARCH_X86)
-    PVOID                           pvVecXcptHandler = AddVectoredExceptionHandler(0 /*called last*/,
-                                                                                   kwSandboxVecXcptEmulateChained);
-#endif
+    DWORD                           dwType;
 #ifdef WITH_CONSOLE_OUTPUT_BUFFERING
     HANDLE                          hCurProc       = GetCurrentProcess();
     PPEB                            pPeb           = kwSandboxGetProcessEnvironmentBlock();
     PMY_RTL_USER_PROCESS_PARAMETERS pProcessParams = (PMY_RTL_USER_PROCESS_PARAMETERS)pPeb->ProcessParameters;
-    DWORD                           dwType;
 #endif
-
+#if defined(KBUILD_OS_WINDOWS) && defined(KBUILD_ARCH_X86)
+    K_NOREF(pvVecXcptHandler);
+#endif
 
 #ifdef WITH_FIXED_VIRTUAL_ALLOCS
     /*
@@ -11057,6 +13559,8 @@ int main(int argc, char **argv)
     if (!VirtualProtect(g_abDefLdBuf, sizeof(g_abDefLdBuf), PAGE_EXECUTE_READWRITE, &dwType))
         return kwErrPrintfRc(3, "VirtualProtect(%p, %#x, PAGE_EXECUTE_READWRITE,NULL) failed: %u\n",
                              g_abDefLdBuf, sizeof(g_abDefLdBuf), GetLastError());
+    InitializeCriticalSection(&g_Sandbox.HandlesLock);
+    InitializeCriticalSection(&g_Sandbox.VirtualAllocLock);
 
 #ifdef WITH_CONSOLE_OUTPUT_BUFFERING
     /*
@@ -11074,6 +13578,7 @@ int main(int argc, char **argv)
     g_Sandbox.HandleStdOut.enmType         = KWHANDLETYPE_OUTPUT_BUF;
     g_Sandbox.HandleStdOut.cRefs           = 0x10001;
     g_Sandbox.HandleStdOut.dwDesiredAccess = GENERIC_WRITE;
+    g_Sandbox.HandleStdOut.tidOwner        = KU32_MAX;
     g_Sandbox.HandleStdOut.u.pOutBuf       = &g_Sandbox.StdOut;
     g_Sandbox.HandleStdOut.hHandle         = g_Sandbox.StdOut.hOutput;
     if (g_Sandbox.StdOut.hOutput != INVALID_HANDLE_VALUE)
@@ -11098,6 +13603,7 @@ int main(int argc, char **argv)
     g_Sandbox.HandleStdErr.enmType         = KWHANDLETYPE_OUTPUT_BUF;
     g_Sandbox.HandleStdErr.cRefs           = 0x10001;
     g_Sandbox.HandleStdErr.dwDesiredAccess = GENERIC_WRITE;
+    g_Sandbox.HandleStdErr.tidOwner        = KU32_MAX;
     g_Sandbox.HandleStdErr.u.pOutBuf       = &g_Sandbox.StdErr;
     g_Sandbox.HandleStdErr.hHandle         = g_Sandbox.StdErr.hOutput;
     if (   g_Sandbox.StdErr.hOutput != INVALID_HANDLE_VALUE
@@ -11166,6 +13672,8 @@ int main(int argc, char **argv)
         }
         else if (strcmp(argv[i], "--test") == 0)
             return kwTestRun(argc - i - 1, &argv[i + 1]);
+        else if (strcmp(argv[i], "--full-test") == 0)
+            return kwFullTestRun(argc - i - 1, &argv[i + 1]);
         else if (strcmp(argv[i], "--priority") == 0)
         {
             i++;
@@ -11179,17 +13687,19 @@ int main(int argc, char **argv)
                     && uValue >= 1
                     && uValue <= 5)
                 {
-                    DWORD dwClass, dwPriority;
+                    DWORD dwClass;
+                    int   dwPriority;
                     switch (uValue)
                     {
                         case 1: dwClass = IDLE_PRIORITY_CLASS;         dwPriority = THREAD_PRIORITY_IDLE; break;
                         case 2: dwClass = BELOW_NORMAL_PRIORITY_CLASS; dwPriority = THREAD_PRIORITY_BELOW_NORMAL; break;
+                        default:
                         case 3: dwClass = NORMAL_PRIORITY_CLASS;       dwPriority = THREAD_PRIORITY_NORMAL; break;
-                        case 4: dwClass = HIGH_PRIORITY_CLASS;         dwPriority = 0xffffffff; break;
-                        case 5: dwClass = REALTIME_PRIORITY_CLASS;     dwPriority = 0xffffffff; break;
+                        case 4: dwClass = HIGH_PRIORITY_CLASS;         dwPriority = INT_MAX; break;
+                        case 5: dwClass = REALTIME_PRIORITY_CLASS;     dwPriority = INT_MAX; break;
                     }
                     SetPriorityClass(GetCurrentProcess(), dwClass);
-                    if (dwPriority != 0xffffffff)
+                    if (dwPriority != INT_MAX)
                         SetThreadPriority(GetCurrentThread(), dwPriority);
                 }
                 else
@@ -11209,27 +13719,16 @@ int main(int argc, char **argv)
                     && pszEnd != NULL
                     && *pszEnd == '\0'
                     && uValue == (WORD)uValue)
-                {
-                    typedef BOOL (WINAPI *PFNSETTHREADGROUPAFFINITY)(HANDLE, const GROUP_AFFINITY*, GROUP_AFFINITY *);
-                    PFNSETTHREADGROUPAFFINITY pfnSetThreadGroupAffinity;
-                    pfnSetThreadGroupAffinity = (PFNSETTHREADGROUPAFFINITY)GetProcAddress(GetModuleHandleW(L"KERNEL32.DLL"),
-                                                                                          "SetThreadGroupAffinity");
-                    if (pfnSetThreadGroupAffinity)
-                    {
-                        GROUP_AFFINITY NewAff = { ~(uintptr_t)0, (WORD)uValue, 0, 0, 0 };
-                        GROUP_AFFINITY OldAff = {             0,            0, 0, 0, 0 };
-                        if (!pfnSetThreadGroupAffinity(GetCurrentThread(), &NewAff, &OldAff))
-                            kwErrPrintf("Failed to set processor group to %lu: %u\n", uValue, GetLastError());
-                    }
-                    else
-                        kwErrPrintf("Cannot set processor group to %lu because SetThreadGroupAffinity was not found\n", uValue);
-                }
+                    kwSetProcessorGroup(uValue);
                 else
                     return kwErrPrintfRc(2, "Invalid --priority argument: %s\n", argv[i]);
             }
             else
                 return kwErrPrintfRc(2, "--priority takes an argument!\n");
         }
+        else if (   strcmp(argv[i], "--verbose") == 0
+                 || strcmp(argv[i], "-v") == 0)
+            g_cVerbose++;
         else if (   strcmp(argv[i], "--help") == 0
                  || strcmp(argv[i], "-h") == 0
                  || strcmp(argv[i], "-?") == 0)
@@ -11237,6 +13736,7 @@ int main(int argc, char **argv)
             printf("usage: kWorker [--volatile dir] [--priority <1-5>] [--group <processor-grp>\n"
                    "usage: kWorker <--help|-h>\n"
                    "usage: kWorker <--version|-V>\n"
+                   "usage: kWorker [--volatile dir] --full-test kSubmit ...\n"
                    "usage: kWorker [--volatile dir] --test [<times> [--chdir <dir>] [--breakpoint] -- args\n"
                    "\n"
                    "This is an internal kmk program that is used via the builtin_kSubmit.\n");
@@ -11366,9 +13866,10 @@ int main(int argc, char **argv)
          */
         if (g_fRestart)
         {
+            DWORD cbIgnored = 1;
             KU8 b;
             FlushFileBuffers(hPipe);
-            ReadFile(hPipe, &b, 1, &cbMsg, NULL);
+            ReadFile(hPipe, &b, 1, &cbIgnored, NULL);
         }
 
         CloseHandle(hPipe);
