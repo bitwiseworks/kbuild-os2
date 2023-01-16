@@ -1136,11 +1136,12 @@ static inline void *__my_rawmemchr (const void *__s, int __c)
   __asm__ __volatile__
     ("cld\n\t"
      "repne; scasb\n\t"
+     "subl	$1,%0"
      : "=D" (__res), "=&c" (__d0)
      : "a" (__c), "0" (__s), "1" (0xffffffff),
        "m" ( *(struct { char __x[0xfffffff]; } *)__s)
      : "cc");
-  return __res - 1;
+  return __res;
 }
 
 #undef memchr
@@ -1155,12 +1156,13 @@ static inline void *__my_memchr (__const void *__s, int __c, size_t __n)
     ("repne; scasb\n\t"
      "je	1f\n\t"
      "movl	$1,%0\n"
-     "1:"
+     "1:\n\t"
+     "subl	$1,%0"
      : "=D" (__res), "=&c" (__d0)
      : "a" (__c), "0" (__s), "1" (__n),
        "m" ( *(struct { __extension__ char __x[__n]; } *)__s)
      : "cc");
-  return __res - 1;
+  return __res;
 }
 
 #endif /* __EMX__ (bird) */
