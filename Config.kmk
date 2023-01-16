@@ -147,7 +147,7 @@ if1of ($(KBUILD_TARGET), openbsd)
 endif
 # Not all compiler tools currently do the same quoting of DEFS, so here's a
 # temporary workaround.
-ifn1of ($(KBUILD_TARGET), win)
+ifn1of ($(KBUILD_TARGET), win os2)
  TMP_QUOTE_SLASH :=
 else
  TMP_QUOTE_SLASH := \$(NO_SUCH_VARIABLE)
