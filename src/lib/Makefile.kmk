@@ -70,6 +70,9 @@ kUtil_SOURCES.solaris = \
 kUtil_NOINST = 1
 
 kbuild_version.c_DEFS = KBUILD_SVN_REV=$(KBUILD_SVN_REV)
+ifdef KBUILD_SVN_GIT
+kbuild_version.c_DEFS += KBUILD_SVN_GIT=$(KBUILD_SVN_GIT)
+endif
 
 LIBRARIES.win += kWinStartup
 kWinStartup_TEMPLATE = LIB

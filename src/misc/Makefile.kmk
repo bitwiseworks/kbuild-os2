@@ -29,6 +29,9 @@ include $(PATH_KBUILD)/subheader.kmk
 PROGRAMS += kmk_time
 kmk_time_TEMPLATE = BIN
 kmk_time_DEFS = KBUILD_SVN_REV=$(KBUILD_SVN_REV)
+ifdef KBUILD_SVN_GIT
+kmk_time_DEFS += KBUILD_SVN_GIT=$(KBUILD_SVN_GIT)
+endif
 kmk_time_SOURCES = kmk_time.c
 kmk_time_SOURCES.win = ../lib/quote_argv.c
 

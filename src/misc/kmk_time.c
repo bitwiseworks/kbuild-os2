@@ -260,7 +260,11 @@ int main(int argc, char **argv)
                 return 0;
 
             case 'V':
+#ifdef KBUILD_SVN_GIT
+                printf("kmk_time - kBuild version %d.%d.%d (%07x-git)\n"
+#else
                 printf("kmk_time - kBuild version %d.%d.%d (r%u)\n"
+#endif
                        "Copyright (C) 2007-2018 knut st. osmundsen\n",
                        KBUILD_VERSION_MAJOR, KBUILD_VERSION_MINOR, KBUILD_VERSION_PATCH,
                        KBUILD_SVN_REV);

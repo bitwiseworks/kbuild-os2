@@ -97,6 +97,7 @@ $(KBUILD_SVN_INFO_KMK): $(wildcard $(addprefix $(PATH_ROOT)/.git/ $(PATH_ROOT)/.
 	@$(REDIRECT) -o "$@" -E 'LC_ALL=C' -- git log -n 1 '--pretty=format:KBUILD_SVN_REV := 0x%h%n'
 	@$(APPEND) -N "$@" 'KBUILD_SVN_URL := '
 	@$(REDIRECT) -ao "$@" -E 'LC_ALL=C' -- git config --get remote.origin.url
+	@$(APPEND) "$@" 'KBUILD_SVN_GIT := 1'
 
  ifeq ($(DEPTH),.)
 OTHER_CLEAN += $(KBUILD_SVN_INFO_KMK)
