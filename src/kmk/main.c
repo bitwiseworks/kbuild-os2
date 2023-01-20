@@ -4364,7 +4364,9 @@ die (int status)
   static char dying = 0;
 #ifdef KMK
   static char need_2nd_error = 0;
+#ifndef NO_OUTPUT_SYNC
   static char need_2nd_error_output = 0;
+#endif
 #endif
 
   if (!dying)
@@ -4384,11 +4386,13 @@ die (int status)
               || print_stats_flag))
         {
           need_2nd_error = 1;
+#ifndef NO_OUTPUT_SYNC
           need_2nd_error_output = job_slots_used >= 2
                                && out != NULL
                                && out != &make_sync;
           if (need_2nd_error_output)
             output_metered = 0;
+#endif
         }
 #endif /* KMK */
 
@@ -4468,10 +4472,12 @@ die (int status)
   if (out)
   {
       out->dont_truncate = 0;
+#ifndef NO_OUTPUT_SYNC
       if (need_2nd_error_output && output_metered > 20)
         output_dump (out);
       else
         output_reset (out);
+#endif
       output_close (out);
   }
 #endif

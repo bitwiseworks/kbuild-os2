@@ -334,6 +334,9 @@
 /* Define to 1 if your C compiler doesn't accept -c and -o together. */
 /* #undef NO_MINUS_C_MINUS_O */
 
+/* Output sync sypport (see #5 for more details) */
+#define NO_OUTPUT_SYNC
+
 /* Name of package */
 #define PACKAGE "make"
 
