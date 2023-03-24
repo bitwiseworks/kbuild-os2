@@ -531,8 +531,10 @@ static const char *default_variables[] =
     "AS", "as",
 #ifdef GCC_IS_NATIVE
     "CC", "gcc",
-# ifdef __MSDOS__
+# if defined(__MSDOS__)
     "CXX", "gpp",       /* g++ is an invalid name on MSDOS */
+# elif defined(__EMX__)
+    "CXX", "g++",
 # else
     "CXX", "gcc",
 # endif /* __MSDOS__ */
