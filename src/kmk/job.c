@@ -2605,6 +2605,17 @@ exec_command (char **argv, char **envp)
   /* Be the user, permanently.  */
   child_access ();
 
+  DB (DB_JOBS, (_("Exec command [%s] with arguments:\n"), argv[0]));
+  if (ISDB(DB_JOBS))
+    {
+      int argc = 1;
+      while (argv[argc] != 0)
+        {
+          DB (DB_JOBS, (_("  [%s]\n"), argv[argc]));
+          ++argc;
+        }
+    }
+
 # ifdef __EMX__
   /* Run the program.  */
   pid = spawnvpe (P_NOWAIT, argv[0], argv, envp);
@@ -2621,6 +2632,8 @@ exec_command (char **argv, char **envp)
   execvp (argv[0], argv);
 
 # endif /* !__EMX__ */
+
+  DB (DB_JOBS, (_("Exec errno %d (%s)\n"), errno, strerror (errno)));
 
   switch (errno)
     {
@@ -2865,9 +2878,9 @@ construct_command_argv_internal (char *line, char **restp, const char *shell,
 #else  /* must be UNIX-ish */
   static const char *sh_chars_sh = "#;\"*?[]&|<>(){}$`^~!";                     /* kmk: +_sh */
   static const char *sh_cmds_sh[] =                                             /* kmk: +_sh */
-  { ".", ":", "break", "case", "cd", "continue", "eval", "exec", "exit", 
+  { ".", ":", "break", "case", "cd", "continue", "eval", "exec", "exit",
     "export", "for", "if", "login", "logout", "read", "readonly", "set",
-    "shift", "switch", "test", "times", "trap", "ulimit", "umask", "unset", 
+    "shift", "switch", "test", "times", "trap", "ulimit", "umask", "unset",
     "wait", "while", 0 };
 
 # if 0 /*def HAVE_DOS_PATHS - kmk */
@@ -2883,8 +2896,8 @@ construct_command_argv_internal (char *line, char **restp, const char *shell,
 #ifdef KMK
   static const char sh_chars_kash[] = "#;*?[]&|<>(){}$`^~!";                          /* note: no \" - good idea? */
   static const char * const sh_cmds_kash[] = {
-      ".", ":", "break", "case", "cd", "continue", "echo", "eval", "exec", "exit", 
-      "export", "for", "if", "login", "logout", "read", "readonly", "set", 
+      ".", ":", "break", "case", "cd", "continue", "echo", "eval", "exec", "exit",
+      "export", "for", "if", "login", "logout", "read", "readonly", "set",
       "shift", "switch", "test", "times", "trap", "umask", "wait", "while", 0 /* +echo, -ulimit, -unset */
   };
   int is_kmk_shell = 0;
